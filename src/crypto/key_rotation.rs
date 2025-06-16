@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
-use crate::crypto::traits::{CryptographicSystem, KeyMetadata, KeyStatus};
+pub(crate) use crate::crypto::traits::{CryptographicSystem, KeyMetadata, KeyStatus};
 use crate::crypto::errors::Error;
 use crate::crypto::common::CryptoConfig;
 
@@ -97,8 +97,12 @@ where
                     KeyStatus::Active => {
                         primary_key_name = Some(key_name.clone());
                     },
-                    KeyStatus::Rotating | KeyStatus::Expired => {
+                    KeyStatus::Rotating => {
                         secondary_key_names.push(key_name.clone());
+                    },
+                    KeyStatus::Expired => {
+                        // 删除过期密钥
+                        let _ = self.key_storage.delete_key(key_name);
                     }
                 }
             }
@@ -121,7 +125,7 @@ where
     }
     
     /// 检查密钥是否需要轮换
-    pub fn needs_rotation(&self, config: &CryptoConfig) -> bool {
+    pub fn needs_rotation(&self) -> bool {
         if let Some((_, _, metadata)) = &self.primary_key {
             // 检查基于时间的轮换需求
             if let Some(expires_at) = &metadata.expires_at {
@@ -217,16 +221,11 @@ where
         
         // 如果找到处于轮换中的密钥，将其状态更新为过期
         if let Some(index) = rotating_index {
-            let (pub_key, priv_key, mut metadata) = self.secondary_keys.remove(index);
-            metadata.status = KeyStatus::Expired;
-            
-            // 保存更新后的密钥
+            // 移除轮换中的密钥并删除存储
+            let (_pub_key, _priv_key, metadata) = self.secondary_keys.remove(index);
             let key_name = format!("{}-{}", self.key_prefix, metadata.id);
-            let key_data = self.serialize_key_pair(&pub_key, &priv_key)?;
-            self.key_storage.save_key(&key_name, &metadata, &key_data)?;
-            
-            // 将更新后的密钥放回次要密钥列表
-            self.secondary_keys.push((pub_key, priv_key, metadata));
+            // 删除已过期密钥文件
+            let _ = self.key_storage.delete_key(&key_name);
         }
         
         Ok(())
@@ -235,17 +234,20 @@ where
     /// 增加主密钥的使用计数
     pub fn increment_usage_count(&mut self) -> Result<(), Error> {
         if let Some((pub_key, priv_key, mut metadata)) = self.primary_key.take() {
+            // 更新使用计数
             metadata.usage_count += 1;
-            
-            // 保存更新后的密钥
+            // 序列化并保存更新后的密钥元数据
             let key_name = format!("{}-{}", self.key_prefix, metadata.id);
             let key_data = self.serialize_key_pair(&pub_key, &priv_key)?;
-            self.key_storage.save_key(&key_name, &metadata, &key_data)?;
-            
-            // 恢复主密钥
+            if let Err(e) = self.key_storage.save_key(&key_name, &metadata, &key_data) {
+                // 保存失败，回滚并恢复原主密钥
+                metadata.usage_count -= 1;
+                self.primary_key = Some((pub_key, priv_key, metadata));
+                return Err(e);
+            }
+            // 保存成功，恢复主密钥
             self.primary_key = Some((pub_key, priv_key, metadata));
         }
-        
         Ok(())
     }
     
@@ -371,4 +373,143 @@ where
 struct KeyPairData {
     public_key: String,
     private_key: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+    use crate::crypto::common::{CryptoConfig, Base64String};
+    use crate::crypto::traits::{CryptographicSystem, KeyStatus, KeyMetadata};
+    use crate::crypto::errors::Error;
+
+    /// 内存存储用于测试
+    struct InMemoryStorage {
+        map: Mutex<HashMap<String, (KeyMetadata, Vec<u8>)>>,
+    }
+
+    impl InMemoryStorage {
+        fn new() -> Self {
+            Self { map: Mutex::new(HashMap::new()) }
+        }
+    }
+
+    impl KeyStorage for InMemoryStorage {
+        fn save_key(&self, name: &str, metadata: &KeyMetadata, key_data: &[u8]) -> Result<(), Error> {
+            let mut m = self.map.lock().unwrap();
+            m.insert(name.to_string(), (metadata.clone(), key_data.to_vec()));
+            Ok(())
+        }
+        fn load_key(&self, name: &str) -> Result<(KeyMetadata, Vec<u8>), Error> {
+            let m = self.map.lock().unwrap();
+            m.get(name)
+                .map(|(meta, data)| (meta.clone(), data.clone()))
+                .ok_or_else(|| Error::Operation(format!("Key {} not found", name)))
+        }
+        fn key_exists(&self, name: &str) -> bool {
+            let m = self.map.lock().unwrap();
+            m.contains_key(name)
+        }
+        fn list_keys(&self) -> Result<Vec<String>, Error> {
+            let m = self.map.lock().unwrap();
+            Ok(m.keys().cloned().collect())
+        }
+        fn delete_key(&self, name: &str) -> Result<(), Error> {
+            let mut m = self.map.lock().unwrap();
+            m.remove(name);
+            Ok(())
+        }
+    }
+
+    /// 简单的 DummySystem，用于测试密钥轮换逻辑
+    #[derive(Clone)]
+    struct DummySystem;
+    impl CryptographicSystem for DummySystem {
+        type PublicKey = String;
+        type PrivateKey = String;
+        type CiphertextOutput = Base64String;
+        type Error = Error;
+
+        fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
+            Ok(("PUB".to_string(), "PRIV".to_string()))
+        }
+        fn encrypt(_public_key: &Self::PublicKey, _plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
+            Ok(Base64String::from(vec![]))
+        }
+        fn decrypt(_private_key: &Self::PrivateKey, _ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
+            Ok(vec![])
+        }
+        fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
+        fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
+        fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
+        fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
+    }
+
+    #[test]
+    fn test_initialize_and_delete_expired() {
+        let storage = Arc::new(InMemoryStorage::new());
+        // 插入已过期的密钥
+        let expired_meta = KeyMetadata {
+            id: "expired".to_string(),
+            created_at: "".to_string(),
+            expires_at: None,
+            usage_count: 0,
+            status: KeyStatus::Expired,
+            version: 1,
+            algorithm: "".to_string(),
+        };
+        storage.save_key("test-expired", &expired_meta, &[]).unwrap();
+        // 使用短轮换策略
+        let policy = RotationPolicy { validity_period_days: 1, rotation_start_days: 1, max_usage_count: Some(1) };
+        let mut mgr = KeyRotationManager::<DummySystem>::new(storage.clone(), policy, "test");
+        // initialize 应该删除已过期的，且创建新的主密钥
+        mgr.initialize(&CryptoConfig::default()).unwrap();
+        let keys = storage.list_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert!(!storage.key_exists("test-expired"));
+        // 只有新主密钥，前缀正确
+        assert!(keys[0].starts_with("test-"));
+    }
+
+    #[test]
+    fn test_rotation_flow() {
+        let storage = Arc::new(InMemoryStorage::new());
+        let policy = RotationPolicy { validity_period_days: 1, rotation_start_days: 1, max_usage_count: Some(1) };
+        let mut mgr = KeyRotationManager::<DummySystem>::new(storage.clone(), policy.clone(), "prefix");
+        mgr.initialize(&CryptoConfig::default()).unwrap();
+        // 触发基于时间的轮换
+        assert!(mgr.needs_rotation());
+        // 启动轮换
+        mgr.start_rotation(&CryptoConfig::default()).unwrap();
+        // 次要密钥列表应包含一个
+        assert_eq!(mgr.get_secondary_keys().len(), 1);
+        // 存储应有两个文件：旧主密钥(Rotating)和新主密钥
+        assert_eq!(storage.list_keys().unwrap().len(), 2);
+        // 完成轮换，移除旧密钥
+        mgr.complete_rotation().unwrap();
+        assert_eq!(mgr.get_secondary_keys().len(), 0);
+        assert_eq!(storage.list_keys().unwrap().len(), 1);
+        // 新主密钥版本应加1
+        let meta = mgr.get_primary_key_metadata().unwrap();
+        assert_eq!(meta.version, 2);
+    }
+
+    #[test]
+    fn test_increment_usage_count() {
+        let storage = Arc::new(InMemoryStorage::new());
+        let policy = RotationPolicy { validity_period_days: 10, rotation_start_days: 5, max_usage_count: Some(5) };
+        let mut mgr = KeyRotationManager::<DummySystem>::new(storage.clone(), policy, "inc");
+        mgr.initialize(&CryptoConfig::default()).unwrap();
+        let keys = storage.list_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        let name = &keys[0];
+        // 初始计数为 0
+        let (meta1, _) = storage.load_key(name).unwrap();
+        assert_eq!(meta1.usage_count, 0);
+        // 调用 increment
+        mgr.increment_usage_count().unwrap();
+        let (meta2, _) = storage.load_key(name).unwrap();
+        assert_eq!(meta2.usage_count, 1);
+    }
 } 

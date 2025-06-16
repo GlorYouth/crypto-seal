@@ -16,6 +16,8 @@ pub use crypto::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 pub use crypto::KeyRotationManager;
 pub use crypto::ConfigManager;
 pub use crypto::QSealEngine;
+#[cfg(feature = "async-engine")]
+pub use crypto::AsyncQSealEngine;
 
 // 条件编译特性
 /// 传统RSA加密系统别名

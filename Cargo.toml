@@ -14,6 +14,7 @@ default = ["traditional", "post-quantum"]
 traditional = ["rsa"]
 post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
 secure-storage = []
+async-engine = ["dashmap", "arc-swap"]
 
 [dependencies]
 # 基础依赖
@@ -39,5 +40,9 @@ aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 tempfile = "3.20.0"
 uuid = { version = "1.17.0", features = ["v4"] }
+
+# 可选依赖
+dashmap = { version = "5", optional = true }
+arc-swap = { version = "1", optional = true }
 
 [dev-dependencies]

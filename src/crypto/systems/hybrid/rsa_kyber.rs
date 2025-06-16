@@ -138,6 +138,16 @@ impl CryptographicSystem for RsaKyberCryptoSystem {
 impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
     type AuthenticatedOutput = Base64String;
 
+    fn sign(private_key: &Self::PrivateKey, data: &[u8]) -> Result<Vec<u8>, Self::Error> {
+        let digest = Sha256::digest(data);
+        RsaCryptoSystem::sign(&private_key.rsa_private_key, &digest)
+    }
+
+    fn verify(public_key: &Self::PublicKey, data: &[u8], signature: &[u8]) -> Result<bool, Self::Error> {
+        let digest = Sha256::digest(data);
+        RsaCryptoSystem::verify(&public_key.rsa_public_key, &digest, signature)
+    }
+
     fn encrypt_authenticated(
         public_key: &Self::PublicKey,
         plaintext: &[u8],
@@ -188,16 +198,6 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
         // 将原始加密数据重新Base64编码后解密
         let encrypted_data_b64 = to_base64(encrypted_data_raw);
         Self::decrypt(private_key, &encrypted_data_b64, additional_data)
-    }
-
-    fn sign(private_key: &Self::PrivateKey, data: &[u8]) -> Result<Vec<u8>, Self::Error> {
-        let digest = Sha256::digest(data);
-        RsaCryptoSystem::sign(&private_key.rsa_private_key, &digest)
-    }
-
-    fn verify(public_key: &Self::PublicKey, data: &[u8], signature: &[u8]) -> Result<bool, Self::Error> {
-        let digest = Sha256::digest(data);
-        RsaCryptoSystem::verify(&public_key.rsa_public_key, &digest, signature)
     }
 }
 

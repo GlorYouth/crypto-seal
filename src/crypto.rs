@@ -5,12 +5,14 @@ pub mod storage;
 pub mod systems;
 pub mod key_rotation;
 pub mod config;
-pub mod engine;
+pub mod engines;
 
-pub use traits::{CryptographicSystem, SecureKeyStorage, AuthenticatedCryptoSystem};
+pub use traits::{AuthenticatedCryptoSystem, CryptographicSystem, SecureKeyStorage};
 pub use errors::Error;
 pub use systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-pub use systems::{traditional, post_quantum, hybrid};
+pub use systems::{hybrid, post_quantum, traditional};
 pub use key_rotation::KeyRotationManager;
-pub use config::{ConfigManager, ConfigFile, StorageConfig};
-pub use engine::QSealEngine; 
+pub use config::{ConfigFile, ConfigManager, StorageConfig};
+pub use engines::engine::QSealEngine; 
+#[cfg(feature = "async-engine")]
+pub use engines::async_engine::AsyncQSealEngine;

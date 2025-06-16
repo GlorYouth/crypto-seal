@@ -349,7 +349,7 @@ mod tests {
         let config_path = temp_dir.path().join("config.json");
         
         // 创建自定义配置
-        let mut config = ConfigManager::new();
+        let config = ConfigManager::new();
         
         // 修改默认值
         {

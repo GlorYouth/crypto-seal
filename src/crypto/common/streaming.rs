@@ -2,7 +2,6 @@ use std::io::{Read, Write};
 use std::marker::PhantomData;
 use crate::crypto::traits::CryptographicSystem;
 use crate::crypto::errors::Error;
-use crate::crypto::systems::post_quantum::kyber::KyberCryptoSystem;
 
 /// 默认缓冲区大小（64KB）
 const DEFAULT_BUFFER_SIZE: usize = 65536;
@@ -292,6 +291,7 @@ mod tests {
     use std::io::Cursor;
     use crate::crypto::common::constant_time_eq;
     use crate::crypto::common;
+    use crate::crypto::post_quantum::KyberCryptoSystem;
 
     #[test]
     fn test_streaming_encryption_decryption() {
