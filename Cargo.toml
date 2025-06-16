@@ -1,0 +1,47 @@
+[package]
+name = "q-seal-core"
+version = "0.2.0"
+edition = "2024"
+authors = ["GlorYouth <example@example.com>"]
+description = "传统与后量子加密的核心库"
+license = "MPL-2.0"
+readme = "README.md"
+keywords = ["cryptography", "post-quantum", "rsa", "kyber"]
+categories = ["cryptography"]
+
+[features]
+default = ["traditional", "post-quantum"]
+traditional = ["rsa"]
+post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
+secure-storage = []
+
+[dependencies]
+# 基础依赖
+rand = "0.9.1"
+base64 = "0.22.1"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0.12"
+secrecy = "0.10.3"
+chrono = "0.4"
+zeroize = { version = "1.8.1", features = ["derive"] }
+
+# 传统加密相关
+rsa = { version = "0.9.8", optional = true }
+rand_core = "0.9.3"
+sha2 = "0.10.8"
+
+# 后量子加密相关
+pqcrypto-kyber = { version = "0.8.1", optional = true }
+pqcrypto-traits = { version = "0.3.5", optional = true }
+pqcrypto = { version = "0.18.1", optional = true }
+
+# 安全存储相关
+aes-gcm = "0.10.3"
+hkdf = "0.12.4"
+argon2 = "0.5.3"
+tempfile = "3.20.0"
+uuid = { version = "1.17.0", features = ["v4"] }
+
+[dev-dependencies]
+criterion = "0.5"
