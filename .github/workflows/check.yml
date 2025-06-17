@@ -1,0 +1,44 @@
+name: Check
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - --all-features
+          - --no-default-features
+          - --no-default-features --features "traditional"
+          - --no-default-features --features "post-quantum"
+          - --no-default-features --features "secure-storage"
+          - --no-default-features --features "async-engine"
+          - --no-default-features --features "parallel"
+          - --no-default-features --features "chacha"
+          - --no-default-features --features "traditional,async-engine"
+          - --no-default-features --features "post-quantum,async-engine"
+          - --no-default-features --features "traditional,post-quantum"
+          - --no-default-features --features "secure-storage,async-engine"
+          - --no-default-features --features "parallel,async-engine"
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+      - name: Check
+        run: cargo check ${{ matrix.features }}
+      - name: Test
+        run: cargo test ${{ matrix.features }} 
