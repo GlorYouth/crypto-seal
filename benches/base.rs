@@ -116,7 +116,7 @@ fn bench_qseal_kyber(c: &mut Criterion) {
 fn bench_stream_rsa_encrypt(c: &mut Criterion) {
     let mut config = CryptoConfig::default();
     config.rsa_key_bits = 2048;
-    let (pk, sk) = TraditionalRsa::generate_keypair(&config).unwrap();
+    let (pk, _sk) = TraditionalRsa::generate_keypair(&config).unwrap();
     let data = vec![0u8; 1024 * 1024];
     let mut scfg = StreamingConfig::default();
     scfg.buffer_size = 245;
@@ -157,7 +157,7 @@ fn bench_stream_rsa_decrypt(c: &mut Criterion) {
 
 fn bench_stream_kyber_encrypt(c: &mut Criterion) {
     let config = CryptoConfig::default();
-    let (pk, sk) = PostQuantumKyber::generate_keypair(&config).unwrap();
+    let (pk, _sk) = PostQuantumKyber::generate_keypair(&config).unwrap();
     let data = vec![0u8; 1024 * 1024];
     let mut scfg = StreamingConfig::default();
     scfg.buffer_size = 64 * 1024;
@@ -197,7 +197,7 @@ fn bench_stream_kyber_decrypt(c: &mut Criterion) {
 
 fn bench_stream_hybrid_encrypt(c: &mut Criterion) {
     let config = CryptoConfig::default();
-    let (pk, sk) = HybridRsaKyber::generate_keypair(&config).unwrap();
+    let (pk, _sk) = HybridRsaKyber::generate_keypair(&config).unwrap();
     let data = vec![0u8; 1024 * 1024];
     let mut scfg = StreamingConfig::default();
     scfg.buffer_size = 64 * 1024;

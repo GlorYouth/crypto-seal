@@ -14,7 +14,7 @@ use aes_gcm::{
 #[cfg(feature = "chacha")]
 use chacha20poly1305::{
     ChaCha20Poly1305,
-    aead::{Aead as ChaAead, KeyInit as ChaKeyInit, generic_array::GenericArray},
+    aead::{Aead as ChaAead, generic_array::GenericArray},
     Nonce as ChaNonce
 };
 #[cfg(feature = "chacha")]
