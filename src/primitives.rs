@@ -1,3 +1,7 @@
+//! 基础工具模块，提供 Base64 编解码、ZeroizingVec、安全比较等工具
+pub mod streaming; 
+pub use streaming::*;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use std::ops::{Deref, DerefMut};
@@ -248,6 +252,3 @@ mod tests {
         assert_eq!(config.default_signature_algorithm, "RSA-PSS-SHA256");
     }
 } 
-
-// 流式加密处理模块
-pub mod streaming; 

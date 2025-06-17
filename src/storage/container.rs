@@ -15,9 +15,9 @@ use aes_gcm::{
     Aes256Gcm, Nonce
 };
 
-use crate::crypto::traits::SecureKeyStorage;
-use crate::crypto::errors::Error;
-use crate::crypto::common::{to_base64, from_base64, CryptoConfig};
+use crate::traits::SecureKeyStorage;
+use crate::errors::Error;
+use crate::primitives::{to_base64, from_base64, CryptoConfig};
 
 /// 加密的密钥容器，实现了SecureKeyStorage特征
 /// 提供密码保护的密钥存储功能

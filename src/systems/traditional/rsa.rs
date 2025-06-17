@@ -5,9 +5,9 @@ use rsa::signature::{RandomizedSigner, Verifier, SignatureEncoding};
 use sha2::Sha256;
 use rsa::rand_core::OsRng as RsaOsRng;
 use serde::{Serialize, Deserialize};
-use crate::crypto::traits::CryptographicSystem;
-use crate::crypto::common::{Base64String, from_base64, CryptoConfig, ZeroizingVec};
-use crate::crypto::errors::Error;
+use crate::traits::CryptographicSystem;
+use crate::primitives::{Base64String, from_base64, CryptoConfig, ZeroizingVec};
+use crate::errors::Error;
 
 /// RSA公钥包装器，提供序列化支持
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,7 +197,7 @@ impl CryptographicSystem for RsaCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::common::constant_time_eq;
+    use crate::primitives::constant_time_eq;
     
     #[test]
     fn rsa_encryption_roundtrip() {

@@ -7,12 +7,12 @@ use std::sync::Arc;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::crypto::common::CryptoConfig;
-use crate::crypto::config::ConfigManager;
-use crate::crypto::errors::Error;
-use crate::crypto::key_rotation::{KeyMetadata, KeyStorage, RotationPolicy};
-use crate::crypto::storage::KeyFileStorage;
-use crate::crypto::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+use crate::primitives::CryptoConfig;
+use crate::config::ConfigManager;
+use crate::errors::Error;
+use crate::rotation::{KeyMetadata, KeyStorage, RotationPolicy};
+use crate::storage::KeyFileStorage;
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
 
 /// 并发版 QSeal 引擎，支持多线程同时调用
 pub struct AsyncQSealEngine<C: CryptographicSystem + Send + Sync + 'static>
@@ -67,15 +67,15 @@ where
             if name.starts_with(&self.key_prefix) {
                 let (meta, data) = self.key_storage.load_key(&name)?;
                 match meta.status {
-                    crate::crypto::traits::KeyStatus::Active => {
+                    crate::traits::KeyStatus::Active => {
                         let (pubk, privk) = Self::deserialize(&data)?;
                         self.primary.store(Some(Arc::new((pubk, privk, meta))));
                     }
-                    crate::crypto::traits::KeyStatus::Rotating => {
+                    crate::traits::KeyStatus::Rotating => {
                         let (pubk, privk) = Self::deserialize(&data)?;
                         self.secondary.insert(name, (pubk, privk, meta));
                     }
-                    crate::crypto::traits::KeyStatus::Expired => {
+                    crate::traits::KeyStatus::Expired => {
                         let _ = self.key_storage.delete_key(&name);
                     }
                 }
@@ -146,13 +146,13 @@ where
         if let Some(old) = self.primary.load_full() {
             let (_opk, _osk, mut om) = (&*old).clone();
             version = om.version + 1;
-            om.status = crate::crypto::traits::KeyStatus::Rotating;
+            om.status = crate::traits::KeyStatus::Rotating;
             let key_name = format!("{}-{}", self.key_prefix, om.id);
             let data = Self::serialize(&_opk, &_osk)?;
             self.key_storage.save_key(&key_name, &om, &data)?;
             self.secondary.insert(key_name.clone(), (_opk, _osk, om));
         }
-        let metadata = KeyMetadata { id: id.clone(), created_at: now.clone(), expires_at: Some(exp), usage_count: 0, status: crate::crypto::traits::KeyStatus::Active, version, algorithm: format!("{}", std::any::type_name::<C>()) };
+        let metadata = KeyMetadata { id: id.clone(), created_at: now.clone(), expires_at: Some(exp), usage_count: 0, status: crate::traits::KeyStatus::Active, version, algorithm: format!("{}", std::any::type_name::<C>()) };
         let key_name = format!("{}-{}", self.key_prefix, id);
         let data = Self::serialize(&new_pk, &new_sk)?;
         self.key_storage.save_key(&key_name, &metadata, &data)?;
@@ -165,7 +165,7 @@ where
         let mut to_remove = Vec::new();
         for entry in self.secondary.iter() {
             let (name, (_pk, _sk, meta)) = (entry.key(), entry.value());
-            if meta.status == crate::crypto::traits::KeyStatus::Rotating {
+            if meta.status == crate::traits::KeyStatus::Rotating {
                 to_remove.push(name.clone());
             }
         }
@@ -296,12 +296,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::common::{Base64String, CryptoConfig, from_base64};
-    use crate::crypto::config::ConfigManager;
-    use crate::crypto::errors::Error;
-    use crate::crypto::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+    use crate::config::ConfigManager;
+    use crate::errors::Error;
+    use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
     use std::sync::Arc;
     use tempfile::TempDir;
+    use crate::primitives::{from_base64, Base64String};
 
     /// 仅支持基础加解密的测试系统
     #[derive(Clone)]

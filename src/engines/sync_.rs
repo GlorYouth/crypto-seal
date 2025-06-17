@@ -5,11 +5,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::crypto::config::ConfigManager;
-use crate::crypto::errors::Error;
-use crate::crypto::key_rotation::KeyRotationManager;
-use crate::crypto::storage::KeyFileStorage;
-use crate::crypto::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+use crate::config::ConfigManager;
+use crate::errors::Error;
+use crate::rotation::KeyRotationManager;
+use crate::storage::KeyFileStorage;
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+use crate::primitives::{from_base64, Base64String, CryptoConfig};
 
 /// Q-Seal核心引擎
 ///
@@ -213,8 +214,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::common::{from_base64, Base64String, CryptoConfig};
-    use crate::crypto::config::ConfigManager;
+    use crate::primitives::{from_base64, Base64String, CryptoConfig};
+    use crate::config::ConfigManager;
     use std::sync::Arc;
     use tempfile::TempDir;
 

@@ -3,11 +3,11 @@
 //!
 
 use aes_gcm::KeyInit;
-use crate::crypto::common::{from_base64, to_base64, Base64String, CryptoConfig};
-use crate::crypto::errors::Error;
-use crate::crypto::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
-use crate::crypto::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
-use crate::crypto::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+use crate::primitives::{from_base64, to_base64, Base64String, CryptoConfig};
+use crate::errors::Error;
+use crate::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
+use crate::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
 use aes_gcm::{Aes256Gcm, aead::Aead, Nonce};
 use aes_gcm::aead::AeadCore;
 #[cfg(feature = "chacha")]

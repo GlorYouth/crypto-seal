@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use serde::{Serialize, Deserialize};
-use crate::crypto::common::CryptoConfig;
+use crate::primitives::CryptoConfig;
 
 /// 密钥状态
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

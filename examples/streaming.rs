@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use crypto_seal::TraditionalRsa;
-use crypto_seal::crypto::common::{CryptoConfig, streaming::{StreamingConfig, StreamingCryptoExt}};
 use crypto_seal::CryptographicSystem;
+use crypto_seal::primitives::{CryptoConfig, StreamingConfig, StreamingCryptoExt};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 准备用于加解密的数据

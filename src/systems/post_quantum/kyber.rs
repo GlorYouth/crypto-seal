@@ -1,9 +1,9 @@
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Serialize, Deserialize};
-use crate::crypto::traits::CryptographicSystem;
-use crate::crypto::common::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec};
-use crate::crypto::errors::Error;
+use crate::traits::CryptographicSystem;
+use crate::primitives::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec};
+use crate::errors::Error;
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit},
 };
@@ -256,7 +256,7 @@ impl CryptographicSystem for KyberCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::common::{constant_time_eq, CryptoConfig};
+    use crate::primitives::{constant_time_eq, CryptoConfig};
     
     #[test]
     fn kyber_encryption_roundtrip() {

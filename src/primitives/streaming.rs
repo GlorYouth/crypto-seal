@@ -1,7 +1,8 @@
+
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use crate::crypto::traits::CryptographicSystem;
-use crate::crypto::errors::Error;
+use crate::traits::CryptographicSystem;
+use crate::errors::Error;
 use std::sync::Arc;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -491,10 +492,10 @@ where
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use crate::crypto::common::{constant_time_eq, Base64String, CryptoConfig, from_base64};
-    use crate::crypto::post_quantum::KyberCryptoSystem;
-    use crate::crypto::traits::CryptographicSystem;
+    use crate::primitives::{constant_time_eq, Base64String, CryptoConfig, from_base64};
+    use crate::traits::CryptographicSystem;
     use std::sync::Mutex;
+    use crate::systems::post_quantum::KyberCryptoSystem;
 
     #[test]
     fn test_streaming_encryption_decryption() {

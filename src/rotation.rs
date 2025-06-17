@@ -3,9 +3,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
-pub(crate) use crate::crypto::traits::{CryptographicSystem, KeyMetadata, KeyStatus};
-use crate::crypto::errors::Error;
-use crate::crypto::common::CryptoConfig;
+pub(crate) use crate::traits::{CryptographicSystem, KeyMetadata, KeyStatus};
+use crate::errors::Error;
+use crate::primitives::CryptoConfig;
 
 /// 密钥轮换策略
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,9 +380,9 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
-    use crate::crypto::common::{CryptoConfig, Base64String};
-    use crate::crypto::traits::{CryptographicSystem, KeyStatus, KeyMetadata};
-    use crate::crypto::errors::Error;
+    use crate::traits::{CryptographicSystem, KeyStatus, KeyMetadata};
+    use crate::errors::Error;
+    use crate::primitives::Base64String;
 
     /// 内存存储用于测试
     struct InMemoryStorage {

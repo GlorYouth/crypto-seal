@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use tempfile::tempdir;
 use crypto_seal::{TraditionalRsa, PostQuantumKyber};
-use crypto_seal::crypto::common::CryptoConfig;
-use crypto_seal::crypto::key_rotation::{KeyRotationManager, RotationPolicy, KeyStorage};
-use crypto_seal::crypto::storage::file_storage::KeyFileStorage;
-use crypto_seal::crypto::traits::KeyStatus;
+use crypto_seal::rotation::{KeyRotationManager, RotationPolicy, KeyStorage};
+use crypto_seal::primitives::CryptoConfig;
+use crypto_seal::storage::file::KeyFileStorage;
+use crypto_seal::traits::KeyStatus;
 
 #[test]
 fn test_key_rotation_flow_traditional() {

@@ -3,9 +3,9 @@
 //! 本模块提供密钥的加密存储、持久化和恢复功能
 
 #[cfg(feature = "secure-storage")]
-pub mod encrypted_container;
-pub mod file_storage;
+pub mod container;
+pub mod file;
 
 #[cfg(feature = "secure-storage")]
-pub use encrypted_container::EncryptedKeyContainer;
-pub use file_storage::KeyFileStorage; 
+pub use container::EncryptedKeyContainer;
+pub use file::KeyFileStorage; 

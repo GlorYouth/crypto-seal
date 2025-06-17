@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use serde::{Serialize, Deserialize};
 
-use crate::crypto::errors::Error;
-use crate::crypto::common::CryptoConfig;
-use crate::crypto::key_rotation::RotationPolicy;
+use crate::errors::Error;
+use crate::rotation::RotationPolicy;
+use crate::primitives::CryptoConfig;
 
 /// 配置来源
 #[derive(Debug, Clone, PartialEq)]

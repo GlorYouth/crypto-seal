@@ -1,6 +1,6 @@
 use crypto_seal::TraditionalRsa;
-use crypto_seal::crypto::common::CryptoConfig;
 use crypto_seal::CryptographicSystem;
+use crypto_seal::primitives::CryptoConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 使用底层 CryptographicSystem 特性

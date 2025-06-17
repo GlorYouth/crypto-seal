@@ -18,7 +18,7 @@ fn integration_sync_engine() {
 #[test]
 fn integration_async_engine() {
     use crypto_seal::AsyncQSealEngine;
-    use crypto_seal::crypto::systems::post_quantum::kyber::KyberCryptoSystem;
+    use crypto_seal::systems::post_quantum::kyber::KyberCryptoSystem;
     use std::sync::Arc;
     use crypto_seal::ConfigManager; 
     // 测试并发 AsyncQSealEngine（后量子 Kyber）

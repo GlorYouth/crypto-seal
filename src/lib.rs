@@ -5,37 +5,43 @@
 //!
 //! 新版本添加了混合加密系统，同时使用RSA和Kyber提供双重安全保障。
 
-// 加密模块
-pub mod crypto;
+pub mod systems;
+pub mod storage;
+pub mod engines;
+pub mod primitives;
+pub mod traits;
+pub mod rotation;
+pub mod config;
+pub mod errors;
 
-pub use crypto::CryptographicSystem;
+pub use traits::CryptographicSystem;
 #[cfg(feature = "secure-storage")]
-pub use crypto::SecureKeyStorage;
-pub use crypto::AuthenticatedCryptoSystem;
-pub use crypto::Error;
-pub use crypto::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-pub use crypto::KeyRotationManager;
-pub use crypto::ConfigManager;
-pub use crypto::QSealEngine;
+pub use traits::SecureKeyStorage;
+pub use traits::AuthenticatedCryptoSystem;
+pub use errors::Error;
+pub use systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+pub use rotation::KeyRotationManager;
+pub use config::ConfigManager;
+pub use engines::QSealEngine;
 #[cfg(feature = "async-engine")]
-pub use crypto::AsyncQSealEngine;
+pub use engines::AsyncQSealEngine;
 
 // 条件编译特性
 /// 传统RSA加密系统别名
 #[cfg(feature = "traditional")]
-pub use crypto::systems::traditional::rsa::RsaCryptoSystem as TraditionalRsa;
+pub use systems::traditional::rsa::RsaCryptoSystem as TraditionalRsa;
 
 /// 后量子Kyber加密系统别名
 #[cfg(feature = "post-quantum")]
-pub use crypto::systems::post_quantum::kyber::KyberCryptoSystem as PostQuantumKyber;
+pub use systems::post_quantum::kyber::KyberCryptoSystem as PostQuantumKyber;
 
 /// 混合RSA+Kyber加密系统别名
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-pub use crypto::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRsaKyber;
+pub use systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRsaKyber;
 
 // 导出密钥存储
 #[cfg(feature = "secure-storage")]
-pub use crypto::storage::encrypted_container::EncryptedKeyContainer;
+pub use storage::container::EncryptedKeyContainer;
 
 /// 库版本信息
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -43,7 +49,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::common::{constant_time_eq, CryptoConfig};
+    use crate::primitives::{constant_time_eq, CryptoConfig};
     
     #[test]
     #[cfg(all(feature = "traditional", feature = "post-quantum"))]
