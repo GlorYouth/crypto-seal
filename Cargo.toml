@@ -14,9 +14,10 @@ default = ["traditional", "post-quantum", "secure-storage", "async-engine", "par
 traditional = ["rsa"]
 post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
 secure-storage = ["argon2", "secrecy"]
-async-engine = ["tokio", "async-trait"]
+async-engine = ["async"]
 chacha = ["chacha20poly1305"]
 parallel = ["rayon"]
+async = ["notify", "tokio", "async-trait"]
 
 [dependencies]
 # 基础依赖
@@ -50,6 +51,7 @@ arc-swap = "1"
 rayon = { version = "1.10.0", optional = true }
 async-trait = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
+notify = { version = "8.0.0", features = ["serde"], optional = true }
 
 [dev-dependencies]
 criterion = "0.6"

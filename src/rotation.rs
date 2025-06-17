@@ -8,7 +8,7 @@ use crate::errors::Error;
 use crate::primitives::CryptoConfig;
 
 /// 密钥轮换策略
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RotationPolicy {
     /// 密钥有效期（天）
     pub validity_period_days: u32,

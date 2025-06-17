@@ -135,7 +135,7 @@ impl AsRef<[u8]> for SecureBytes {
 }
 
 /// 加密系统配置
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CryptoConfig {
     /// 是否使用传统密码学（如RSA）
     pub use_traditional: bool,

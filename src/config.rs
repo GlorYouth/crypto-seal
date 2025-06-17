@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
+use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event as NotifyEvent};
+use tokio::sync::mpsc;
 
 use serde::{Serialize, Deserialize};
 
@@ -22,7 +24,7 @@ pub enum ConfigSource {
 }
 
 /// 存储配置
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct StorageConfig {
     /// 密钥存储目录
     pub key_storage_dir: String,
@@ -51,7 +53,7 @@ impl Default for StorageConfig {
 }
 
 /// 完整配置文件
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ConfigFile {
     /// 加密配置
     pub crypto: CryptoConfig,
@@ -138,6 +140,86 @@ impl ConfigManager {
         manager.config_path = Some(path.to_path_buf());
         
         Ok(manager)
+    }
+    
+    /// 启用热加载
+    ///
+    /// 此方法会启动一个新线程来监控配置文件。
+    /// 当文件发生变化时，会自动重新加载配置并通知所有监听器。
+    ///
+    /// # Arguments
+    /// * `self` - An `Arc<Self>` to allow the `ConfigManager` to be shared with the background task.
+    #[cfg(feature = "async")]
+    pub fn enable_hot_reload(self: Arc<Self>) {
+        if self.config_source != ConfigSource::File || self.config_path.is_none() {
+            return;
+        }
+
+        let manager = self.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = manager.watch_config_file().await {
+                // Log the error, e.g., using a logging framework
+                eprintln!("Failed to start config file watcher: {}", e);
+            }
+        });
+    }
+
+    async fn watch_config_file(self: Arc<Self>) -> notify::Result<()> {
+        let path = self.config_path.as_ref().unwrap().clone();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        let mut watcher = RecommendedWatcher::new(move |res| {
+            tx.blocking_send(res).unwrap();
+        }, notify::Config::default())?;
+
+        watcher.watch(&path, RecursiveMode::NonRecursive)?;
+
+        while let Some(res) = rx.recv().await {
+            match res {
+                Ok(NotifyEvent { kind, .. }) => {
+                    if kind.is_modify() || kind.is_create() {
+                        println!("Config file changed, reloading...");
+                        if let Err(e) = self.reload_from_file() {
+                            eprintln!("Failed to reload config file: {}", e);
+                        }
+                    }
+                },
+                Err(e) => eprintln!("watch error: {:?}", e),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn reload_from_file(&self) -> Result<(), Error> {
+        let path = self.config_path.as_ref().ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Config path not set")))?;
+        let contents = fs::read_to_string(path)?;
+        let new_config_file: ConfigFile = serde_json::from_str(&contents)?;
+
+        let mut new_state = (*self.state.load_full()).clone();
+        let mut changed = false;
+        if new_state.crypto != new_config_file.crypto {
+            new_state.crypto = new_config_file.crypto;
+            changed = true;
+            self.notify_listeners(ConfigEvent::CryptoConfigChanged);
+        }
+        if new_state.rotation != new_config_file.rotation {
+            new_state.rotation = new_config_file.rotation;
+            changed = true;
+            self.notify_listeners(ConfigEvent::RotationConfigChanged);
+        }
+        if new_state.storage != new_config_file.storage {
+            new_state.storage = new_config_file.storage;
+            changed = true;
+            self.notify_listeners(ConfigEvent::StorageConfigChanged);
+        }
+
+        if changed {
+            self.state.store(Arc::new(new_state));
+        }
+        
+        Ok(())
     }
     
     /// 从环境变量加载配置

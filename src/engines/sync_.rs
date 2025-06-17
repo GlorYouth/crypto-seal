@@ -84,6 +84,11 @@ where
         Self::new(config_manager, key_prefix)
     }
     
+    /// 返回一个构造器以创建引擎
+    pub fn builder() -> QSealEngineBuilder<C> {
+        QSealEngineBuilder::new()
+    }
+    
     /// 加密数据
     ///
     /// 自动处理密钥选择、使用计数更新和必要的密钥轮换。
@@ -252,6 +257,85 @@ where
         }
         
         Err(Error::Operation("解密失败：所有可用密钥都无法解密该密文".to_string()))
+    }
+}
+
+/// `QSealEngine` 的构造器
+pub struct QSealEngineBuilder<C: CryptographicSystem + SyncStreamingSystem>
+where
+    Error: From<<C as CryptographicSystem>::Error>,
+    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+{
+    config_manager: Option<Arc<ConfigManager>>,
+    key_prefix: Option<String>,
+    _phantom: std::marker::PhantomData<C>,
+}
+
+impl<C: CryptographicSystem + SyncStreamingSystem> QSealEngineBuilder<C>
+where
+    Error: From<<C as CryptographicSystem>::Error>,
+    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+{
+    /// 创建一个新的构造器
+    pub fn new() -> Self {
+        Self {
+            config_manager: None,
+            key_prefix: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// 使用现有的 `ConfigManager`
+    pub fn with_config_manager(mut self, config_manager: Arc<ConfigManager>) -> Self {
+        self.config_manager = Some(config_manager);
+        self
+    }
+
+    /// 从配置文件加载配置
+    pub fn with_config_file<P: AsRef<Path>>(mut self, path: P) -> Result<Self, Error> {
+        let config_manager = Arc::new(ConfigManager::from_file(path)?);
+        self.config_manager = Some(config_manager);
+        Ok(self)
+    }
+
+    /// 设置密钥前缀
+    pub fn with_key_prefix(mut self, prefix: &str) -> Self {
+        self.key_prefix = Some(prefix.to_string());
+        self
+    }
+
+    /// 动态设置存储目录
+    pub fn with_storage_dir(self, dir: &str) -> Result<Self, Error> {
+        let mut cm = self.config_manager.clone().unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let mut storage_config = cm.get_storage_config();
+        storage_config.key_storage_dir = dir.to_string();
+        Arc::get_mut(&mut cm).unwrap().update_storage_config(storage_config)?;
+        Ok(Self {
+            config_manager: Some(cm),
+            key_prefix: self.key_prefix,
+            _phantom: self._phantom,
+        })
+    }
+
+    /// 动态设置 Argon2 参数
+    pub fn with_argon2_params(self, mem_cost: u32, time_cost: u32) -> Result<Self, Error> {
+        let mut cm = self.config_manager.clone().unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let mut crypto_config = cm.get_crypto_config();
+        crypto_config.argon2_memory_cost = mem_cost;
+        crypto_config.argon2_time_cost = time_cost;
+        Arc::get_mut(&mut cm).unwrap().update_crypto_config(crypto_config)?;
+        Ok(Self {
+            config_manager: Some(cm),
+            key_prefix: self.key_prefix,
+            _phantom: self._phantom,
+        })
+    }
+
+    /// 构建 `QSealEngine`
+    pub fn build(self) -> Result<QSealEngine<C>, Error> {
+        let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
+        QSealEngine::new(cm, &prefix)
     }
 }
 

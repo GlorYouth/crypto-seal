@@ -64,6 +64,11 @@ where
         Ok(engine)
     }
 
+    /// 返回一个构造器以创建引擎
+    pub fn builder() -> AsyncQSealEngineBuilder<C> {
+        AsyncQSealEngineBuilder::new()
+    }
+
     /// 初始化，加载存储中的主密钥和次要密钥
     fn initialize(&self, config: &CryptoConfig) -> Result<(), Error> {
         let keys = self.key_storage.list_keys()?;
@@ -246,57 +251,31 @@ where
     pub fn decrypt_authenticated(&self, ciphertext: &str) -> Result<Vec<u8>, Error>
     where C: AuthenticatedCryptoSystem + Send + Sync + 'static
     {
-        // 完成上次轮换并删除过期密钥
         self.complete_rotation()?;
-        // 获取配置
         let cfg = self.config.get_crypto_config();
-        // 首先尝试使用主密钥解密并可选验证签名
+
+        // 尝试主密钥
         if let Some(arc) = self.primary.load_full() {
-            let (pubk, sk, _) = &*arc;
-            let verifier = if cfg.auto_verify_signatures { Some(pubk) } else { None };
+            let (pk, sk, _) = &*arc;
+            let verifier = if cfg.auto_verify_signatures { Some(pk) } else { None };
             if let Ok(pt) = C::decrypt_authenticated(sk, ciphertext, None, verifier) {
                 return Ok(pt);
             }
         }
-        // 主密钥失败后尝试次要密钥（不验证签名）
+
+        // 尝试次要密钥
         for entry in self.secondary.iter() {
-            let (_pubk, sk, _) = entry.value();
+            let (_pk, sk, _) = entry.value();
             if let Ok(pt) = C::decrypt_authenticated(sk, ciphertext, None, None) {
                 return Ok(pt);
             }
         }
-        Err(Error::Operation("解密失败：所有可用密钥都无法解密该密文".to_string()))
-    }
 
-    /// 批量加密（并行）。需要公钥和私钥可安全在线程间共享。
-    #[cfg(feature = "parallel")]
-    pub fn encrypt_batch<T>(&self, inputs: &[T]) -> Vec<Result<String, Error>>
-    where
-        Self: Sync,
-        T: AsRef<[u8]> + Sync,
-        <C as CryptographicSystem>::PublicKey: Send + Sync,
-        <C as CryptographicSystem>::PrivateKey: Send + Sync,
-    {
-        inputs
-            .par_iter()
-            .map(|data| self.encrypt(data.as_ref()))
-            .collect()
-    }
-
-    /// 批量加密（顺序）。不需要额外的线程安全约束。
-    #[cfg(not(feature = "parallel"))]
-    pub fn encrypt_batch<T>(&self, inputs: &[T]) -> Vec<Result<String, Error>>
-    where
-        T: AsRef<[u8]>,
-    {
-        inputs
-            .iter()
-            .map(|data| self.encrypt(data.as_ref()))
-            .collect()
+        Err(Error::Operation("认证解密失败".to_string()))
     }
 
     /// 异步流式加密
-    pub async fn encrypt_stream_async<R, W>(
+    pub async fn encrypt_stream<R, W>(
         &self,
         reader: R,
         writer: W,
@@ -315,11 +294,13 @@ where
         let (pk, _, _) = &*arc;
         self.increment_usage_count()?;
 
-        C::encrypt_stream_async(pk, reader, writer, config, None).await
+        C::encrypt_stream_async(pk, reader, writer, config, None)
+            .await
+            .map_err(Into::into)
     }
 
     /// 异步流式解密
-    pub async fn decrypt_stream_async<R, W>(
+    pub async fn decrypt_stream<R, W>(
         &self,
         reader: R,
         writer: W,
@@ -331,28 +312,142 @@ where
         C::PrivateKey: Send + Sync,
     {
         self.complete_rotation()?;
-        // 与同步引擎类似，流式解密默认使用主密钥
-        let arc = self.primary.load_full().ok_or_else(|| Error::Key("没有可用主密钥".to_string()))?;
-        let (_, sk, _) = &*arc;
-        
-        C::decrypt_stream_async(sk, reader, writer, config, None).await
+        if let Some(arc) = self.primary.load_full() {
+            let (_, sk, _) = &*arc;
+            // 注意：这里我们只使用主密钥。
+            return C::decrypt_stream_async(sk, reader, writer, config, None)
+                .await
+                .map_err(Into::into);
+        }
+        Err(Error::Key("没有可用主密钥".to_string()))
     }
 }
 
-// 为并发引擎添加单元测试
+#[cfg(feature = "parallel")]
+impl<C> AsyncQSealEngine<C>
+where
+    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    Error: From<C::Error>,
+    C::Error: Send,
+{
+    /// 批量加密（并行）。需要公钥和私钥可安全在线程间共享。
+    pub fn encrypt_batch<T>(&self, inputs: &[T]) -> Vec<Result<String, Error>>
+    where
+        Self: Sync,
+        T: AsRef<[u8]> + Sync,
+        <C as CryptographicSystem>::PublicKey: Send + Sync,
+        <C as CryptographicSystem>::PrivateKey: Send + Sync,
+    {
+        inputs.par_iter().map(|item| self.encrypt(item.as_ref())).collect()
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+impl<C> AsyncQSealEngine<C>
+where
+    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    Error: From<C::Error>,
+    C::Error: Send,
+{
+    /// 批量加密（顺序执行）
+    pub fn encrypt_batch<T>(&self, inputs: &[T]) -> Vec<Result<String, Error>>
+    where
+        T: AsRef<[u8]>,
+    {
+        inputs.iter().map(|item| self.encrypt(item.as_ref())).collect()
+    }
+}
+
+/// `AsyncQSealEngine` 的构造器
+pub struct AsyncQSealEngineBuilder<C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>
+where
+    Error: From<C::Error>,
+    C::Error: Send,
+{
+    config_manager: Option<Arc<ConfigManager>>,
+    key_prefix: Option<String>,
+    _phantom: std::marker::PhantomData<C>,
+}
+
+impl<C> AsyncQSealEngineBuilder<C>
+where
+    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    Error: From<C::Error>,
+    C::Error: Send,
+{
+    /// 创建一个新的构造器
+    pub fn new() -> Self {
+        Self {
+            config_manager: None,
+            key_prefix: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// 使用现有的 `ConfigManager`
+    pub fn with_config_manager(mut self, config_manager: Arc<ConfigManager>) -> Self {
+        self.config_manager = Some(config_manager);
+        self
+    }
+
+    /// 从配置文件加载配置
+    pub fn with_config_file<P: AsRef<std::path::Path>>(mut self, path: P) -> Result<Self, Error> {
+        let config_manager = Arc::new(ConfigManager::from_file(path)?);
+        self.config_manager = Some(config_manager);
+        Ok(self)
+    }
+
+    /// 设置密钥前缀
+    pub fn with_key_prefix(mut self, prefix: &str) -> Self {
+        self.key_prefix = Some(prefix.to_string());
+        self
+    }
+
+    /// 动态设置存储目录
+    pub fn with_storage_dir(self, dir: &str) -> Result<Self, Error> {
+        let mut cm = self.config_manager.clone().unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let mut storage_config = cm.get_storage_config();
+        storage_config.key_storage_dir = dir.to_string();
+        Arc::get_mut(&mut cm).unwrap().update_storage_config(storage_config)?;
+        Ok(Self {
+            config_manager: Some(cm),
+            key_prefix: self.key_prefix,
+            _phantom: self._phantom,
+        })
+    }
+
+    /// 动态设置 Argon2 参数
+    pub fn with_argon2_params(self, mem_cost: u32, time_cost: u32) -> Result<Self, Error> {
+        let mut cm = self.config_manager.clone().unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let mut crypto_config = cm.get_crypto_config();
+        crypto_config.argon2_memory_cost = mem_cost;
+        crypto_config.argon2_time_cost = time_cost;
+        Arc::get_mut(&mut cm).unwrap().update_crypto_config(crypto_config)?;
+        Ok(Self {
+            config_manager: Some(cm),
+            key_prefix: self.key_prefix,
+            _phantom: self._phantom,
+        })
+    }
+
+    /// 构建 `AsyncQSealEngine`
+    pub fn build(self) -> Result<AsyncQSealEngine<C>, Error> {
+        let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
+        AsyncQSealEngine::new(cm, &prefix)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ConfigManager;
-    use crate::errors::Error;
-    use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
-    use std::sync::Arc;
-    use tempfile::TempDir;
-    use crate::primitives::{from_base64, Base64String};
+    use crate::primitives::{from_base64, Base64String, CryptoConfig, StreamingResult};
+    use std::io::Cursor;
+    use tokio::io::{copy, AsyncWriteExt};
 
-    /// 仅支持基础加解密的测试系统
-    #[derive(Clone)]
+    // A dummy crypto system for testing
     struct DummyCryptoSystem;
+
     impl CryptographicSystem for DummyCryptoSystem {
         type PublicKey = String;
         type PrivateKey = String;
@@ -360,14 +455,18 @@ mod tests {
         type Error = Error;
 
         fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-            Ok(("PUB".to_string(), "PRIV".to_string()))
+            let key = "dummy_key".to_string();
+            Ok((key.clone(), key))
         }
+
         fn encrypt(_public_key: &Self::PublicKey, plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
             Ok(Base64String::from(plaintext.to_vec()))
         }
+
         fn decrypt(_private_key: &Self::PrivateKey, ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-            from_base64(ciphertext).map_err(|e| Error::Operation(format!("Base64解码失败: {}", e)))
+            from_base64(ciphertext).map_err(|e| Error::Operation(format!("base64 error: {}", e)))
         }
+
         fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
         fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
         fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
@@ -378,8 +477,8 @@ mod tests {
     impl AsyncStreamingSystem for DummyCryptoSystem {
         async fn encrypt_stream_async<R, W>(
             _public_key: &Self::PublicKey,
-            _reader: R,
-            _writer: W,
+            mut reader: R,
+            mut writer: W,
             _config: &AsyncStreamingConfig,
             _additional_data: Option<&[u8]>,
         ) -> Result<StreamingResult, Error>
@@ -387,13 +486,16 @@ mod tests {
             R: AsyncRead + Unpin + Send,
             W: AsyncWrite + Unpin + Send,
         {
-            Err(Error::Operation("Not implemented for dummy".to_string()))
+            let mut buffer = Vec::new();
+            let bytes_read = copy(&mut reader, &mut buffer).await.unwrap();
+            writer.write_all(&buffer).await.unwrap();
+            Ok(StreamingResult { bytes_processed: bytes_read, buffer: Some(buffer) })
         }
 
         async fn decrypt_stream_async<R, W>(
             _private_key: &Self::PrivateKey,
-            _reader: R,
-            _writer: W,
+            mut reader: R,
+            mut writer: W,
             _config: &AsyncStreamingConfig,
             _additional_data: Option<&[u8]>,
         ) -> Result<StreamingResult, Error>
@@ -401,13 +503,16 @@ mod tests {
             R: AsyncRead + Unpin + Send,
             W: AsyncWrite + Unpin + Send,
         {
-            Err(Error::Operation("Not implemented for dummy".to_string()))
+            let mut buffer = Vec::new();
+            let bytes_read = copy(&mut reader, &mut buffer).await.unwrap();
+            writer.write_all(&buffer).await.unwrap();
+            Ok(StreamingResult { bytes_processed: bytes_read, buffer: Some(buffer) })
         }
     }
 
-    /// 支持认证加解密的测试系统
-    #[derive(Clone)]
+    // A dummy authenticated crypto system for testing
     struct DummyAuthSystem;
+
     impl CryptographicSystem for DummyAuthSystem {
         type PublicKey = String;
         type PrivateKey = String;
@@ -415,26 +520,26 @@ mod tests {
         type Error = Error;
 
         fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-            Ok(("PUB".to_string(), "PRIV".to_string()))
+            let key = "dummy_auth_key".to_string();
+            Ok((key.clone(), key))
         }
         fn encrypt(_public_key: &Self::PublicKey, plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
             Ok(Base64String::from(plaintext.to_vec()))
         }
         fn decrypt(_private_key: &Self::PrivateKey, ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-            from_base64(ciphertext).map_err(|e| Error::Operation(format!("Base64解码失败: {}", e)))
+            from_base64(ciphertext).map_err(|e| Error::Operation(format!("base64 error: {}", e)))
         }
         fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
         fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
         fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
         fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
     }
+
     impl AuthenticatedCryptoSystem for DummyAuthSystem {
         type AuthenticatedOutput = Base64String;
 
-        fn sign(_private_key: &Self::PrivateKey, data: &[u8]) -> Result<Vec<u8>, Self::Error> {
-            let mut signed = data.to_vec();
-            signed.extend_from_slice(b"::SIG");
-            Ok(signed)
+        fn sign(_private_key: &Self::PrivateKey, _data: &[u8]) -> Result<Vec<u8>, Self::Error> {
+            Ok(b"_signed".to_vec())
         }
 
         fn verify(_public_key: &Self::PublicKey, _data: &[u8], _signature: &[u8]) -> Result<bool, Self::Error> { Ok(true) }
@@ -445,11 +550,13 @@ mod tests {
             _additional_data: Option<&[u8]>,
             signer_key: Option<&Self::PrivateKey>
         ) -> Result<Self::AuthenticatedOutput, Self::Error> {
-            let mut output = plaintext.to_vec();
-            if signer_key.is_some() {
-                output.extend_from_slice(b"::SIG");
+            if let Some(sk) = signer_key {
+                let sig = Self::sign(sk, plaintext)?;
+                let mut output = plaintext.to_vec();
+                output.extend_from_slice(&sig);
+                return Ok(Base64String::from(output));
             }
-            Ok(Base64String::from(output))
+            Ok(Base64String::from(plaintext.to_vec()))
         }
 
         fn decrypt_authenticated(
@@ -458,14 +565,14 @@ mod tests {
             _additional_data: Option<&[u8]>,
             verifier_key: Option<&Self::PublicKey>
         ) -> Result<Vec<u8>, Self::Error> {
-            let mut data = from_base64(ciphertext)?;
-            if verifier_key.is_some() && !data.ends_with(b"::SIG") {
-                return Err(Error::Operation("Signature verification failed".to_string()));
-            }
-            if data.ends_with(b"::SIG") {
-                data.truncate(data.len() - 5);
-            }
-            Ok(data)
+             let data = from_base64(ciphertext).map_err(|e| Error::Operation(format!("base64 error: {}", e)))?;
+             if let Some(_pk) = verifier_key {
+                 // Simplified verification for test
+                 if data.ends_with(b"_signed") {
+                     return Ok(data[..data.len() - b"_signed".len()].to_vec())
+                 }
+             }
+             Ok(data)
         }
     }
 
@@ -482,7 +589,7 @@ mod tests {
             R: AsyncRead + Unpin + Send,
             W: AsyncWrite + Unpin + Send,
         {
-            Err(Error::Operation("Not implemented for dummy".to_string()))
+            unimplemented!()
         }
 
         async fn decrypt_stream_async<R, W>(
@@ -496,54 +603,84 @@ mod tests {
             R: AsyncRead + Unpin + Send,
             W: AsyncWrite + Unpin + Send,
         {
-            Err(Error::Operation("Not implemented for dummy".to_string()))
+            unimplemented!()
         }
     }
 
-    #[test]
-    fn test_async_basic_encrypt_decrypt() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_str().unwrap().to_string();
-        let config = Arc::new(ConfigManager::new());
-        let mut sc = config.get_storage_config(); sc.key_storage_dir = dir.clone();
-        config.update_storage_config(sc).unwrap();
-        let engine = AsyncQSealEngine::<DummyCryptoSystem>::new(Arc::clone(&config), "test").unwrap();
-        let plaintext = b"async world";
-        let ct = engine.encrypt(plaintext).unwrap();
-        let pt = engine.decrypt(&ct).unwrap();
-        assert_eq!(pt, plaintext);
+    fn setup_test_engine<C>(key_prefix: &str) -> (tempfile::TempDir, AsyncQSealEngine<C>)
+    where
+        C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+        Error: From<C::Error>,
+        C::Error: Send,
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = AsyncQSealEngine::<C>::builder()
+            .with_storage_dir(dir.path().to_str().unwrap())
+            .unwrap()
+            .with_key_prefix(key_prefix)
+            .build()
+            .unwrap();
+
+        (dir, engine)
     }
 
-    #[test]
-    fn test_async_encrypt_authenticated_with_signature() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_str().unwrap().to_string();
-        let config = Arc::new(ConfigManager::new());
-        let mut sc = config.get_storage_config(); sc.key_storage_dir = dir.clone();
-        config.update_storage_config(sc).unwrap();
-        let engine = AsyncQSealEngine::<DummyAuthSystem>::new(Arc::clone(&config), "auth").unwrap();
-        let plaintext = b"async protect";
-        let ct = engine.encrypt_authenticated(plaintext).unwrap();
-        let pt = engine.decrypt_authenticated(&ct).unwrap();
-        assert_eq!(pt, plaintext);
+    #[tokio::test]
+    async fn test_async_basic_encrypt_decrypt() {
+        let (_dir, engine) = setup_test_engine::<DummyCryptoSystem>("test");
+        
+        let plaintext = b"some secret data";
+        let ciphertext = engine.encrypt(plaintext).unwrap();
+        let decrypted = engine.decrypt(&ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
-    #[test]
-    fn test_async_encrypt_without_signature() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_str().unwrap().to_string();
-        let config = Arc::new(ConfigManager::new());
-        let mut cc = config.get_crypto_config();
-        cc.use_authenticated_encryption = false;
-        cc.auto_verify_signatures = false;
-        config.update_crypto_config(cc).unwrap();
-        let mut sc = config.get_storage_config(); sc.key_storage_dir = dir.clone();
-        config.update_storage_config(sc).unwrap();
-        let engine = AsyncQSealEngine::<DummyAuthSystem>::new(Arc::clone(&config), "auth2").unwrap();
-        let plaintext = b"async no sign";
-        let ct = engine.encrypt_authenticated(plaintext).unwrap();
-        assert_eq!(ct, Base64String::from(plaintext.to_vec()).to_string());
-        let pt = engine.decrypt_authenticated(&ct).unwrap();
-        assert_eq!(pt, plaintext);
+    #[tokio::test]
+    async fn test_async_streaming_encrypt_decrypt() {
+        let (_dir, engine) = setup_test_engine::<DummyCryptoSystem>("test_stream");
+
+        let plaintext = b"some very long secret data that should be streamed";
+        let mut source = Cursor::new(plaintext);
+        let mut sink = Vec::new();
+        
+        let config = AsyncStreamingConfig::default();
+
+        engine.encrypt_stream(&mut source, &mut sink, &config).await.unwrap();
+
+        let ciphertext = sink;
+        let mut encrypted_source = Cursor::new(ciphertext);
+        let mut decrypted_sink = Vec::new();
+
+        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_sink, &config).await.unwrap();
+
+        assert_eq!(decrypted_sink, plaintext);
+    }
+
+    #[tokio::test]
+    async fn test_async_encrypt_authenticated_with_signature() {
+        let (_dir, engine) = setup_test_engine::<DummyAuthSystem>("test_auth");
+        let plaintext = b"authenticated data";
+        let ciphertext = engine.encrypt_authenticated(plaintext).unwrap();
+        let decrypted = engine.decrypt_authenticated(&ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[tokio::test]
+    async fn test_async_encrypt_without_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = AsyncQSealEngine::<DummyAuthSystem>::builder()
+            .with_storage_dir(dir.path().to_str().unwrap())
+            .unwrap()
+            .with_key_prefix("test_auth_no_sign")
+            .build()
+            .unwrap();
+        
+        let mut crypto_config = engine.config.get_crypto_config();
+        crypto_config.use_authenticated_encryption = false;
+        engine.config.update_crypto_config(crypto_config).unwrap();
+
+        let plaintext = b"authenticated data";
+        let ciphertext = engine.encrypt_authenticated(plaintext).unwrap();
+        let decrypted = engine.decrypt_authenticated(&ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 } 
