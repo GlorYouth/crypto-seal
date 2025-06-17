@@ -1,11 +1,15 @@
 use std::sync::Arc;
 use tempfile::tempdir;
-use crypto_seal::{TraditionalRsa, PostQuantumKyber};
+#[cfg(feature = "traditional")]
+use crypto_seal::TraditionalRsa;
+#[cfg(feature = "post-quantum")]
+use crypto_seal::PostQuantumKyber;
 use crypto_seal::rotation::{KeyRotationManager, RotationPolicy, KeyStorage};
 use crypto_seal::primitives::CryptoConfig;
 use crypto_seal::storage::file::KeyFileStorage;
 use crypto_seal::traits::KeyStatus;
 
+#[cfg(feature = "traditional")]
 #[test]
 fn test_key_rotation_flow_traditional() {
     // 准备临时目录和文件存储
@@ -36,6 +40,7 @@ fn test_key_rotation_flow_traditional() {
     assert!(!storage.key_exists(&format!("rot-{}", meta1.id)));
 }
 
+#[cfg(feature = "post-quantum")]
 #[test]
 fn test_key_rotation_flow_kyber() {
     // 类似流程，但使用后量子 Kyber 系统

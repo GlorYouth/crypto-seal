@@ -5,7 +5,9 @@ use rsa::signature::{RandomizedSigner, Verifier, SignatureEncoding};
 use sha2::Sha256;
 use rsa::rand_core::OsRng as RsaOsRng;
 use serde::{Serialize, Deserialize};
-use crate::traits::{CryptographicSystem, AsyncStreamingSystem};
+use crate::traits::CryptographicSystem;
+#[cfg(feature = "async-engine")]
+use crate::traits::AsyncStreamingSystem;
 use crate::primitives::{Base64String, from_base64, CryptoConfig, ZeroizingVec, StreamingResult};
 use crate::errors::Error;
 #[cfg(feature = "async-engine")]

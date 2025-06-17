@@ -7,7 +7,7 @@ use crate::primitives::{from_base64, to_base64, Base64String, CryptoConfig};
 use crate::errors::Error;
 use crate::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
 use crate::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
-use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem, AsyncStreamingSystem};
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
 use aes_gcm::aead::Aead;
 use aes_gcm::aead::AeadCore;
 #[cfg(feature = "chacha")]
@@ -16,7 +16,11 @@ use chacha20poly1305::{aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit 
 use rsa::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "async-engine")]
+use crate::traits::AsyncStreamingSystem;
+#[cfg(feature = "async-engine")]
 use crate::primitives::async_streaming::AsyncStreamingConfig;
+#[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // --- 密钥结构 ---

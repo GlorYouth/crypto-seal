@@ -19,6 +19,7 @@ pub use traits::CryptographicSystem;
 pub use traits::SecureKeyStorage;
 pub use traits::AuthenticatedCryptoSystem;
 pub use errors::Error;
+#[cfg(all(feature = "traditional", feature = "post-quantum"))]
 pub use systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 pub use rotation::KeyRotationManager;
 pub use config::ConfigManager;

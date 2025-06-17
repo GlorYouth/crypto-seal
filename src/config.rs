@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
+
+#[cfg(feature = "async")]
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event as NotifyEvent};
+#[cfg(feature = "async")]
 use tokio::sync::mpsc;
 
 use serde::{Serialize, Deserialize};
@@ -165,6 +168,7 @@ impl ConfigManager {
         });
     }
 
+    #[cfg(feature = "async")]
     async fn watch_config_file(self: Arc<Self>) -> notify::Result<()> {
         let path = self.config_path.as_ref().unwrap().clone();
         let (tx, mut rx) = mpsc::channel(1);
@@ -192,6 +196,7 @@ impl ConfigManager {
         Ok(())
     }
 
+    #[cfg(feature = "async")]
     fn reload_from_file(&self) -> Result<(), Error> {
         let path = self.config_path.as_ref().ok_or_else(|| Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Config path not set")))?;
         let contents = fs::read_to_string(path)?;

@@ -1,7 +1,9 @@
 use std::fs;
-use crypto_seal::{QSealEngine, HybridRsaKyber};
+use crypto_seal::QSealEngine;
+#[cfg(all(feature = "traditional", feature = "post-quantum"))]
+use crypto_seal::HybridRsaKyber;
 
-
+#[cfg(all(feature = "traditional", feature = "post-quantum"))]
 #[test]
 fn integration_sync_engine() {
     // 测试同步 QSealEngine（混合加密）

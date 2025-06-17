@@ -1,7 +1,9 @@
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Serialize, Deserialize};
-use crate::traits::{CryptographicSystem, AsyncStreamingSystem};
+use crate::traits::CryptographicSystem;
+#[cfg(feature = "async-engine")]
+use crate::traits::AsyncStreamingSystem;
 use crate::primitives::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec, StreamingResult};
 use crate::errors::Error;
 use aes_gcm::{
