@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::Arc;
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
 
 use serde::{Serialize, Deserialize};
@@ -72,37 +73,42 @@ pub enum ConfigEvent {
 }
 
 /// 配置监听器
-pub type ConfigListener = Box<dyn Fn(&ConfigManager, ConfigEvent) + Send + Sync>;
+pub type ConfigListener = Arc<dyn Fn(&ConfigManager, ConfigEvent) + Send + Sync + 'static>;
 
-/// 全局配置管理器
+/// Internal snapshot of all dynamic configuration
+#[derive(Clone)]
+struct ConfigState {
+    crypto: CryptoConfig,
+    rotation: RotationPolicy,
+    storage: StorageConfig,
+    custom: std::collections::HashMap<String, String>,
+}
+
+/// 全局配置管理器（无锁化）
 pub struct ConfigManager {
-    /// 加密配置
-    crypto_config: RwLock<CryptoConfig>,
-    /// 密钥轮换配置
-    rotation_config: RwLock<RotationPolicy>,
-    /// 存储配置
-    storage_config: RwLock<StorageConfig>,
+    /// 原子快照存储所有动态配置
+    state: ArcSwap<ConfigState>,
     /// 配置源
     config_source: ConfigSource,
     /// 配置文件路径
     config_path: Option<PathBuf>,
-    /// 监听器列表
-    listeners: Mutex<Vec<ConfigListener>>,
-    /// 自定义配置
-    custom_configs: RwLock<HashMap<String, String>>,
+    /// 监听器列表（无锁并发）
+    listeners: ArcSwap<Vec<ConfigListener>>,
 }
 
 impl ConfigManager {
     /// 创建默认配置管理器
     pub fn new() -> Self {
         Self {
-            crypto_config: RwLock::new(CryptoConfig::default()),
-            rotation_config: RwLock::new(RotationPolicy::default()),
-            storage_config: RwLock::new(StorageConfig::default()),
+            state: ArcSwap::new(Arc::new(ConfigState {
+                crypto: CryptoConfig::default(),
+                rotation: RotationPolicy::default(),
+                storage: StorageConfig::default(),
+                custom: HashMap::new(),
+            })),
             config_source: ConfigSource::Default,
             config_path: None,
-            listeners: Mutex::new(Vec::new()),
-            custom_configs: RwLock::new(HashMap::new()),
+            listeners: ArcSwap::new(Arc::new(Vec::new())),
         }
     }
     
@@ -117,17 +123,15 @@ impl ConfigManager {
             
         // 转换为ConfigManager
         let mut manager = Self::new();
+        // 更新初始快照
         {
-            let mut crypto = manager.crypto_config.write().unwrap();
-            *crypto = config.crypto;
-        }
-        {
-            let mut rotation = manager.rotation_config.write().unwrap();
-            *rotation = config.rotation;
-        }
-        {
-            let mut storage = manager.storage_config.write().unwrap();
-            *storage = config.storage;
+            // 获取当前快照并克隆状态
+            let arc = manager.state.load_full();
+            let mut new_state = (*arc).clone();
+            new_state.crypto = config.crypto;
+            new_state.rotation = config.rotation;
+            new_state.storage = config.storage;
+            manager.state.store(Arc::new(new_state));
         }
         
         manager.config_source = ConfigSource::File;
@@ -138,128 +142,71 @@ impl ConfigManager {
     
     /// 从环境变量加载配置
     pub fn from_env() -> Self {
-        let mut config = Self::new();
-        config.config_source = ConfigSource::Environment;
-        
-        // 加密配置环境变量
-        if let Ok(value) = std::env::var("Q_SEAL_USE_PQ") {
-            let mut crypto = config.crypto_config.write().unwrap();
-            crypto.use_post_quantum = value.to_lowercase() == "true";
+        let mut manager = Self::new();
+        manager.config_source = ConfigSource::Environment;
+        // 从默认快照复制并应用环境变量覆盖
+        let arc0 = manager.state.load_full();
+        let mut new_state = (*arc0).clone();
+        if let Ok(v) = std::env::var("Q_SEAL_USE_PQ") {
+            new_state.crypto.use_post_quantum = v.to_lowercase() == "true";
         }
-        
-        if let Ok(value) = std::env::var("Q_SEAL_USE_TRADITIONAL") {
-            let mut crypto = config.crypto_config.write().unwrap();
-            crypto.use_traditional = value.to_lowercase() == "true";
+        if let Ok(v) = std::env::var("Q_SEAL_USE_TRADITIONAL") {
+            new_state.crypto.use_traditional = v.to_lowercase() == "true";
         }
-        
-        if let Ok(value) = std::env::var("Q_SEAL_RSA_BITS") {
-            if let Ok(bits) = value.parse::<usize>() {
-                let mut crypto = config.crypto_config.write().unwrap();
-                crypto.rsa_key_bits = bits;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_RSA_BITS") {
+            if let Ok(bits) = v.parse() { new_state.crypto.rsa_key_bits = bits; }
         }
-        
-        // 后量子参数环境变量
-        if let Ok(value) = std::env::var("Q_SEAL_KYBER_PARAMETER_K") {
-            if let Ok(k) = value.parse::<usize>() {
-                let mut crypto = config.crypto_config.write().unwrap();
-                crypto.kyber_parameter_k = k;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_KYBER_PARAMETER_K") {
+            if let Ok(k) = v.parse() { new_state.crypto.kyber_parameter_k = k; }
         }
-        
-        // 认证加密配置
-        if let Ok(value) = std::env::var("Q_SEAL_USE_AUTHENTICATED_ENCRYPTION") {
-            let mut crypto = config.crypto_config.write().unwrap();
-            crypto.use_authenticated_encryption = value.to_lowercase() == "true";
+        if let Ok(v) = std::env::var("Q_SEAL_USE_AUTHENTICATED_ENCRYPTION") {
+            new_state.crypto.use_authenticated_encryption = v.to_lowercase() == "true";
         }
-        
-        // 自动验证签名
-        if let Ok(value) = std::env::var("Q_SEAL_AUTO_VERIFY_SIGNATURES") {
-            let mut crypto = config.crypto_config.write().unwrap();
-            crypto.auto_verify_signatures = value.to_lowercase() == "true";
+        if let Ok(v) = std::env::var("Q_SEAL_AUTO_VERIFY_SIGNATURES") {
+            new_state.crypto.auto_verify_signatures = v.to_lowercase() == "true";
         }
-        
-        // 轮换配置环境变量
-        if let Ok(value) = std::env::var("Q_SEAL_KEY_VALIDITY_DAYS") {
-            if let Ok(days) = value.parse::<u32>() {
-                let mut rotation = config.rotation_config.write().unwrap();
-                rotation.validity_period_days = days;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_KEY_VALIDITY_DAYS") {
+            if let Ok(d) = v.parse() { new_state.rotation.validity_period_days = d; }
         }
-        
-        if let Ok(value) = std::env::var("Q_SEAL_MAX_KEY_USES") {
-            if let Ok(uses) = value.parse::<u64>() {
-                let mut rotation = config.rotation_config.write().unwrap();
-                rotation.max_usage_count = Some(uses);
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_MAX_KEY_USES") {
+            if let Ok(u) = v.parse() { new_state.rotation.max_usage_count = Some(u); }
         }
-        
-        // 提前轮换天数
-        if let Ok(value) = std::env::var("Q_SEAL_ROTATION_START_DAYS") {
-            if let Ok(days) = value.parse::<u32>() {
-                let mut rotation = config.rotation_config.write().unwrap();
-                rotation.rotation_start_days = days;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_ROTATION_START_DAYS") {
+            if let Ok(d) = v.parse() { new_state.rotation.rotation_start_days = d; }
         }
-        
-        // 存储配置环境变量
-        if let Ok(value) = std::env::var("Q_SEAL_KEY_STORAGE_DIR") {
-            let mut storage = config.storage_config.write().unwrap();
-            storage.key_storage_dir = value;
+        if let Ok(v) = std::env::var("Q_SEAL_KEY_STORAGE_DIR") {
+            new_state.storage.key_storage_dir = v;
         }
-        
-        if let Ok(value) = std::env::var("Q_SEAL_USE_METADATA_CACHE") {
-            let mut storage = config.storage_config.write().unwrap();
-            storage.use_metadata_cache = value.to_lowercase() == "true";
+        if let Ok(v) = std::env::var("Q_SEAL_USE_METADATA_CACHE") {
+            new_state.storage.use_metadata_cache = v.to_lowercase() == "true";
         }
-        
-        if let Ok(value) = std::env::var("Q_SEAL_SECURE_DELETE") {
-            let mut storage = config.storage_config.write().unwrap();
-            storage.secure_delete = value.to_lowercase() == "true";
+        if let Ok(v) = std::env::var("Q_SEAL_SECURE_DELETE") {
+            new_state.storage.secure_delete = v.to_lowercase() == "true";
         }
-        
-        if let Ok(value) = std::env::var("Q_SEAL_FILE_PERMISSIONS") {
-            if let Ok(mode) = value.parse::<u32>() {
-                let mut storage = config.storage_config.write().unwrap();
-                storage.file_permissions = mode;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_FILE_PERMISSIONS") {
+            if let Ok(m) = v.parse() { new_state.storage.file_permissions = m; }
         }
-        
-        // 新增环境变量：默认签名算法
-        if let Ok(value) = std::env::var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM") {
-            let mut crypto = config.crypto_config.write().unwrap();
-            crypto.default_signature_algorithm = value;
+        if let Ok(v) = std::env::var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM") {
+            new_state.crypto.default_signature_algorithm = v;
         }
-        
-        // 新增环境变量：Argon2 内存成本
-        if let Ok(value) = std::env::var("Q_SEAL_ARGON2_MEMORY_COST") {
-            if let Ok(mem) = value.parse::<u32>() {
-                let mut crypto = config.crypto_config.write().unwrap();
-                crypto.argon2_memory_cost = mem;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_ARGON2_MEMORY_COST") {
+            if let Ok(m) = v.parse() { new_state.crypto.argon2_memory_cost = m; }
         }
-        
-        // 新增环境变量：Argon2 时间成本
-        if let Ok(value) = std::env::var("Q_SEAL_ARGON2_TIME_COST") {
-            if let Ok(tc) = value.parse::<u32>() {
-                let mut crypto = config.crypto_config.write().unwrap();
-                crypto.argon2_time_cost = tc;
-            }
+        if let Ok(v) = std::env::var("Q_SEAL_ARGON2_TIME_COST") {
+            if let Ok(t) = v.parse() { new_state.crypto.argon2_time_cost = t; }
         }
-        
-        config
+        manager.state.store(Arc::new(new_state));
+        manager
     }
     
     /// 保存配置到文件
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        let crypto = self.crypto_config.read().unwrap();
-        let rotation = self.rotation_config.read().unwrap();
-        let storage = self.storage_config.read().unwrap();
+        let state = self.state.load_full();
         
         let config = ConfigFile {
-            crypto: crypto.clone(),
-            rotation: rotation.clone(),
-            storage: storage.clone(),
+            crypto: state.crypto.clone(),
+            rotation: state.rotation.clone(),
+            storage: state.storage.clone(),
         };
         
         let json = serde_json::to_string_pretty(&config)
@@ -276,13 +223,17 @@ impl ConfigManager {
     where
         F: Fn(&ConfigManager, ConfigEvent) + Send + Sync + 'static,
     {
-        let mut listeners = self.listeners.lock().unwrap();
-        listeners.push(Box::new(listener));
+        // 原子替换监听器列表
+        let arc = self.listeners.load_full();
+        let mut vec = (*arc).clone();
+        let arc_listener: ConfigListener = Arc::new(listener);
+        vec.push(arc_listener);
+        self.listeners.store(Arc::new(vec));
     }
     
     /// 通知所有监听器配置已更新
     fn notify_listeners(&self, event: ConfigEvent) {
-        let listeners = self.listeners.lock().unwrap();
+        let listeners = self.listeners.load_full();
         for listener in listeners.iter() {
             listener(self, event.clone());
         }
@@ -290,25 +241,26 @@ impl ConfigManager {
     
     /// 获取加密配置
     pub fn get_crypto_config(&self) -> CryptoConfig {
-        self.crypto_config.read().unwrap().clone()
+        self.state.load_full().crypto.clone()
     }
     
     /// 获取轮换配置
     pub fn get_rotation_policy(&self) -> RotationPolicy {
-        self.rotation_config.read().unwrap().clone()
+        self.state.load_full().rotation.clone()
     }
     
     /// 获取存储配置
     pub fn get_storage_config(&self) -> StorageConfig {
-        self.storage_config.read().unwrap().clone()
+        self.state.load_full().storage.clone()
     }
     
     /// 更新加密配置
     pub fn update_crypto_config(&self, config: CryptoConfig) -> Result<(), Error> {
-        {
-            let mut crypto = self.crypto_config.write().unwrap();
-            *crypto = config;
-        }
+        // 原子更新快照
+        let arc = self.state.load_full();
+        let mut new_state = (*arc).clone();
+        new_state.crypto = config.clone();
+        self.state.store(Arc::new(new_state));
         
         self.notify_listeners(ConfigEvent::CryptoConfigChanged);
         
@@ -324,10 +276,10 @@ impl ConfigManager {
     
     /// 更新轮换配置
     pub fn update_rotation_policy(&self, policy: RotationPolicy) -> Result<(), Error> {
-        {
-            let mut rotation = self.rotation_config.write().unwrap();
-            *rotation = policy;
-        }
+        let arc = self.state.load_full();
+        let mut new_state = (*arc).clone();
+        new_state.rotation = policy.clone();
+        self.state.store(Arc::new(new_state));
         
         self.notify_listeners(ConfigEvent::RotationConfigChanged);
         
@@ -343,10 +295,10 @@ impl ConfigManager {
     
     /// 更新存储配置
     pub fn update_storage_config(&self, config: StorageConfig) -> Result<(), Error> {
-        {
-            let mut storage = self.storage_config.write().unwrap();
-            *storage = config;
-        }
+        let arc = self.state.load_full();
+        let mut new_state = (*arc).clone();
+        new_state.storage = config.clone();
+        self.state.store(Arc::new(new_state));
         
         self.notify_listeners(ConfigEvent::StorageConfigChanged);
         
@@ -362,8 +314,10 @@ impl ConfigManager {
     
     /// 设置自定义配置项
     pub fn set_custom_config(&self, key: &str, value: &str) -> Result<(), Error> {
-        let mut configs = self.custom_configs.write().unwrap();
-        configs.insert(key.to_string(), value.to_string());
+        let arc = self.state.load_full();
+        let mut new_state = (*arc).clone();
+        new_state.custom.insert(key.to_string(), value.to_string());
+        self.state.store(Arc::new(new_state));
         
         // 如果配置来源是文件，则自动保存
         if self.config_source == ConfigSource::File {
@@ -377,8 +331,8 @@ impl ConfigManager {
     
     /// 获取自定义配置项
     pub fn get_custom_config(&self, key: &str) -> Option<String> {
-        let configs = self.custom_configs.read().unwrap();
-        configs.get(key).cloned()
+        let state = self.state.load_full();
+        state.custom.get(key).cloned()
     }
 }
 
@@ -417,13 +371,11 @@ mod tests {
         
         // 创建自定义配置
         let config = ConfigManager::new();
-        
-        // 修改默认值
-        {
-            let mut crypto = config.crypto_config.write().unwrap();
-            crypto.use_post_quantum = false;
-            crypto.rsa_key_bits = 4096;
-        }
+        // 修改默认值并更新
+        let mut crypto_cfg = config.get_crypto_config();
+        crypto_cfg.use_post_quantum = false;
+        crypto_cfg.rsa_key_bits = 4096;
+        config.update_crypto_config(crypto_cfg).unwrap();
         
         // 保存到文件
         config.save_to_file(&config_path).unwrap();
@@ -480,19 +432,17 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let path = temp_dir.path().join("cfg.json");
         let manager = ConfigManager::new();
-        {
-            let mut crypto = manager.crypto_config.write().unwrap();
-            crypto.use_post_quantum = false;
-            crypto.rsa_key_bits = 4321;
-        }
-        {
-            let mut rotation = manager.rotation_config.write().unwrap();
-            rotation.validity_period_days = 15;
-        }
-        {
-            let mut storage = manager.storage_config.write().unwrap();
-            storage.key_storage_dir = "path_cfg".to_string();
-        }
+        // 更新各部分配置
+        let mut crypto_cfg = manager.get_crypto_config();
+        crypto_cfg.use_post_quantum = false;
+        crypto_cfg.rsa_key_bits = 4321;
+        manager.update_crypto_config(crypto_cfg).unwrap();
+        let mut rotation = manager.get_rotation_policy();
+        rotation.validity_period_days = 15;
+        manager.update_rotation_policy(rotation).unwrap();
+        let mut storage = manager.get_storage_config();
+        storage.key_storage_dir = "path_cfg".to_string();
+        manager.update_storage_config(storage).unwrap();
         manager.save_to_file(&path).unwrap();
         let loaded = ConfigManager::from_file(&path).unwrap();
         // 验证各部分配置
@@ -506,27 +456,46 @@ mod tests {
     #[test]
     fn test_config_from_env_overrides() {
         unsafe { std::env::set_var("Q_SEAL_USE_PQ", "false"); }
+        unsafe { std::env::set_var("Q_SEAL_USE_TRADITIONAL", "false"); }
         unsafe { std::env::set_var("Q_SEAL_RSA_BITS", "1234"); }
         unsafe { std::env::set_var("Q_SEAL_KEY_STORAGE_DIR", "env_keys"); }
         unsafe { std::env::set_var("Q_SEAL_FILE_PERMISSIONS", "420"); }
         unsafe { std::env::set_var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM", "EnvAlgo"); }
         unsafe { std::env::set_var("Q_SEAL_ARGON2_MEMORY_COST", "9999"); }
+        unsafe { std::env::set_var("Q_SEAL_USE_METADATA_CACHE", "false"); }
+        unsafe { std::env::set_var("Q_SEAL_SECURE_DELETE", "false"); }
+        unsafe { std::env::set_var("Q_SEAL_KEY_VALIDITY_DAYS", "7"); }
+        unsafe { std::env::set_var("Q_SEAL_MAX_KEY_USES", "5000"); }
+        unsafe { std::env::set_var("Q_SEAL_ROTATION_START_DAYS", "3"); }
         let mgr = ConfigManager::from_env();
         let crypto = mgr.get_crypto_config();
         assert!(!crypto.use_post_quantum);
+        assert!(!crypto.use_traditional);
         assert_eq!(crypto.rsa_key_bits, 1234);
         assert_eq!(crypto.default_signature_algorithm, "EnvAlgo");
         assert_eq!(crypto.argon2_memory_cost, 9999);
+        let rotation = mgr.get_rotation_policy();
+        assert_eq!(rotation.validity_period_days, 7);
+        assert_eq!(rotation.max_usage_count, Some(5000));
+        assert_eq!(rotation.rotation_start_days, 3);
         let storage = mgr.get_storage_config();
         assert_eq!(storage.key_storage_dir, "env_keys");
         assert_eq!(storage.file_permissions, 420);
+        assert_eq!(storage.use_metadata_cache, false);
+        assert_eq!(storage.secure_delete, false);
         // cleanup 环境变量
         unsafe { std::env::remove_var("Q_SEAL_USE_PQ"); }
+        unsafe { std::env::remove_var("Q_SEAL_USE_TRADITIONAL"); }
         unsafe { std::env::remove_var("Q_SEAL_RSA_BITS"); }
         unsafe { std::env::remove_var("Q_SEAL_KEY_STORAGE_DIR"); }
         unsafe { std::env::remove_var("Q_SEAL_FILE_PERMISSIONS"); }
         unsafe { std::env::remove_var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM"); }
         unsafe { std::env::remove_var("Q_SEAL_ARGON2_MEMORY_COST"); }
+        unsafe { std::env::remove_var("Q_SEAL_USE_METADATA_CACHE"); }
+        unsafe { std::env::remove_var("Q_SEAL_SECURE_DELETE"); }
+        unsafe { std::env::remove_var("Q_SEAL_KEY_VALIDITY_DAYS"); }
+        unsafe { std::env::remove_var("Q_SEAL_MAX_KEY_USES"); }
+        unsafe { std::env::remove_var("Q_SEAL_ROTATION_START_DAYS"); }
     }
 
     #[test]

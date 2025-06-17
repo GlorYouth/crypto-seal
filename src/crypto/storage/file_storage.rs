@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use dashmap::DashMap;
 
 use crate::crypto::traits::KeyMetadata;
 use crate::crypto::key_rotation::KeyStorage;
@@ -20,7 +20,7 @@ pub struct KeyFileStorage {
     /// 密钥存储目录
     storage_dir: PathBuf,
     /// 元数据缓存
-    metadata_cache: RwLock<std::collections::HashMap<String, KeyMetadata>>,
+    metadata_cache: DashMap<String, KeyMetadata>,
 }
 
 impl KeyFileStorage {
@@ -41,7 +41,7 @@ impl KeyFileStorage {
         
         Ok(Self { 
             storage_dir: path,
-            metadata_cache: RwLock::new(std::collections::HashMap::new()),
+            metadata_cache: DashMap::new(),
         })
     }
     
@@ -179,8 +179,6 @@ impl KeyFileStorage {
                 format!("读取存储目录失败 {}: {}", self.storage_dir.display(), e)
             )))?;
         
-        let mut cache = self.metadata_cache.write().unwrap();
-        
         for entry in entries {
             let entry = entry.map_err(|e| Error::Io(io::Error::new(
                 e.kind(),
@@ -217,7 +215,7 @@ impl KeyFileStorage {
             let metadata: KeyMetadata = serde_json::from_str(&contents)
                 .map_err(|e| Error::Serialization(format!("解析元数据失败: {}", e)))?;
                 
-            cache.insert(key_name.to_string(), metadata);
+            self.metadata_cache.insert(key_name.to_string(), metadata);
         }
         
         Ok(())
@@ -266,44 +264,39 @@ impl KeyStorage for KeyFileStorage {
             )))?;
             
         // 更新缓存
-        let mut cache = self.metadata_cache.write().unwrap();
-        cache.insert(name.to_string(), metadata.clone());
+        self.metadata_cache.insert(name.to_string(), metadata.clone());
             
         Ok(())
     }
     
     fn load_key(&self, name: &str) -> Result<(KeyMetadata, Vec<u8>), Error> {
         // 先尝试从缓存获取元数据
-        let metadata = {
-            let cache = self.metadata_cache.read().unwrap();
-            if let Some(meta) = cache.get(name) {
-                meta.clone()
-            } else {
-                // 如果缓存中没有，从文件读取
-                let metadata_path = self.get_metadata_path(name);
-                let mut file = File::open(&metadata_path)
-                    .map_err(|e| Error::Io(io::Error::new(
-                        e.kind(),
-                        format!("无法打开元数据文件 {}: {}", metadata_path.display(), e)
-                    )))?;
-                    
-                let mut contents = String::new();
-                file.read_to_string(&mut contents)
-                    .map_err(|e| Error::Io(io::Error::new(
-                        e.kind(),
-                        format!("读取元数据文件失败 {}: {}", metadata_path.display(), e)
-                    )))?;
-                    
-                // 解析元数据
-                let metadata: KeyMetadata = serde_json::from_str(&contents)
-                    .map_err(|e| Error::Serialization(format!("解析元数据失败: {}", e)))?;
-                    
-                // 更新缓存
-                let mut cache = self.metadata_cache.write().unwrap();
-                cache.insert(name.to_string(), metadata.clone());
+        let metadata = if let Some(entry) = self.metadata_cache.get(name) {
+            entry.clone()
+        } else {
+            // 如果缓存中没有，从文件读取
+            let metadata_path = self.get_metadata_path(name);
+            let mut file = File::open(&metadata_path)
+                .map_err(|e| Error::Io(io::Error::new(
+                    e.kind(),
+                    format!("无法打开元数据文件 {}: {}", metadata_path.display(), e)
+                )))?;
                 
-                metadata
-            }
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)
+                .map_err(|e| Error::Io(io::Error::new(
+                    e.kind(),
+                    format!("读取元数据文件失败 {}: {}", metadata_path.display(), e)
+                )))?;
+                
+            // 解析元数据
+            let metadata: KeyMetadata = serde_json::from_str(&contents)
+                .map_err(|e| Error::Serialization(format!("解析元数据失败: {}", e)))?;
+                
+            // 更新缓存
+            self.metadata_cache.insert(name.to_string(), metadata.clone());
+            
+            metadata
         };
         
         // 读取密钥数据
@@ -326,11 +319,8 @@ impl KeyStorage for KeyFileStorage {
     
     fn key_exists(&self, name: &str) -> bool {
         // 先检查缓存
-        {
-            let cache = self.metadata_cache.read().unwrap();
-            if cache.contains_key(name) {
-                return true;
-            }
+        if self.metadata_cache.contains_key(name) {
+            return true;
         }
         
         // 然后检查文件系统
@@ -392,8 +382,7 @@ impl KeyStorage for KeyFileStorage {
         }
         
         // 从缓存中删除
-        let mut cache = self.metadata_cache.write().unwrap();
-        cache.remove(name);
+        self.metadata_cache.remove(name);
         
         Ok(())
     }
@@ -507,11 +496,8 @@ mod tests {
         storage.preload_metadata().unwrap();
         
         // 检查缓存
-        {
-            let cache = storage.metadata_cache.read().unwrap();
-            assert!(cache.contains_key("test-key"));
-            let cached_metadata = cache.get("test-key").unwrap();
-            assert_eq!(cached_metadata.id, metadata.id);
-        }
+        assert!(storage.metadata_cache.contains_key("test-key"));
+        let cached = storage.metadata_cache.get("test-key").unwrap();
+        assert_eq!(cached.value().id, metadata.id);
     }
 } 

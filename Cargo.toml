@@ -14,7 +14,7 @@ default = ["traditional", "post-quantum"]
 traditional = ["rsa"]
 post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
 secure-storage = ["argon2", "secrecy"]
-async-engine = ["dashmap", "arc-swap"]
+async-engine = []
 chacha = ["chacha20poly1305"]
 parallel = ["rayon"]
 
@@ -45,8 +45,8 @@ tempfile = "3.20.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 
 # 可选依赖
-dashmap = { version = "6.1.0", optional = true }
-arc-swap = { version = "1", optional = true }
+dashmap = "6.1.0"
+arc-swap = "1"
 rayon = { version = "1.10.0", optional = true }
 
 [dev-dependencies]
