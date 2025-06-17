@@ -1,3 +1,4 @@
+#![cfg(feature = "traditional")]
 use crypto_seal::TraditionalRsa;
 use crypto_seal::CryptographicSystem;
 use crypto_seal::primitives::CryptoConfig;

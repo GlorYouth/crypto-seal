@@ -16,7 +16,7 @@ fn integration_sync_engine() {
     let _ = fs::remove_dir_all("keys");
 }
 
-#[cfg(feature = "async-engine")]
+#[cfg(all(feature = "async-engine", feature = "traditional", feature = "post-quantum"))]
 #[test]
 fn integration_async_engine() {
     use crypto_seal::AsyncQSealEngine;

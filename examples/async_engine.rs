@@ -6,7 +6,7 @@ fn main() {
     println!("cargo run --example async_engine --features async-engine");
 }
 
-#[cfg(feature = "async-engine")]
+#[cfg(all(feature = "async-engine", feature = "traditional", feature = "post-quantum"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{sync::Arc, fs};
     use crypto_seal::{ConfigManager, AsyncQSealEngine, HybridRsaKyber};
@@ -26,4 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs::remove_dir_all("./keys");
 
     Ok(())
+}
+
+// Fallback when async-engine is enabled but required crypto features are missing
+#[cfg(all(feature = "async-engine", not(all(feature = "traditional", feature = "post-quantum"))))]
+fn main() {
+    println!("示例需要同时启用 traditional 和 post-quantum 特性:");
+    println!("cargo run --example async_engine --features async-engine,traditional,post-quantum");
 } 

@@ -78,3 +78,34 @@ name = "async_batch"
 path = "benches/async_batch.rs"
 required-features = ["async-engine", "parallel"]
 harness = false
+
+# Examples with feature requirements
+[[example]]
+name = "streaming"
+path = "examples/streaming.rs"
+required-features = ["traditional"]
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+required-features = ["traditional", "post-quantum"]
+
+[[example]]
+name = "cryptosystem_api"
+path = "examples/cryptosystem_api.rs"
+required-features = ["traditional"]
+
+[[example]]
+name = "secure_storage"
+path = "examples/secure_storage.rs"
+required-features = ["secure-storage"]
+
+[[example]]
+name = "sync_engine"
+path = "examples/sync_engine.rs"
+required-features = ["post-quantum"]
+
+[[example]]
+name = "async_engine"
+path = "examples/async_engine.rs"
+required-features = ["async-engine", "traditional", "post-quantum"]

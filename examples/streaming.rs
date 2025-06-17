@@ -1,3 +1,4 @@
+#![cfg(feature = "traditional")]
 use std::io::Cursor;
 use crypto_seal::{QSealEngine, TraditionalRsa, ConfigManager};
 use crypto_seal::primitives::StreamingConfig;

@@ -1,3 +1,4 @@
+#![cfg(all(feature = "traditional", feature = "post-quantum"))]
 use crypto_seal::{QSealEngine, HybridRsaKyber};
 use std::fs;
 

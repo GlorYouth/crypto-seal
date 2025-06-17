@@ -10,6 +10,7 @@ use crate::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, Rs
 use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
 use aes_gcm::aead::Aead;
 use aes_gcm::aead::AeadCore;
+use aes_gcm::{Aes256Gcm, Nonce};
 #[cfg(feature = "chacha")]
 #[allow(unused_imports)]
 use chacha20poly1305::{aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit}, ChaCha20Poly1305, Nonce as ChaNonce, aead::generic_array::GenericArray};

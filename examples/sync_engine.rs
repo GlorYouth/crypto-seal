@@ -1,3 +1,4 @@
+#![cfg(feature = "post-quantum")]
 use std::{fs, sync::Arc};
 use crypto_seal::{QSealEngine, ConfigManager, Error, PostQuantumKyber};
 

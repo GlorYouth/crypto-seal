@@ -468,11 +468,14 @@ mod tests {
     use crate::primitives::{constant_time_eq, Base64String, CryptoConfig, from_base64};
     use crate::traits::CryptographicSystem;
     use std::sync::Mutex;
+    #[cfg(feature = "post-quantum")]
     use crate::systems::post_quantum::KyberCryptoSystem;
     use crate::traits::SyncStreamingSystem;
 
+    #[cfg(feature = "post-quantum")]
     #[test]
     fn test_streaming_encryption_decryption() {
+        use crate::systems::post_quantum::KyberCryptoSystem;
         // 生成测试数据（100KB）
         let data_size = 100 * 1024;
         let mut test_data = Vec::with_capacity(data_size);
@@ -572,9 +575,10 @@ mod tests {
         assert!(res.buffer.is_some());
     }
 
-    #[cfg(feature = "parallel")]
+    #[cfg(all(feature = "parallel", feature = "post-quantum"))]
     #[test]
     fn test_streaming_parallel_matches_sequential() {
+        use crate::systems::post_quantum::KyberCryptoSystem;
         // 验证并行与顺序流式加解密结果一致 (使用Kyber)
         let data = (0u8..100u8).collect::<Vec<u8>>();
         let config = CryptoConfig::default();
