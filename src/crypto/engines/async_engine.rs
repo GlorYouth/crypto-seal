@@ -11,7 +11,6 @@ use crate::crypto::errors::Error;
 use crate::crypto::key_rotation::{KeyMetadata, KeyStorage, RotationPolicy};
 use crate::crypto::storage::KeyFileStorage;
 use crate::crypto::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
-use crate::crypto::common::{Base64String, from_base64};
 
 /// 并发版 QSeal 引擎，支持多线程同时调用
 pub struct AsyncQSealEngine<C: CryptographicSystem + Send + Sync + 'static>

@@ -156,6 +156,7 @@ impl KeyFileStorage {
     }
     
     /// 获取密钥容器文件路径
+    #[cfg(feature = "secure-storage")]
     fn get_container_path(&self, name: &str) -> PathBuf {
         self.storage_dir.join(format!("{}.json", name))
     }

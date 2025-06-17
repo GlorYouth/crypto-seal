@@ -119,15 +119,22 @@ fn main() -> anyhow::Result<()> {
     let (pk, sk) = TraditionalRsa::generate_keypair(&config)?;
 
     // 流式加密
-    let reader = File::open("plain.txt")?;
-    let writer = File::create("cipher.dat")?;
+    let mut reader = File::open("plain.txt")?;
+    let mut writer = File::create("cipher.dat")?;
+    // 获取明文总大小，用于进度
+    let total_size = reader.metadata()?.len();
     let mut sc = StreamingConfig::default();
-    sc.show_progress = true;
+    sc.total_bytes = Some(total_size);
+    sc.keep_in_memory = false;
+    sc.progress_callback = Some(std::sync::Arc::new(move |processed, total| {
+        let total = total.unwrap_or(0);
+        println!("Encrypted {}/{} bytes", processed, total);
+    }));
     TraditionalRsa::encrypt_stream(&pk, reader, writer, &sc, None)?;
 
     // 流式解密
-    let reader2 = File::open("cipher.dat")?;
-    let writer2 = File::create("plain_out.txt")?;
+    let mut reader2 = File::open("cipher.dat")?;
+    let mut writer2 = File::create("plain_out.txt")?;
     TraditionalRsa::decrypt_stream(&sk, reader2, writer2, &sc, None)?;
 
     Ok(())
@@ -198,9 +205,16 @@ assert_eq!(recovered, data);
 - `Q_SEAL_USE_TRADITIONAL`（true/false）
 - `Q_SEAL_USE_PQ`（true/false）
 - `Q_SEAL_RSA_BITS`（整数）
+- `Q_SEAL_KYBER_PARAMETER_K`（整数）
+- `Q_SEAL_USE_AUTHENTICATED_ENCRYPTION`（true/false）
+- `Q_SEAL_AUTO_VERIFY_SIGNATURES`（true/false）
 - `Q_SEAL_KEY_VALIDITY_DAYS`（整数）
 - `Q_SEAL_MAX_KEY_USES`（整数）
-- `Q_SEAL_KEY_STORAGE_DIR`（路径字符串）
+- `Q_SEAL_ROTATION_START_DAYS`（整数）
+- `Q_SEAL_KEY_STORAGE_DIR`（字符串）
+- `Q_SEAL_USE_METADATA_CACHE`（true/false）
+- `Q_SEAL_SECURE_DELETE`（true/false）
+- `Q_SEAL_FILE_PERMISSIONS`（整数）
 
 ---
 

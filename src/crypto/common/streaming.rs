@@ -2,6 +2,16 @@ use std::io::{Read, Write};
 use std::marker::PhantomData;
 use crate::crypto::traits::CryptographicSystem;
 use crate::crypto::errors::Error;
+use std::sync::Arc;
+
+/// 流式处理返回结果
+#[derive(Debug)]
+pub struct StreamingResult {
+    /// 已处理的字节数（原始字节数）
+    pub bytes_processed: u64,
+    /// 如果配置了 keep_in_memory，则包含完整数据，否则为 None
+    pub buffer: Option<Vec<u8>>,
+}
 
 /// 默认缓冲区大小（64KB）
 const DEFAULT_BUFFER_SIZE: usize = 65536;
@@ -16,6 +26,12 @@ pub struct StreamingConfig {
     
     /// 是否在内存中保留完整密文/明文
     pub keep_in_memory: bool,
+    
+    /// 可选的进度回调
+    pub progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
+    
+    /// 可选的总字节数，用于进度计算
+    pub total_bytes: Option<u64>,
 }
 
 impl Default for StreamingConfig {
@@ -24,7 +40,38 @@ impl Default for StreamingConfig {
             buffer_size: DEFAULT_BUFFER_SIZE,
             show_progress: false,
             keep_in_memory: false,
+            progress_callback: None,
+            total_bytes: None,
         }
+    }
+}
+
+/// 为 StreamingConfig 添加 builder 方法：设置总字节数
+impl StreamingConfig {
+    /// 设置总字节大小（用于进度回调）
+    pub fn with_total_bytes(mut self, total: u64) -> Self {
+        self.total_bytes = Some(total);
+        self
+    }
+    /// 设置缓冲区大小
+    pub fn with_buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
+    }
+    /// 设置是否在控制台显示进度
+    pub fn with_show_progress(mut self, show: bool) -> Self {
+        self.show_progress = show;
+        self
+    }
+    /// 设置是否在内存保留完整数据
+    pub fn with_keep_in_memory(mut self, keep: bool) -> Self {
+        self.keep_in_memory = keep;
+        self
+    }
+    /// 设置进度回调
+    pub fn with_progress_callback(mut self, callback: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>) -> Self {
+        self.progress_callback = Some(callback);
+        self
     }
 }
 
@@ -40,7 +87,11 @@ where
     additional_data: Option<Vec<u8>>,
     bytes_processed: u64,
     total_bytes: Option<u64>,
+    /// 是否在控制台输出进度
+    show_progress: bool,
     _phantom: PhantomData<C>,
+    progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
+    buffer: Option<Vec<u8>>,
 }
 
 impl<'a, C: CryptographicSystem, R: Read, W: Write> StreamingEncryptor<'a, C, R, W>
@@ -56,8 +107,11 @@ where
             buffer_size: config.buffer_size,
             additional_data: None,
             bytes_processed: 0,
-            total_bytes: None,
+            total_bytes: config.total_bytes,
+            show_progress: config.show_progress,
             _phantom: PhantomData,
+            progress_callback: config.progress_callback.clone(),
+            buffer: if config.keep_in_memory { Some(Vec::new()) } else { None },
         }
     }
     
@@ -74,7 +128,7 @@ where
     }
     
     /// 执行流式加密操作
-    pub fn process(mut self) -> Result<u64, Error> {
+    pub fn process(mut self) -> Result<StreamingResult, Error> {
         let mut buffer = vec![0u8; self.buffer_size];
         let mut encrypted_size = 0;
         
@@ -107,22 +161,36 @@ where
             // 写入密文数据块
             self.writer.write_all(ciphertext_bytes)
                 .map_err(Error::Io)?;
-                
+            // 如果配置了内存保留，则累积数据
+            if let Some(buf) = self.buffer.as_mut() {
+                buf.extend_from_slice(ciphertext_bytes);
+            }
+            
             // 更新统计
             self.bytes_processed += read_bytes as u64;
             encrypted_size += read_bytes as u64;
             
-            // 可以在这里添加进度显示
-            if let Some(total) = self.total_bytes {
-                let progress = (self.bytes_processed * 100) / total;
-                // 可以基于show_progress配置决定是否输出
+            // 进度回调
+            if let Some(cb) = &self.progress_callback {
+                cb(self.bytes_processed, self.total_bytes);
+            }
+            // 控制台显示进度
+            if self.show_progress {
+                if let Some(total) = self.total_bytes {
+                    println!("Encrypted {}/{} bytes", self.bytes_processed, total);
+                } else {
+                    println!("Encrypted {} bytes", self.bytes_processed);
+                }
             }
         }
         
         // 完成时刷新输出流
         self.writer.flush().map_err(Error::Io)?;
         
-        Ok(encrypted_size)
+        Ok(StreamingResult {
+            bytes_processed: encrypted_size,
+            buffer: self.buffer,
+        })
     }
 }
 
@@ -137,7 +205,11 @@ where
     additional_data: Option<Vec<u8>>,
     bytes_processed: u64,
     total_bytes: Option<u64>,
+    /// 是否在控制台输出进度
+    show_progress: bool,
     _phantom: PhantomData<C>,
+    progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
+    buffer: Option<Vec<u8>>,
 }
 
 impl<'a, C: CryptographicSystem, R: Read, W: Write> StreamingDecryptor<'a, C, R, W>
@@ -145,15 +217,18 @@ where
     Error: From<<C as CryptographicSystem>::Error>
 {
     /// 创建新的流式解密器
-    pub fn new(reader: R, writer: W, private_key: &'a C::PrivateKey, _config: &StreamingConfig) -> Self {
+    pub fn new(reader: R, writer: W, private_key: &'a C::PrivateKey, config: &StreamingConfig) -> Self {
         Self {
             reader,
             writer,
             private_key,
             additional_data: None,
             bytes_processed: 0,
-            total_bytes: None,
+            total_bytes: config.total_bytes,
+            show_progress: config.show_progress,
             _phantom: PhantomData,
+            progress_callback: config.progress_callback.clone(),
+            buffer: if config.keep_in_memory { Some(Vec::new()) } else { None },
         }
     }
     
@@ -170,7 +245,7 @@ where
     }
     
     /// 执行流式解密操作
-    pub fn process(mut self) -> Result<u64, Error> {
+    pub fn process(mut self) -> Result<StreamingResult, Error> {
         let mut decrypted_size = 0;
         let mut length_buffer = [0u8; 4];
         
@@ -204,22 +279,36 @@ where
             // 写入解密数据
             self.writer.write_all(&plaintext)
                 .map_err(Error::Io)?;
-                
+            // 如果配置了内存保留，则累积数据
+            if let Some(buf) = self.buffer.as_mut() {
+                buf.extend_from_slice(&plaintext);
+            }
+            
             // 更新统计
             self.bytes_processed += plaintext.len() as u64;
             decrypted_size += plaintext.len() as u64;
             
-            // 可以在这里添加进度显示
-            if let Some(total) = self.total_bytes {
-                let progress = (self.bytes_processed * 100) / total;
-                // 可以基于show_progress配置决定是否输出
+            // 进度回调
+            if let Some(cb) = &self.progress_callback {
+                cb(self.bytes_processed, self.total_bytes);
+            }
+            // 控制台显示进度
+            if self.show_progress {
+                if let Some(total) = self.total_bytes {
+                    println!("Decrypted {}/{} bytes", self.bytes_processed, total);
+                } else {
+                    println!("Decrypted {} bytes", self.bytes_processed);
+                }
             }
         }
         
         // 完成时刷新输出流
         self.writer.flush().map_err(Error::Io)?;
         
-        Ok(decrypted_size)
+        Ok(StreamingResult {
+            bytes_processed: decrypted_size,
+            buffer: self.buffer,
+        })
     }
 }
 
@@ -243,7 +332,7 @@ where
         writer: W, 
         config: &StreamingConfig,
         additional_data: Option<&[u8]>
-    ) -> Result<u64, Error> {
+    ) -> Result<StreamingResult, Error> {
         let mut encryptor = StreamingEncryptor::<Self, R, W>::new(reader, writer, public_key, config);
         
         if let Some(data) = additional_data {
@@ -268,7 +357,7 @@ where
         writer: W, 
         config: &StreamingConfig,
         additional_data: Option<&[u8]>
-    ) -> Result<u64, Error> {
+    ) -> Result<StreamingResult, Error> {
         let mut decryptor = StreamingDecryptor::<Self, R, W>::new(reader, writer, private_key, config);
         
         if let Some(data) = additional_data {
@@ -289,9 +378,10 @@ where
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use crate::crypto::common::constant_time_eq;
-    use crate::crypto::common;
+    use crate::crypto::common::{constant_time_eq, Base64String, CryptoConfig, from_base64};
     use crate::crypto::post_quantum::KyberCryptoSystem;
+    use crate::crypto::traits::CryptographicSystem;
+    use std::sync::Mutex;
 
     #[test]
     fn test_streaming_encryption_decryption() {
@@ -303,7 +393,7 @@ mod tests {
         }
         
         // 生成密钥对 - 使用Kyber而非RSA-Kyber，因为Kyber支持任意大小的消息
-        let config = common::CryptoConfig::default();
+        let config = CryptoConfig::default();
         let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
         
         // 准备输入输出缓冲区
@@ -313,31 +403,84 @@ mod tests {
             buffer_size: 1024, // 使用一个合理的缓冲区大小
             show_progress: false,
             keep_in_memory: true,
+            progress_callback: None,
+            total_bytes: None,
         };
         
         // 流式加密
-        let _encrypted_size = KyberCryptoSystem::encrypt_stream(
+        let encrypt_result = KyberCryptoSystem::encrypt_stream(
             &public_key,
             input,
             Cursor::new(&mut encrypted),
             &stream_config,
             None
         ).unwrap();
+        let _encrypted_size = encrypt_result.bytes_processed;
         
         // 准备解密
         let mut decrypted = Vec::new();
         
         // 流式解密
-        let decrypted_size = KyberCryptoSystem::decrypt_stream(
+        let decrypt_result = KyberCryptoSystem::decrypt_stream(
             &private_key,
             Cursor::new(&encrypted),
             Cursor::new(&mut decrypted),
             &stream_config,
             None
         ).unwrap();
+        let decrypted_size = decrypt_result.bytes_processed;
         
         // 验证
         assert_eq!(decrypted_size, test_data.len() as u64);
         assert!(constant_time_eq(&decrypted, &test_data));
+    }
+
+    #[test]
+    fn test_streaming_progress_and_buffer() {
+        // 使用DummySystem测试进度回调和内存缓冲
+        #[derive(Clone)]
+        struct DummySystem;
+        impl CryptographicSystem for DummySystem {
+            type PublicKey = ();
+            type PrivateKey = ();
+            type CiphertextOutput = Base64String;
+            type Error = Error;
+            fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
+                Ok(((), ()))
+            }
+            fn encrypt(_pk: &Self::PublicKey, plaintext: &[u8], _aad: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
+                Ok(Base64String::from(plaintext.to_vec()))
+            }
+            fn decrypt(_sk: &Self::PrivateKey, ciphertext: &str, _aad: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
+                from_base64(ciphertext).map_err(Error::from)
+            }
+            fn export_public_key(_pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(String::new()) }
+            fn export_private_key(_sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(String::new()) }
+            fn import_public_key(_data: &str) -> Result<Self::PublicKey, Self::Error> { Ok(()) }
+            fn import_private_key(_data: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(()) }
+        }
+        // 构造测试数据
+        let data = (0u8..12u8).collect::<Vec<u8>>();
+        let total = data.len() as u64;
+        // 收集进度记录
+        let records = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let callback_records = std::sync::Arc::clone(&records);
+        let callback = std::sync::Arc::new(move |processed: u64, total_opt: Option<u64>| {
+            callback_records.lock().unwrap().push((processed, total_opt));
+        });
+        let mut sc = StreamingConfig::default();
+        sc.buffer_size = 5;
+        sc.keep_in_memory = true;
+        sc.progress_callback = Some(callback.clone());
+        sc.total_bytes = Some(total);
+        // 执行流式加密
+        let (pk, _sk) = DummySystem::generate_keypair(&CryptoConfig::default()).unwrap();
+        let res = DummySystem::encrypt_stream(&pk, Cursor::new(data.clone()), Cursor::new(Vec::new()), &sc, None).unwrap();
+        assert_eq!(res.bytes_processed, total);
+        // 验证回调
+        let recs = records.lock().unwrap().clone();
+        assert_eq!(recs, vec![(5, Some(total)), (10, Some(total)), (12, Some(total))]);
+        // 验证缓冲区
+        assert!(res.buffer.is_some());
     }
 } 

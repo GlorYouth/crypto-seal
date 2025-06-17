@@ -159,6 +159,26 @@ impl ConfigManager {
             }
         }
         
+        // 后量子参数环境变量
+        if let Ok(value) = std::env::var("Q_SEAL_KYBER_PARAMETER_K") {
+            if let Ok(k) = value.parse::<usize>() {
+                let mut crypto = config.crypto_config.write().unwrap();
+                crypto.kyber_parameter_k = k;
+            }
+        }
+        
+        // 认证加密配置
+        if let Ok(value) = std::env::var("Q_SEAL_USE_AUTHENTICATED_ENCRYPTION") {
+            let mut crypto = config.crypto_config.write().unwrap();
+            crypto.use_authenticated_encryption = value.to_lowercase() == "true";
+        }
+        
+        // 自动验证签名
+        if let Ok(value) = std::env::var("Q_SEAL_AUTO_VERIFY_SIGNATURES") {
+            let mut crypto = config.crypto_config.write().unwrap();
+            crypto.auto_verify_signatures = value.to_lowercase() == "true";
+        }
+        
         // 轮换配置环境变量
         if let Ok(value) = std::env::var("Q_SEAL_KEY_VALIDITY_DAYS") {
             if let Ok(days) = value.parse::<u32>() {
@@ -174,10 +194,57 @@ impl ConfigManager {
             }
         }
         
+        // 提前轮换天数
+        if let Ok(value) = std::env::var("Q_SEAL_ROTATION_START_DAYS") {
+            if let Ok(days) = value.parse::<u32>() {
+                let mut rotation = config.rotation_config.write().unwrap();
+                rotation.rotation_start_days = days;
+            }
+        }
+        
         // 存储配置环境变量
         if let Ok(value) = std::env::var("Q_SEAL_KEY_STORAGE_DIR") {
             let mut storage = config.storage_config.write().unwrap();
             storage.key_storage_dir = value;
+        }
+        
+        if let Ok(value) = std::env::var("Q_SEAL_USE_METADATA_CACHE") {
+            let mut storage = config.storage_config.write().unwrap();
+            storage.use_metadata_cache = value.to_lowercase() == "true";
+        }
+        
+        if let Ok(value) = std::env::var("Q_SEAL_SECURE_DELETE") {
+            let mut storage = config.storage_config.write().unwrap();
+            storage.secure_delete = value.to_lowercase() == "true";
+        }
+        
+        if let Ok(value) = std::env::var("Q_SEAL_FILE_PERMISSIONS") {
+            if let Ok(mode) = value.parse::<u32>() {
+                let mut storage = config.storage_config.write().unwrap();
+                storage.file_permissions = mode;
+            }
+        }
+        
+        // 新增环境变量：默认签名算法
+        if let Ok(value) = std::env::var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM") {
+            let mut crypto = config.crypto_config.write().unwrap();
+            crypto.default_signature_algorithm = value;
+        }
+        
+        // 新增环境变量：Argon2 内存成本
+        if let Ok(value) = std::env::var("Q_SEAL_ARGON2_MEMORY_COST") {
+            if let Ok(mem) = value.parse::<u32>() {
+                let mut crypto = config.crypto_config.write().unwrap();
+                crypto.argon2_memory_cost = mem;
+            }
+        }
+        
+        // 新增环境变量：Argon2 时间成本
+        if let Ok(value) = std::env::var("Q_SEAL_ARGON2_TIME_COST") {
+            if let Ok(tc) = value.parse::<u32>() {
+                let mut crypto = config.crypto_config.write().unwrap();
+                crypto.argon2_time_cost = tc;
+            }
         }
         
         config
