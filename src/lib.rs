@@ -9,6 +9,7 @@
 pub mod crypto;
 
 pub use crypto::CryptographicSystem;
+#[cfg(feature = "secure-storage")]
 pub use crypto::SecureKeyStorage;
 pub use crypto::AuthenticatedCryptoSystem;
 pub use crypto::Error;
@@ -33,6 +34,7 @@ pub use crypto::systems::post_quantum::kyber::KyberCryptoSystem as PostQuantumKy
 pub use crypto::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRsaKyber;
 
 // 导出密钥存储
+#[cfg(feature = "secure-storage")]
 pub use crypto::storage::encrypted_container::EncryptedKeyContainer;
 
 /// 库版本信息

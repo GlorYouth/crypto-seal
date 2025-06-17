@@ -13,7 +13,7 @@ categories = ["cryptography"]
 default = ["traditional", "post-quantum"]
 traditional = ["rsa"]
 post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
-secure-storage = []
+secure-storage = ["argon2", "secrecy"]
 async-engine = ["dashmap", "arc-swap"]
 
 [dependencies]
@@ -22,7 +22,7 @@ rand = "0.9.1"
 base64 = "0.22.1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
-secrecy = "0.10.3"
+secrecy = { version = "0.10.3", optional = true }
 chrono = "0.4"
 zeroize = { version = "1.8.1", features = ["derive"] }
 
@@ -37,7 +37,7 @@ pqcrypto-traits = { version = "0.3.5", optional = true }
 
 # 安全存储相关
 aes-gcm = "0.10.3"
-argon2 = "0.5.3"
+argon2 = { version = "0.5.3", optional = true }
 tempfile = "3.20.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 

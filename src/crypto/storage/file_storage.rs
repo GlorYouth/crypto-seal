@@ -3,10 +3,15 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
-use crate::crypto::storage::encrypted_container::EncryptedKeyContainer;
-use crate::crypto::traits::{SecureKeyStorage, KeyMetadata};
+use crate::crypto::traits::KeyMetadata;
 use crate::crypto::key_rotation::KeyStorage;
 use crate::crypto::errors::Error;
+
+// 以下仅在启用 secure-storage 特性时可用
+#[cfg(feature = "secure-storage")]
+use crate::crypto::traits::SecureKeyStorage;
+#[cfg(feature = "secure-storage")]
+use crate::crypto::storage::encrypted_container::EncryptedKeyContainer;
 
 /// 密钥文件存储
 /// 
@@ -46,6 +51,7 @@ impl KeyFileStorage {
     /// 
     /// * `name` - 密钥名称
     /// * `container` - 加密的密钥容器
+    #[cfg(feature = "secure-storage")]
     pub fn save_container(&self, name: &str, container: &EncryptedKeyContainer) -> Result<(), Error> {
         let file_path = self.get_container_path(name);
         let json = container.to_json()?;
@@ -70,6 +76,7 @@ impl KeyFileStorage {
     /// # 参数
     /// 
     /// * `name` - 密钥名称
+    #[cfg(feature = "secure-storage")]
     pub fn load_container(&self, name: &str) -> Result<EncryptedKeyContainer, Error> {
         let file_path = self.get_container_path(name);
         
@@ -94,6 +101,7 @@ impl KeyFileStorage {
     /// # 参数
     /// 
     /// * `name` - 密钥名称
+    #[cfg(feature = "secure-storage")]
     pub fn delete_container(&self, name: &str) -> Result<(), Error> {
         let file_path = self.get_container_path(name);
         
@@ -109,6 +117,7 @@ impl KeyFileStorage {
     }
     
     /// 列出所有密钥容器名称
+    #[cfg(feature = "secure-storage")]
     pub fn list_containers(&self) -> Result<Vec<String>, Error> {
         let entries = fs::read_dir(&self.storage_dir)
             .map_err(|e| Error::Io(io::Error::new(
@@ -141,6 +150,7 @@ impl KeyFileStorage {
     /// # 参数
     /// 
     /// * `name` - 密钥名称
+    #[cfg(feature = "secure-storage")]
     pub fn container_exists(&self, name: &str) -> bool {
         self.get_container_path(name).exists()
     }
@@ -384,10 +394,13 @@ impl KeyStorage for KeyFileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 仅在 secure-storage 特性启用时引入 SecretString
+    #[cfg(feature = "secure-storage")]
     use secrecy::SecretString;
     use tempfile::tempdir;
     use crate::crypto::traits::KeyStatus;
 
+    #[cfg(feature = "secure-storage")]
     #[test]
     fn key_file_storage_operations() {
         // 创建临时目录

@@ -1,3 +1,5 @@
+#![cfg(feature = "secure-storage")]
+
 use serde::{Serialize, Deserialize};
 use secrecy::{SecretString, ExposeSecret};
 use chrono::Utc;

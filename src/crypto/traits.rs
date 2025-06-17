@@ -111,6 +111,7 @@ pub trait AuthenticatedCryptoSystem: CryptographicSystem {
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
+#[cfg(feature = "secure-storage")]
 /// 密钥容器特征，提供密钥的安全存储能力
 pub trait SecureKeyStorage {
     /// 错误类型
