@@ -1,12 +1,12 @@
-use std::fs;
-use crypto_seal::QSealEngine;
+use seal_kit::QSealEngine;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-use crypto_seal::HybridRsaKyber;
+use seal_kit::HybridRsaKyber;
 
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
 #[test]
 fn integration_sync_engine() {
     // 测试同步 QSealEngine（混合加密）
+    use std::fs;
     let _ = fs::remove_dir_all("keys");
     let mut engine = QSealEngine::<HybridRsaKyber>::with_defaults("test_keys").unwrap();
     let data = b"Integration test";
@@ -19,10 +19,11 @@ fn integration_sync_engine() {
 #[cfg(all(feature = "async-engine", feature = "traditional", feature = "post-quantum"))]
 #[test]
 fn integration_async_engine() {
-    use crypto_seal::AsyncQSealEngine;
-    use crypto_seal::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use std::fs;
+    use seal_kit::AsyncQSealEngine;
+    use seal_kit::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use std::sync::Arc;
-    use crypto_seal::ConfigManager; 
+    use seal_kit::ConfigManager; 
     // 测试并发 AsyncQSealEngine（混合加密）
     let _ = fs::remove_dir_all("keys");
     let config = Arc::new(ConfigManager::new());

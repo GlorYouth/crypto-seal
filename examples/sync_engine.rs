@@ -1,6 +1,6 @@
 #![cfg(feature = "post-quantum")]
 use std::{fs, sync::Arc};
-use crypto_seal::{QSealEngine, ConfigManager, Error, PostQuantumKyber};
+use seal_kit::{QSealEngine, ConfigManager, Error, PostQuantumKyber};
 
 fn main() -> Result<(), Error> {
     let data = "示例数据: 同步引擎".as_bytes();

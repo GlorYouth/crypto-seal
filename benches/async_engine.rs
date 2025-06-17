@@ -3,9 +3,9 @@ use std::fs;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
 use std::sync::Arc;
-use crypto_seal::AsyncQSealEngine;
-use crypto_seal::ConfigManager;
-use crypto_seal::HybridRsaKyber;
+use seal_kit::AsyncQSealEngine;
+use seal_kit::ConfigManager;
+use seal_kit::HybridRsaKyber;
 
 fn bench_async_engine_encrypt(c: &mut Criterion) {
     let _ = fs::remove_dir_all("keys");

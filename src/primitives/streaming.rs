@@ -468,8 +468,7 @@ mod tests {
     use crate::primitives::{constant_time_eq, Base64String, CryptoConfig, from_base64};
     use crate::traits::CryptographicSystem;
     use std::sync::Mutex;
-    #[cfg(feature = "post-quantum")]
-    use crate::systems::post_quantum::KyberCryptoSystem;
+    
     use crate::traits::SyncStreamingSystem;
 
     #[cfg(feature = "post-quantum")]

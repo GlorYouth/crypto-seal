@@ -1,5 +1,5 @@
 #![cfg(all(feature = "traditional", feature = "post-quantum"))]
-use crypto_seal::{QSealEngine, HybridRsaKyber};
+use seal_kit::{QSealEngine, HybridRsaKyber};
 use std::fs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs::remove_dir_all("keys");
     // 使用默认配置（混合 RSA+Kyber）
     let mut engine = QSealEngine::<HybridRsaKyber>::with_defaults("example_keys")?;
-    let data = b"Hello, Crypto-Seal!";
+    let data = b"Hello, Seal-Kit!";
 
     // 加密
     let cipher = engine.encrypt(data)?;

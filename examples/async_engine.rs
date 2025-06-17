@@ -9,7 +9,7 @@ fn main() {
 #[cfg(all(feature = "async-engine", feature = "traditional", feature = "post-quantum"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{sync::Arc, fs};
-    use crypto_seal::{ConfigManager, AsyncQSealEngine, HybridRsaKyber};
+    use seal_kit::{ConfigManager, AsyncQSealEngine, HybridRsaKyber};
 
     // 初始化配置
     let config = Arc::new(ConfigManager::new());

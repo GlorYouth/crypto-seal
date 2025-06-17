@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use tempfile::tempdir;
 #[cfg(feature = "traditional")]
-use crypto_seal::TraditionalRsa;
+use seal_kit::TraditionalRsa;
 #[cfg(feature = "post-quantum")]
-use crypto_seal::PostQuantumKyber;
-use crypto_seal::rotation::{KeyRotationManager, RotationPolicy, KeyStorage};
-use crypto_seal::primitives::CryptoConfig;
-use crypto_seal::storage::file::KeyFileStorage;
-use crypto_seal::traits::KeyStatus;
+use seal_kit::PostQuantumKyber;
+use seal_kit::rotation::{KeyRotationManager, RotationPolicy, KeyStorage};
+use seal_kit::primitives::CryptoConfig;
+use seal_kit::storage::file::KeyFileStorage;
+use seal_kit::traits::KeyStatus;
 
 #[cfg(feature = "traditional")]
 #[test]

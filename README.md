@@ -1,8 +1,8 @@
-# crypto-seal
+# seal-kit
 
-[![Crates.io](https://img.shields.io/crates/v/crypto-seal.svg)](https://crates.io/crates/crypto-seal)  [![Docs.rs](https://docs.rs/crypto-seal/badge.svg)](https://docs.rs/crypto-seal)  ![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
+[![Crates.io](https://img.shields.io/crates/v/seal-kit.svg)](https://crates.io/crates/seal-kit)  [![Docs.rs](https://docs.rs/seal-kit/badge.svg)](https://docs.rs/seal-kit)  ![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
 
-`crypto-seal` 是一个功能齐全且灵活的 Rust 加密库，提供：
+`seal-kit` 是一个功能齐全且灵活的 Rust 加密库，提供：
 
 - 传统加密（RSA）
 - 后量子加密（Kyber）
@@ -39,10 +39,10 @@
 
 ```toml
 [dependencies]
-crypto-seal = "0.1.0"
+seal-kit = "0.1.0"
 
 # 可选特性：
-# crypto-seal = { version = "0.1.0", features = ["secure-storage", "async-engine"] }
+# seal-kit = { version = "0.1.0", features = ["secure-storage", "async-engine"] }
 ```
 
 ---
@@ -55,7 +55,7 @@ crypto-seal = "0.1.0"
 
 ```rust
 use std::sync::Arc;
-use crypto_seal::{QSealEngine, HybridRsaKyber, ConfigManager};
+use seal_kit::{QSealEngine, HybridRsaKyber, ConfigManager};
 
 fn main() -> anyhow::Result<()> {
     // 方法一：默认配置
@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
 
 ```rust
 use std::sync::Arc;
-use crypto_seal::{AsyncQSealEngine, ConfigManager, PostQuantumKyber};
+use seal_kit::{AsyncQSealEngine, ConfigManager, PostQuantumKyber};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
 ### 底层接口 (`CryptographicSystem`)
 
 ```rust
-use crypto_seal::{CryptographicSystem, CryptoConfig, TraditionalRsa};
+use seal_kit::{CryptographicSystem, CryptoConfig, TraditionalRsa};
 
 fn main() {
     let config = CryptoConfig::default();
@@ -115,8 +115,8 @@ fn main() {
 ```rust
 use std::fs::File;
 use std::sync::Arc;
-use crypto_seal::{QSealEngine, TraditionalRsa, ConfigManager};
-use crypto_seal::primitives::StreamingConfig;
+use seal_kit::{QSealEngine, TraditionalRsa, ConfigManager};
+use seal_kit::primitives::StreamingConfig;
 
 fn main() -> anyhow::Result<()> {
     // 1. 初始化引擎
@@ -153,9 +153,10 @@ fn main() -> anyhow::Result<()> {
 
 ```rust
 use secrecy::SecretString;
-use crypto_seal::EncryptedKeyContainer;
+use seal_kit::EncryptedKeyContainer;
 
 let password = SecretString::new("mypassword".to_string());
+let data = b"secret_key";
 let data = b"secret_key";
 let container = EncryptedKeyContainer::new(&password, data, "my-algo")?;
 let recovered = container.get_key(&password)?;
@@ -243,8 +244,8 @@ cargo bench
 
 ## 文档与支持
 
-- 文档：https://docs.rs/crypto-seal
-- 源码：https://github.com/GlorYouth/crypto-seal
+- 文档：https://docs.rs/seal-kit
+- 源码：https://github.com/GlorYouth/seal-kit
 - 许可证：MPL-2.0
 
 ---

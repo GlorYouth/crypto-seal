@@ -1,7 +1,7 @@
 #![cfg(feature = "traditional")]
-use crypto_seal::TraditionalRsa;
-use crypto_seal::CryptographicSystem;
-use crypto_seal::primitives::CryptoConfig;
+use seal_kit::TraditionalRsa;
+use seal_kit::CryptographicSystem;
+use seal_kit::primitives::CryptoConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 使用底层 CryptographicSystem 特性

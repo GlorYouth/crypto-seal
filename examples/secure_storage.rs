@@ -3,7 +3,7 @@
 #[cfg(feature = "secure-storage")]
 use secrecy::SecretString;
 #[cfg(feature = "secure-storage")]
-use crypto_seal::EncryptedKeyContainer;
+use seal_kit::EncryptedKeyContainer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 如果启用了 secure-storage 特性，则运行示例；否则提示如何运行
