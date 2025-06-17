@@ -85,7 +85,7 @@ where
     /// 加密数据
     ///
     /// 自动处理密钥选择、使用计数更新和必要的密钥轮换。
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<String, Error> {
+    pub fn encrypt(&mut self, data: &[u8]) -> Result<String, Error> {
         let manager = &mut self.key_manager;
         
         // 完成上次轮换并删除过期密钥
@@ -104,7 +104,7 @@ where
         manager.increment_usage_count()?;
         
         // 使用克隆的密钥执行加密
-        let ciphertext = C::encrypt(&public_key, plaintext, None)?;
+        let ciphertext = C::encrypt(&public_key, data, None)?;
         
         Ok(ciphertext.to_string())
     }

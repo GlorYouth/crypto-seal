@@ -6,10 +6,12 @@ use crypto_seal::CryptographicSystem;
 use crypto_seal::ConfigManager;
 use std::sync::Arc;
 use std::io::Cursor;
+use std::fs;
 use crypto_seal::crypto::common::streaming::{StreamingConfig, StreamingCryptoExt};
 use rsa::{RsaPrivateKey, Pkcs1v15Encrypt};
 use rsa::pkcs8::DecodePrivateKey;
 use crypto_seal::crypto::common::from_base64;
+use criterion::SamplingMode;
 
 fn bench_rsa(c: &mut Criterion) {
     let mut config = CryptoConfig::default();
@@ -54,6 +56,9 @@ fn bench_hybrid(c: &mut Criterion) {
 }
 
 fn bench_engine(c: &mut Criterion) {
+    // 在运行前清理旧的密钥，避免因格式变更导致测试失败
+    let _ = fs::remove_dir_all("keys");
+
     let mut engine = QSealEngine::<HybridRsaKyber>::with_defaults("bench_keys").unwrap();
     let data = vec![0u8; 1024];
     c.bench_function("QSealEngine<HybridRsaKyber> encrypt 1KB", |b| {
@@ -63,9 +68,16 @@ fn bench_engine(c: &mut Criterion) {
     c.bench_function("QSealEngine<HybridRsaKyber> decrypt 1KB", |b| {
         b.iter(|| engine.decrypt(black_box(&ciphertext.as_str())).unwrap());
     });
+
+    // 清理密钥
+    let _ = fs::remove_dir_all("keys");
+
 }
 
 fn bench_qseal_rsa(c: &mut Criterion) {
+        // 在运行前清理旧的密钥，避免因格式变更导致测试失败
+        let _ = fs::remove_dir_all("keys");
+
     let config_mgr = Arc::new(ConfigManager::new());
     let mut crypto_cfg = config_mgr.get_crypto_config();
     crypto_cfg.rsa_key_bits = 2048;
@@ -79,9 +91,15 @@ fn bench_qseal_rsa(c: &mut Criterion) {
     c.bench_function("QSealEngine<TraditionalRsa> decrypt 245B", |b| {
         b.iter(|| engine.decrypt(black_box(&ciphertext.as_str())).unwrap());
     });
+
+    // 清理密钥
+    let _ = fs::remove_dir_all("keys");
 }
 
 fn bench_qseal_kyber(c: &mut Criterion) {
+    // 在运行前清理旧的密钥，避免因格式变更导致测试失败
+    let _ = fs::remove_dir_all("keys");
+
     let mut engine = QSealEngine::<PostQuantumKyber>::with_defaults("bench_keys_kyber").unwrap();
     let data = vec![0u8; 1024];
     c.bench_function("QSealEngine<PostQuantumKyber> encrypt 1KB", |b| {
@@ -91,6 +109,9 @@ fn bench_qseal_kyber(c: &mut Criterion) {
     c.bench_function("QSealEngine<PostQuantumKyber> decrypt 1KB", |b| {
         b.iter(|| engine.decrypt(black_box(&ciphertext.as_str())).unwrap());
     });
+
+    // 清理密钥
+    let _ = fs::remove_dir_all("keys");
 }
 
 fn bench_stream_rsa_encrypt(c: &mut Criterion) {
@@ -102,7 +123,10 @@ fn bench_stream_rsa_encrypt(c: &mut Criterion) {
     scfg.buffer_size = 245;
     scfg.keep_in_memory = true;
     scfg.total_bytes = Some(data.len() as u64);
-    c.bench_function("TraditionalRsa encrypt_stream 1MB", |b| {
+    c.benchmark_group("Stream")
+     .sample_size(10)
+     .sampling_mode(SamplingMode::Flat)
+     .bench_function("TraditionalRsa encrypt_stream 1MB", |b| {
         b.iter(|| {
             let mut writer = Vec::new();
             TraditionalRsa::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut writer), &scfg, None).unwrap();
@@ -121,7 +145,10 @@ fn bench_stream_rsa_decrypt(c: &mut Criterion) {
     scfg.total_bytes = Some(data.len() as u64);
     let mut encrypted = Vec::new();
     TraditionalRsa::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut encrypted), &scfg, None).unwrap();
-    c.bench_function("TraditionalRsa decrypt_stream 1MB", |b| {
+    c.benchmark_group("Stream")
+     .sample_size(10)
+     .sampling_mode(SamplingMode::Flat)
+     .bench_function("TraditionalRsa decrypt_stream 1MB", |b| {
         b.iter(|| {
             let mut writer = Vec::new();
             TraditionalRsa::decrypt_stream(&sk, Cursor::new(&encrypted), Cursor::new(&mut writer), &scfg, None).unwrap();
@@ -137,7 +164,10 @@ fn bench_stream_kyber_encrypt(c: &mut Criterion) {
     scfg.buffer_size = 64 * 1024;
     scfg.keep_in_memory = true;
     scfg.total_bytes = Some(data.len() as u64);
-    c.bench_function("PostQuantumKyber encrypt_stream 1MB", |b| {
+    c.benchmark_group("Stream")
+     .sample_size(10)
+     .sampling_mode(SamplingMode::Flat)
+     .bench_function("PostQuantumKyber encrypt_stream 1MB", |b| {
         b.iter(|| {
             let mut writer = Vec::new();
             PostQuantumKyber::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut writer), &scfg, None).unwrap();
@@ -155,7 +185,10 @@ fn bench_stream_kyber_decrypt(c: &mut Criterion) {
     scfg.total_bytes = Some(data.len() as u64);
     let mut encrypted = Vec::new();
     PostQuantumKyber::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut encrypted), &scfg, None).unwrap();
-    c.bench_function("PostQuantumKyber decrypt_stream 1MB", |b| {
+    c.benchmark_group("Stream")
+     .sample_size(10)
+     .sampling_mode(SamplingMode::Flat)
+     .bench_function("PostQuantumKyber decrypt_stream 1MB", |b| {
         b.iter(|| {
             let mut writer = Vec::new();
             PostQuantumKyber::decrypt_stream(&sk, Cursor::new(&encrypted), Cursor::new(&mut writer), &scfg, None).unwrap();
@@ -171,7 +204,10 @@ fn bench_stream_hybrid_encrypt(c: &mut Criterion) {
     scfg.buffer_size = 64 * 1024;
     scfg.keep_in_memory = true;
     scfg.total_bytes = Some(data.len() as u64);
-    c.bench_function("HybridRsaKyber encrypt_stream 1MB", |b| {
+    c.benchmark_group("Stream")
+     .sample_size(10)
+     .sampling_mode(SamplingMode::Flat)
+     .bench_function("HybridRsaKyber encrypt_stream 1MB", |b| {
         b.iter(|| {
             let mut writer = Vec::new();
             HybridRsaKyber::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut writer), &scfg, None).unwrap();
@@ -189,7 +225,10 @@ fn bench_stream_hybrid_decrypt(c: &mut Criterion) {
     scfg.total_bytes = Some(data.len() as u64);
     let mut encrypted = Vec::new();
     HybridRsaKyber::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut encrypted), &scfg, None).unwrap();
-    c.bench_function("HybridRsaKyber decrypt_stream 1MB", |b| {
+    c.benchmark_group("Stream")
+     .sample_size(10)
+     .sampling_mode(SamplingMode::Flat)
+     .bench_function("HybridRsaKyber decrypt_stream 1MB", |b| {
         b.iter(|| {
             let mut writer = Vec::new();
             HybridRsaKyber::decrypt_stream(&sk, Cursor::new(&encrypted), Cursor::new(&mut writer), &scfg, None).unwrap();
