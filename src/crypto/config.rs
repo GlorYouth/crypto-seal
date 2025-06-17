@@ -474,4 +474,92 @@ mod tests {
         assert_eq!(config.get_custom_config("log_level"), Some("debug".to_string()));
         assert_eq!(config.get_custom_config("unknown"), None);
     }
+
+    #[test]
+    fn test_config_from_file_and_save_roundtrip() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("cfg.json");
+        let manager = ConfigManager::new();
+        {
+            let mut crypto = manager.crypto_config.write().unwrap();
+            crypto.use_post_quantum = false;
+            crypto.rsa_key_bits = 4321;
+        }
+        {
+            let mut rotation = manager.rotation_config.write().unwrap();
+            rotation.validity_period_days = 15;
+        }
+        {
+            let mut storage = manager.storage_config.write().unwrap();
+            storage.key_storage_dir = "path_cfg".to_string();
+        }
+        manager.save_to_file(&path).unwrap();
+        let loaded = ConfigManager::from_file(&path).unwrap();
+        // 验证各部分配置
+        let crypto = loaded.get_crypto_config();
+        assert!(!crypto.use_post_quantum);
+        assert_eq!(crypto.rsa_key_bits, 4321);
+        assert_eq!(loaded.get_rotation_policy().validity_period_days, 15);
+        assert_eq!(loaded.get_storage_config().key_storage_dir, "path_cfg");
+    }
+
+    #[test]
+    fn test_config_from_env_overrides() {
+        unsafe { std::env::set_var("Q_SEAL_USE_PQ", "false"); }
+        unsafe { std::env::set_var("Q_SEAL_RSA_BITS", "1234"); }
+        unsafe { std::env::set_var("Q_SEAL_KEY_STORAGE_DIR", "env_keys"); }
+        unsafe { std::env::set_var("Q_SEAL_FILE_PERMISSIONS", "420"); }
+        unsafe { std::env::set_var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM", "EnvAlgo"); }
+        unsafe { std::env::set_var("Q_SEAL_ARGON2_MEMORY_COST", "9999"); }
+        let mgr = ConfigManager::from_env();
+        let crypto = mgr.get_crypto_config();
+        assert!(!crypto.use_post_quantum);
+        assert_eq!(crypto.rsa_key_bits, 1234);
+        assert_eq!(crypto.default_signature_algorithm, "EnvAlgo");
+        assert_eq!(crypto.argon2_memory_cost, 9999);
+        let storage = mgr.get_storage_config();
+        assert_eq!(storage.key_storage_dir, "env_keys");
+        assert_eq!(storage.file_permissions, 420);
+        // cleanup 环境变量
+        unsafe { std::env::remove_var("Q_SEAL_USE_PQ"); }
+        unsafe { std::env::remove_var("Q_SEAL_RSA_BITS"); }
+        unsafe { std::env::remove_var("Q_SEAL_KEY_STORAGE_DIR"); }
+        unsafe { std::env::remove_var("Q_SEAL_FILE_PERMISSIONS"); }
+        unsafe { std::env::remove_var("Q_SEAL_DEFAULT_SIGNATURE_ALGORITHM"); }
+        unsafe { std::env::remove_var("Q_SEAL_ARGON2_MEMORY_COST"); }
+    }
+
+    #[test]
+    fn test_update_auto_save_and_notify_listener() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("cfg.json");
+        // 初始保存以设置文件来源
+        let manager = ConfigManager::new();
+        manager.save_to_file(&path).unwrap();
+        let manager = ConfigManager::from_file(&path).unwrap();
+        let notified = Arc::new(AtomicBool::new(false));
+        {
+            let notified_clone = Arc::clone(&notified);
+            manager.add_listener(move |_, event| {
+                if let ConfigEvent::StorageConfigChanged = event {
+                    notified_clone.store(true, Ordering::SeqCst);
+                }
+            });
+        }
+        // 更新存储配置，应触发通知并自动保存
+        let new_storage = StorageConfig {
+            key_storage_dir: "new_dir".to_string(),
+            use_metadata_cache: false,
+            secure_delete: false,
+            file_permissions: 0o600,
+        };
+        manager.update_storage_config(new_storage.clone()).unwrap();
+        assert!(notified.load(Ordering::SeqCst));
+        let reloaded = ConfigManager::from_file(&path).unwrap();
+        let storage2 = reloaded.get_storage_config();
+        assert_eq!(storage2.key_storage_dir, new_storage.key_storage_dir);
+        assert_eq!(storage2.use_metadata_cache, new_storage.use_metadata_cache);
+        assert_eq!(storage2.secure_delete, new_storage.secure_delete);
+        assert_eq!(storage2.file_permissions, new_storage.file_permissions);
+    }
 } 

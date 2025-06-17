@@ -4,7 +4,6 @@ use arc_swap::ArcSwapOption;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use rsa::rand_core::{OsRng, RngCore};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 

@@ -18,15 +18,18 @@
 ## 主要特性
 
 - **统一接口**：通过 `CryptographicSystem` 特征，兼容多种加密系统。
+- **自动敏感数据零化**：使用 `ZeroizingVec` 自动清除私钥等敏感数据在内存中的残留。
+- **AEAD 算法多样化**：支持 AES-GCM 和 ChaCha20-Poly1305（启用 `chacha` 特性）。
+- **批量并行加密**：异步引擎 `AsyncQSealEngine` 提供 `encrypt_batch` 接口，可在 `parallel` 特性下并行运行。
+- **自动密钥轮换**：基于使用次数或有效期自动更新密钥。
+- **安全存储**：`EncryptedKeyContainer` 与 `KeyFileStorage`，保护磁盘上的密钥。
 - **高级同步 API**：`QSealEngine` 自动管理密钥、轮换、签名与验证。
 - **异步并发 API**：`AsyncQSealEngine` 支持多线程安全调用。
 - **混合加密**：`HybridRsaKyber` 提供双重安全保障。
 - **认证加解密**：可选签名与签名验证，防止篡改。
-- **自动密钥轮换**：基于使用次数或有效期自动更新密钥。
-- **安全存储**：`EncryptedKeyContainer` 与 `KeyFileStorage`，保护磁盘上的密钥。
 - **流式处理**：分块加解密大数据，支持进度报告。
 - **可定制配置**：通过 `ConfigManager` 加载 JSON 文件或环境变量。
-- **特性标志**：`traditional`、`post-quantum`、`secure-storage`、`async-engine`。
+- **特性标志**：`traditional`、`post-quantum`、`secure-storage`、`async-engine`、`chacha`、`parallel`。
 
 ---
 
@@ -162,6 +165,8 @@ assert_eq!(recovered, data);
 - `post-quantum`：启用 Kyber（默认）
 - `secure-storage`：启用 `EncryptedKeyContainer`
 - `async-engine`：启用 `AsyncQSealEngine`
+- `chacha`：启用 ChaCha20-Poly1305 AEAD 支持（替代 AES-GCM）
+- `parallel`：启用异步引擎的 `encrypt_batch` 并行批量加密
 
 ---
 
@@ -215,6 +220,19 @@ assert_eq!(recovered, data);
 - `Q_SEAL_USE_METADATA_CACHE`（true/false）
 - `Q_SEAL_SECURE_DELETE`（true/false）
 - `Q_SEAL_FILE_PERMISSIONS`（整数）
+
+---
+
+## 性能基准测试（Benchmarks）
+本库集成了基于 `criterion` 的性能基准测试，涵盖：
+
+- 传统 RSA、后量子 Kyber、混合加密的单次加解密
+- `QSealEngine` 的单次加解密操作
+
+执行基准测试：
+```
+cargo bench
+```
 
 ---
 

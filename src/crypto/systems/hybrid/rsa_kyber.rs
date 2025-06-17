@@ -94,10 +94,10 @@ impl CryptographicSystem for RsaKyberCryptoSystem {
         let dem_ciphertext = cipher.encrypt(&nonce, plaintext)
             .map_err(|e| Error::Operation(format!("AEAD 加密失败: {}", e)))?;
         
-        // 4. 将 Kyber密文、Nonce 和 AES密文 组合在一起。
-        // 格式: [Kyber密文]::[Nonce]::[AES密文]
+        // 4. 将 KEM 密文的 Base64 ASCII 与 DEM 密文及 Nonce 组合
+        let kem_str = kem_ciphertext.to_string();
         let combined = [
-            kem_ciphertext.as_bytes(),
+            kem_str.as_bytes(),
             b"::",
             nonce.as_slice(),
             b"::",
@@ -131,8 +131,9 @@ impl CryptographicSystem for RsaKyberCryptoSystem {
         let dem_part = &rest[second_pos + delim.len()..];
 
         // 1. KEM: 使用Kyber私钥解封AES密钥。
-        let kem_ciphertext_b64 = to_base64(kem_part);
-        let aes_key_bytes = KyberCryptoSystem::decrypt(&private_key.kyber_private_key, &kem_ciphertext_b64, None)?;
+        let kem_ciphertext_str = String::from_utf8(kem_part.to_vec())
+            .map_err(|e| Error::Format(format!("无效的PQ Base64密文: {}", e)))?;
+        let aes_key_bytes = KyberCryptoSystem::decrypt(&private_key.kyber_private_key, &kem_ciphertext_str, None)?;
 
         // 2. DEM: 使用AES密钥和Nonce解密数据。
         #[cfg(feature = "chacha")]

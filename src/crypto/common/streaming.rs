@@ -3,6 +3,8 @@ use std::marker::PhantomData;
 use crate::crypto::traits::CryptographicSystem;
 use crate::crypto::errors::Error;
 use std::sync::Arc;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// 流式处理返回结果
 #[derive(Debug)]
@@ -374,6 +376,117 @@ where
     Error: From<<T as CryptographicSystem>::Error>
 {}
 
+// 插入并行流式处理函数，启用 `parallel` 特性时可用
+#[cfg(feature = "parallel")]
+/// 并行流式加密：先读取所有数据块并行加密，然后按顺序写出
+pub fn encrypt_stream_parallel<C, R, W>(
+    public_key: &C::PublicKey,
+    mut reader: R,
+    mut writer: W,
+    config: &StreamingConfig,
+    additional_data: Option<&[u8]>,
+) -> Result<StreamingResult, Error>
+where
+    C: CryptographicSystem,
+    C::PublicKey: Sync + Send,
+    <C as CryptographicSystem>::Error: Send + 'static,
+    Error: From<<C as CryptographicSystem>::Error>,
+    R: Read + Send,
+    W: Write + Send,
+{
+    // 读取所有数据块
+    let mut chunks = Vec::new();
+    let mut buf = vec![0u8; config.buffer_size];
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 { break; }
+        chunks.push(buf[..n].to_vec());
+    }
+    // 统计原始明文字节总数
+    let plaintext_total: u64 = chunks.iter().map(|c| c.len() as u64).sum();
+    // 并行执行加密并收集结果
+    let cipher_results: Vec<Result<Vec<u8>, <C as CryptographicSystem>::Error>> =
+        chunks.into_par_iter()
+            .map(|plaintext| {
+                C::encrypt(public_key, &plaintext, additional_data)
+                    .map(|ct| ct.to_string().into_bytes())
+            })
+            .collect();
+    // 序列化处理错误或提取加密块
+    let cipher_chunks: Vec<Vec<u8>> = cipher_results
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Error::from)?;
+    // 顺序写出
+    let mut mem_buf = if config.keep_in_memory { Some(Vec::new()) } else { None };
+    for ciphertext_bytes in cipher_chunks {
+        let len = ciphertext_bytes.len() as u32;
+        writer.write_all(&len.to_le_bytes()).map_err(Error::Io)?;
+        writer.write_all(&ciphertext_bytes).map_err(Error::Io)?;
+        if let Some(buf) = mem_buf.as_mut() {
+            buf.extend_from_slice(&ciphertext_bytes);
+        }
+    }
+    writer.flush().map_err(Error::Io)?;
+    Ok(StreamingResult { bytes_processed: plaintext_total, buffer: mem_buf })
+}
+
+#[cfg(feature = "parallel")]
+/// 并行流式解密：先读取所有密文块并行解密，然后按顺序写出
+pub fn decrypt_stream_parallel<C, R, W>(
+    private_key: &C::PrivateKey,
+    mut reader: R,
+    mut writer: W,
+    config: &StreamingConfig,
+    additional_data: Option<&[u8]>,
+) -> Result<StreamingResult, Error>
+where
+    C: CryptographicSystem,
+    C::PrivateKey: Sync + Send,
+    <C as CryptographicSystem>::Error: Send + 'static,
+    Error: From<<C as CryptographicSystem>::Error>,
+    R: Read + Send,
+    W: Write + Send,
+{
+    // 读取所有密文块
+    let mut chunks = Vec::new();
+    loop {
+        let mut len_buf = [0u8; 4];
+        match reader.read_exact(&mut len_buf) {
+            Ok(_) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(Error::Io(e)),
+        }
+        let size = u32::from_le_bytes(len_buf) as usize;
+        let mut cipher_buf = vec![0u8; size];
+        reader.read_exact(&mut cipher_buf).map_err(Error::Io)?;
+        let ciphertext = String::from_utf8(cipher_buf)
+            .map_err(|e| Error::Format(format!("无效的UTF-8密文: {}", e)))?;
+        chunks.push(ciphertext);
+    }
+    // 并行执行解密并收集结果
+    let plain_results: Vec<Result<Vec<u8>, <C as CryptographicSystem>::Error>> =
+        chunks.into_par_iter()
+            .map(|ciphertext| C::decrypt(private_key, &ciphertext, additional_data))
+            .collect();
+    // 序列化处理错误或提取明文块
+    let plain_chunks: Vec<Vec<u8>> = plain_results
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Error::from)?;
+    // 顺序写出
+    let mut total = 0u64;
+    let mut mem_buf = if config.keep_in_memory { Some(Vec::new()) } else { None };
+    for plaintext in plain_chunks {
+        writer.write_all(&plaintext).map_err(Error::Io)?;
+        if let Some(buf) = mem_buf.as_mut() {
+            buf.extend_from_slice(&plaintext);
+        }
+        total += plaintext.len() as u64;
+    }
+    writer.flush().map_err(Error::Io)?;
+    Ok(StreamingResult { bytes_processed: total, buffer: mem_buf })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,5 +595,92 @@ mod tests {
         assert_eq!(recs, vec![(5, Some(total)), (10, Some(total)), (12, Some(total))]);
         // 验证缓冲区
         assert!(res.buffer.is_some());
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_streaming_parallel_matches_sequential() {
+        // 验证并行与顺序流式加解密结果一致 (使用Kyber)
+        let data = (0u8..100u8).collect::<Vec<u8>>();
+        let config = CryptoConfig::default();
+        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
+        let mut seq_encrypted = Vec::new();
+        let mut par_encrypted = Vec::new();
+        let mut seq_decrypted = Vec::new();
+        let mut par_decrypted = Vec::new();
+        let stream_config = StreamingConfig::default().with_buffer_size(16).with_keep_in_memory(true);
+        // 顺序流式加密并解密
+        KyberCryptoSystem::encrypt_stream(
+            &public_key,
+            Cursor::new(&data),
+            Cursor::new(&mut seq_encrypted),
+            &stream_config,
+            None
+        ).unwrap();
+        KyberCryptoSystem::decrypt_stream(
+            &private_key,
+            Cursor::new(&seq_encrypted),
+            Cursor::new(&mut seq_decrypted),
+            &stream_config,
+            None
+        ).unwrap();
+        // 并行流式加密并解密
+        encrypt_stream_parallel::<KyberCryptoSystem, _, _>(
+            &public_key,
+            Cursor::new(&data),
+            Cursor::new(&mut par_encrypted),
+            &stream_config,
+            None
+        ).unwrap();
+        decrypt_stream_parallel::<KyberCryptoSystem, _, _>(
+            &private_key,
+            Cursor::new(&par_encrypted),
+            Cursor::new(&mut par_decrypted),
+            &stream_config,
+            None
+        ).unwrap();
+        // 比较解密结果
+        assert_eq!(par_decrypted, seq_decrypted);
+        assert!(constant_time_eq(&par_decrypted, &data));
+    }
+
+    #[test]
+    fn test_streaming_without_memory_buffer() {
+        // 使用 DummySystem 测试 keep_in_memory = false 时 buffer = None
+        #[derive(Clone)]
+        struct DummySystem;
+        impl CryptographicSystem for DummySystem {
+            type PublicKey = ();
+            type PrivateKey = ();
+            type CiphertextOutput = Base64String;
+            type Error = Error;
+            fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
+                Ok(((), ()))
+            }
+            fn encrypt(_pk: &Self::PublicKey, plaintext: &[u8], _aad: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
+                Ok(Base64String::from(plaintext.to_vec()))
+            }
+            fn decrypt(_sk: &Self::PrivateKey, ciphertext: &str, _aad: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
+                from_base64(ciphertext).map_err(Error::from)
+            }
+            fn export_public_key(_pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(String::new()) }
+            fn export_private_key(_sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(String::new()) }
+            fn import_public_key(_data: &str) -> Result<Self::PublicKey, Self::Error> { Ok(()) }
+            fn import_private_key(_data: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(()) }
+        }
+        let data = b"hello world".to_vec();
+        let mut encrypted = Vec::new();
+        let mut sc = StreamingConfig::default();
+        sc.buffer_size = 4;
+        sc.keep_in_memory = false;
+        let (pk, _sk) = DummySystem::generate_keypair(&CryptoConfig::default()).unwrap();
+        let enc_res = DummySystem::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut encrypted), &sc, None).unwrap();
+        assert_eq!(enc_res.bytes_processed, data.len() as u64);
+        assert!(enc_res.buffer.is_none());
+        let mut decrypted = Vec::new();
+        let dec_res = DummySystem::decrypt_stream(&_sk, Cursor::new(&encrypted), Cursor::new(&mut decrypted), &sc, None).unwrap();
+        assert_eq!(dec_res.bytes_processed, data.len() as u64);
+        assert!(dec_res.buffer.is_none());
+        assert!(constant_time_eq(&decrypted, &data));
     }
 } 

@@ -227,6 +227,13 @@ impl KeyFileStorage {
 // 实现KeyStorage接口，支持密钥轮换管理
 impl KeyStorage for KeyFileStorage {
     fn save_key(&self, name: &str, metadata: &KeyMetadata, key_data: &[u8]) -> Result<(), Error> {
+        // 确保存储目录存在，以防目录被外部删除
+        fs::create_dir_all(&self.storage_dir)
+            .map_err(|e| Error::Io(io::Error::new(
+                e.kind(),
+                format!("无法创建密钥存储目录 {}: {}", self.storage_dir.display(), e)
+            )))?;
+        
         // 保存元数据
         let metadata_path = self.get_metadata_path(name);
         let metadata_json = serde_json::to_string_pretty(metadata)
