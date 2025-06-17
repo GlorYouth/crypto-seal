@@ -12,12 +12,16 @@ use crate::config::ConfigManager;
 use crate::errors::Error;
 use crate::rotation::{KeyMetadata, KeyStorage, RotationPolicy};
 use crate::storage::KeyFileStorage;
-use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem, AsyncStreamingSystem};
+use crate::primitives::StreamingResult;
+use crate::primitives::async_streaming::AsyncStreamingConfig;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// 并发版 QSeal 引擎，支持多线程同时调用
-pub struct AsyncQSealEngine<C: CryptographicSystem + Send + Sync + 'static>
+pub struct AsyncQSealEngine<C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>
 where
-    Error: From<<C as CryptographicSystem>::Error>
+    Error: From<C::Error>,
+    C::Error: Send,
 {
     config: Arc<ConfigManager>,
     key_storage: Arc<dyn KeyStorage>,
@@ -38,9 +42,9 @@ struct KeyPairData {
 
 impl<C> AsyncQSealEngine<C>
 where
-    C: CryptographicSystem + Send + Sync + 'static,
-    Error: From<<C as CryptographicSystem>::Error>,
-    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    Error: From<C::Error>,
+    C::Error: Send,
 {
     /// 创建并初始化并发版引擎
     pub fn new(config: Arc<ConfigManager>, key_prefix: &str) -> Result<Self, Error> {
@@ -290,6 +294,49 @@ where
             .map(|data| self.encrypt(data.as_ref()))
             .collect()
     }
+
+    /// 异步流式加密
+    pub async fn encrypt_stream_async<R, W>(
+        &self,
+        reader: R,
+        writer: W,
+        config: &AsyncStreamingConfig,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+        C::PublicKey: Send + Sync,
+    {
+        self.complete_rotation()?;
+        if self.needs_rotation() {
+            self.start_rotation(&self.config.get_crypto_config())?;
+        }
+        let arc = self.primary.load_full().ok_or_else(|| Error::Key("没有可用主密钥".to_string()))?;
+        let (pk, _, _) = &*arc;
+        self.increment_usage_count()?;
+
+        C::encrypt_stream_async(pk, reader, writer, config, None).await
+    }
+
+    /// 异步流式解密
+    pub async fn decrypt_stream_async<R, W>(
+        &self,
+        reader: R,
+        writer: W,
+        config: &AsyncStreamingConfig,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+        C::PrivateKey: Send + Sync,
+    {
+        self.complete_rotation()?;
+        // 与同步引擎类似，流式解密默认使用主密钥
+        let arc = self.primary.load_full().ok_or_else(|| Error::Key("没有可用主密钥".to_string()))?;
+        let (_, sk, _) = &*arc;
+        
+        C::decrypt_stream_async(sk, reader, writer, config, None).await
+    }
 }
 
 // 为并发引擎添加单元测试
@@ -327,6 +374,37 @@ mod tests {
         fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
     }
 
+    #[async_trait::async_trait]
+    impl AsyncStreamingSystem for DummyCryptoSystem {
+        async fn encrypt_stream_async<R, W>(
+            _public_key: &Self::PublicKey,
+            _reader: R,
+            _writer: W,
+            _config: &AsyncStreamingConfig,
+            _additional_data: Option<&[u8]>,
+        ) -> Result<StreamingResult, Error>
+        where
+            R: AsyncRead + Unpin + Send,
+            W: AsyncWrite + Unpin + Send,
+        {
+            Err(Error::Operation("Not implemented for dummy".to_string()))
+        }
+
+        async fn decrypt_stream_async<R, W>(
+            _private_key: &Self::PrivateKey,
+            _reader: R,
+            _writer: W,
+            _config: &AsyncStreamingConfig,
+            _additional_data: Option<&[u8]>,
+        ) -> Result<StreamingResult, Error>
+        where
+            R: AsyncRead + Unpin + Send,
+            W: AsyncWrite + Unpin + Send,
+        {
+            Err(Error::Operation("Not implemented for dummy".to_string()))
+        }
+    }
+
     /// 支持认证加解密的测试系统
     #[derive(Clone)]
     struct DummyAuthSystem;
@@ -354,37 +432,71 @@ mod tests {
         type AuthenticatedOutput = Base64String;
 
         fn sign(_private_key: &Self::PrivateKey, data: &[u8]) -> Result<Vec<u8>, Self::Error> {
-            let mut v = data.to_vec(); v.extend_from_slice(b"::SIG"); Ok(v)
+            let mut signed = data.to_vec();
+            signed.extend_from_slice(b"::SIG");
+            Ok(signed)
         }
+
         fn verify(_public_key: &Self::PublicKey, _data: &[u8], _signature: &[u8]) -> Result<bool, Self::Error> { Ok(true) }
+
         fn encrypt_authenticated(
-            public_key: &Self::PublicKey,
+            _public_key: &Self::PublicKey,
             plaintext: &[u8],
-            additional_data: Option<&[u8]>,
+            _additional_data: Option<&[u8]>,
             signer_key: Option<&Self::PrivateKey>
         ) -> Result<Self::AuthenticatedOutput, Self::Error> {
-            let mut v = plaintext.to_vec();
+            let mut output = plaintext.to_vec();
             if signer_key.is_some() {
-                let sig = Self::sign(signer_key.unwrap(), plaintext)?;
-                v = sig;
+                output.extend_from_slice(b"::SIG");
             }
-            Ok(Base64String::from(v))
+            Ok(Base64String::from(output))
         }
+
         fn decrypt_authenticated(
-            private_key: &Self::PrivateKey,
+            _private_key: &Self::PrivateKey,
             ciphertext: &str,
-            additional_data: Option<&[u8]>,
+            _additional_data: Option<&[u8]>,
             verifier_key: Option<&Self::PublicKey>
         ) -> Result<Vec<u8>, Self::Error> {
-            // 先进行 Base64 解码
-            let mut data = from_base64(ciphertext).map_err(|e| Error::Operation(format!("Base64解码失败: {}", e)))?;
+            let mut data = from_base64(ciphertext)?;
             if verifier_key.is_some() && !data.ends_with(b"::SIG") {
-                return Err(Error::Operation("签名验证失败".to_string()));
+                return Err(Error::Operation("Signature verification failed".to_string()));
             }
             if data.ends_with(b"::SIG") {
                 data.truncate(data.len() - 5);
             }
             Ok(data)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AsyncStreamingSystem for DummyAuthSystem {
+        async fn encrypt_stream_async<R, W>(
+            _public_key: &Self::PublicKey,
+            _reader: R,
+            _writer: W,
+            _config: &AsyncStreamingConfig,
+            _additional_data: Option<&[u8]>,
+        ) -> Result<StreamingResult, Error>
+        where
+            R: AsyncRead + Unpin + Send,
+            W: AsyncWrite + Unpin + Send,
+        {
+            Err(Error::Operation("Not implemented for dummy".to_string()))
+        }
+
+        async fn decrypt_stream_async<R, W>(
+            _private_key: &Self::PrivateKey,
+            _reader: R,
+            _writer: W,
+            _config: &AsyncStreamingConfig,
+            _additional_data: Option<&[u8]>,
+        ) -> Result<StreamingResult, Error>
+        where
+            R: AsyncRead + Unpin + Send,
+            W: AsyncWrite + Unpin + Send,
+        {
+            Err(Error::Operation("Not implemented for dummy".to_string()))
         }
     }
 

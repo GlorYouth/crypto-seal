@@ -2,6 +2,11 @@
 pub mod streaming; 
 pub use streaming::*;
 
+#[cfg(feature = "async-engine")]
+pub mod async_streaming;
+#[cfg(feature = "async-engine")]
+pub use async_streaming::{AsyncStreamingConfig, AsyncStreamingEncryptor, AsyncStreamingDecryptor};
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use std::ops::{Deref, DerefMut};
@@ -252,3 +257,4 @@ mod tests {
         assert_eq!(config.default_signature_algorithm, "RSA-PSS-SHA256");
     }
 } 
+

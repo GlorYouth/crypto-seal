@@ -9,7 +9,8 @@ use std::fs;
 use rsa::{RsaPrivateKey, Pkcs1v15Encrypt};
 use rsa::pkcs8::DecodePrivateKey;
 use criterion::SamplingMode;
-use crypto_seal::primitives::{from_base64, CryptoConfig, StreamingConfig, StreamingCryptoExt};
+use crypto_seal::primitives::{from_base64, CryptoConfig, StreamingConfig};
+use crypto_seal::traits::SyncStreamingSystem;
 
 fn bench_rsa(c: &mut Criterion) {
     let mut config = CryptoConfig::default();

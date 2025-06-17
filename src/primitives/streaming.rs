@@ -1,4 +1,3 @@
-
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use crate::traits::CryptographicSystem;
@@ -315,69 +314,43 @@ where
     }
 }
 
-/// 流式处理扩展特征，为加密系统添加流式处理能力
-pub trait StreamingCryptoExt: CryptographicSystem
+impl<T> crate::traits::SyncStreamingSystem for T
 where
-    Error: From<<Self as CryptographicSystem>::Error>
+    T: CryptographicSystem,
+    Error: From<T::Error>,
 {
-    /// 流式加密方法
-    /// 
-    /// # 参数
-    /// 
-    /// * `reader` - 读取明文的输入流
-    /// * `writer` - 写入密文的输出流
-    /// * `public_key` - 加密公钥
-    /// * `config` - 流式处理配置
-    /// * `additional_data` - 可选的附加认证数据
     fn encrypt_stream<R: Read, W: Write>(
-        public_key: &Self::PublicKey, 
-        reader: R, 
-        writer: W, 
+        public_key: &Self::PublicKey,
+        reader: R,
+        writer: W,
         config: &StreamingConfig,
-        additional_data: Option<&[u8]>
+        additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error> {
         let mut encryptor = StreamingEncryptor::<Self, R, W>::new(reader, writer, public_key, config);
-        
         if let Some(data) = additional_data {
             encryptor = encryptor.with_additional_data(data);
         }
-        
         encryptor.process()
     }
-    
-    /// 流式解密方法
-    /// 
-    /// # 参数
-    /// 
-    /// * `reader` - 读取密文的输入流
-    /// * `writer` - 写入明文的输出流
-    /// * `private_key` - 解密私钥
-    /// * `config` - 流式处理配置
-    /// * `additional_data` - 可选的附加认证数据
+
     fn decrypt_stream<R: Read, W: Write>(
-        private_key: &Self::PrivateKey, 
-        reader: R, 
-        writer: W, 
+        private_key: &Self::PrivateKey,
+        reader: R,
+        writer: W,
         config: &StreamingConfig,
-        additional_data: Option<&[u8]>
+        additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error> {
         let mut decryptor = StreamingDecryptor::<Self, R, W>::new(reader, writer, private_key, config);
-        
         if let Some(data) = additional_data {
             decryptor = decryptor.with_additional_data(data);
         }
-        
         decryptor.process()
     }
 }
 
-// 自动为所有实现CryptographicSystem的类型实现流式处理扩展
-impl<T: CryptographicSystem> StreamingCryptoExt for T 
-where
-    Error: From<<T as CryptographicSystem>::Error>
-{}
-
-// 插入并行流式处理函数，启用 `parallel` 特性时可用
+/// 并行流式加密
+///
+/// 使用Rayon在多个线程上并行处理数据块的加密。
 #[cfg(feature = "parallel")]
 /// 并行流式加密：先读取所有数据块并行加密，然后按顺序写出
 pub fn encrypt_stream_parallel<C, R, W>(
@@ -496,6 +469,7 @@ mod tests {
     use crate::traits::CryptographicSystem;
     use std::sync::Mutex;
     use crate::systems::post_quantum::KyberCryptoSystem;
+    use crate::traits::SyncStreamingSystem;
 
     #[test]
     fn test_streaming_encryption_decryption() {

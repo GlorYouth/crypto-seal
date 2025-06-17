@@ -18,13 +18,13 @@ fn integration_sync_engine() {
 #[test]
 fn integration_async_engine() {
     use crypto_seal::AsyncQSealEngine;
-    use crypto_seal::systems::post_quantum::kyber::KyberCryptoSystem;
+    use crypto_seal::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use std::sync::Arc;
     use crypto_seal::ConfigManager; 
-    // 测试并发 AsyncQSealEngine（后量子 Kyber）
+    // 测试并发 AsyncQSealEngine（混合加密）
     let _ = fs::remove_dir_all("keys");
     let config = Arc::new(ConfigManager::new());
-    let engine = AsyncQSealEngine::<KyberCryptoSystem>::new(config, "test_async").unwrap();
+    let engine = AsyncQSealEngine::<RsaKyberCryptoSystem>::new(config, "test_async").unwrap();
     let data = b"Async integration test";
     let cipher = engine.encrypt(data).unwrap();
     let plain = engine.decrypt(&cipher).unwrap();

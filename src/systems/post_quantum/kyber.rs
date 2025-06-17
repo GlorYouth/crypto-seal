@@ -1,24 +1,29 @@
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Serialize, Deserialize};
-use crate::traits::CryptographicSystem;
-use crate::primitives::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec};
+use crate::traits::{CryptographicSystem, AsyncStreamingSystem};
+use crate::primitives::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec, StreamingResult};
 use crate::errors::Error;
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit},
+    aead::{AeadCore, KeyInit},
 };
 #[cfg(not(feature = "chacha"))]
 use aes_gcm::{
-    Aes256Gcm, Nonce, aead::OsRng
+    Aes256Gcm, Nonce, aead::{Aead, OsRng}
 };
 #[cfg(feature = "chacha")]
 use chacha20poly1305::{
     ChaCha20Poly1305,
-    aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit, generic_array::GenericArray},
+    aead::{Aead as ChaAead, KeyInit as ChaKeyInit, generic_array::GenericArray},
     Nonce as ChaNonce
 };
 #[cfg(feature = "chacha")]
 use rsa::rand_core::OsRng;
+
+#[cfg(feature = "async-engine")]
+use crate::primitives::async_streaming::AsyncStreamingConfig;
+#[cfg(feature = "async-engine")]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -253,6 +258,98 @@ impl CryptographicSystem for KyberCryptoSystem {
     }
 }
 
+#[cfg(feature = "async-engine")]
+#[async_trait::async_trait]
+impl AsyncStreamingSystem for KyberCryptoSystem {
+    async fn encrypt_stream_async<R, W>(
+        public_key: &Self::PublicKey,
+        mut reader: R,
+        mut writer: W,
+        config: &AsyncStreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        let mut buffer = vec![0u8; config.buffer_size];
+        let mut bytes_processed = 0;
+        let mut output_buffer = if config.keep_in_memory { Some(Vec::new()) } else { None };
+
+        loop {
+            let read_bytes = reader.read(&mut buffer).await.map_err(Error::Io)?;
+            if read_bytes == 0 {
+                break;
+            }
+
+            let plaintext = &buffer[..read_bytes];
+            let ciphertext_output = Self::encrypt(public_key, plaintext, additional_data)?;
+
+            let ciphertext_str = ciphertext_output.to_string();
+            let ciphertext_bytes = ciphertext_str.as_bytes();
+            let length = ciphertext_bytes.len() as u32;
+
+            writer.write_all(&length.to_le_bytes()).await.map_err(Error::Io)?;
+            writer.write_all(ciphertext_bytes).await.map_err(Error::Io)?;
+
+            if let Some(buf) = output_buffer.as_mut() {
+                buf.extend_from_slice(ciphertext_bytes);
+            }
+
+            bytes_processed += read_bytes as u64;
+        }
+
+        writer.flush().await.map_err(Error::Io)?;
+
+        Ok(StreamingResult {
+            bytes_processed,
+            buffer: output_buffer,
+        })
+    }
+
+    async fn decrypt_stream_async<R, W>(
+        private_key: &Self::PrivateKey,
+        mut reader: R,
+        mut writer: W,
+        _config: &AsyncStreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        let mut length_buffer = [0u8; 4];
+        let mut bytes_processed = 0;
+        let mut output_buffer = if _config.keep_in_memory { Some(Vec::new()) } else { None };
+
+        while reader.read_exact(&mut length_buffer).await.is_ok() {
+            let length = u32::from_le_bytes(length_buffer) as usize;
+            let mut ciphertext_buffer = vec![0u8; length];
+            reader.read_exact(&mut ciphertext_buffer).await.map_err(Error::Io)?;
+
+            let ciphertext_str = String::from_utf8(ciphertext_buffer)
+                .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext chunk: {}", e)))?;
+            
+            let plaintext = Self::decrypt(private_key, &ciphertext_str, additional_data)?;
+            
+            writer.write_all(&plaintext).await.map_err(Error::Io)?;
+            
+            if let Some(buf) = output_buffer.as_mut() {
+                buf.extend_from_slice(&plaintext);
+            }
+
+            bytes_processed += length as u64;
+        }
+
+        writer.flush().await.map_err(Error::Io)?;
+
+        Ok(StreamingResult {
+            bytes_processed,
+            buffer: output_buffer,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +389,68 @@ mod tests {
         
         // Use constant_time_eq for secure comparison
         assert!(constant_time_eq(&decrypted, plaintext));
+    }
+}
+
+#[cfg(all(test, feature = "async-engine"))]
+mod async_tests {
+    use super::*;
+    use crate::primitives::{CryptoConfig, async_streaming::AsyncStreamingConfig};
+    use std::io::Cursor;
+    use tokio::io::BufWriter;
+
+    #[tokio::test]
+    async fn test_async_streaming_roundtrip() {
+        let config = CryptoConfig::default(); // Kyber768
+        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
+        
+        let original_data = b"This is some data for kyber async streaming.";
+        
+        // Encrypt
+        let mut encrypted_buffer = Vec::new();
+        {
+            let reader = Cursor::new(original_data);
+            let writer = BufWriter::new(&mut encrypted_buffer);
+            let stream_config = AsyncStreamingConfig {
+                buffer_size: 20, // Use a small buffer to ensure multiple chunks
+                keep_in_memory: true,
+                ..Default::default()
+            };
+
+            let result = KyberCryptoSystem::encrypt_stream_async(
+                &public_key,
+                reader,
+                writer,
+                &stream_config,
+                None,
+            )
+            .await
+            .unwrap();
+            
+            assert_eq!(result.bytes_processed, original_data.len() as u64);
+        }
+
+        // Decrypt
+        let mut decrypted_buffer = Vec::new();
+        {
+            let reader = Cursor::new(&encrypted_buffer);
+            let writer = BufWriter::new(&mut decrypted_buffer);
+            let stream_config = AsyncStreamingConfig {
+                buffer_size: 64,
+                ..Default::default()
+            };
+
+            KyberCryptoSystem::decrypt_stream_async(
+                &private_key,
+                reader,
+                writer,
+                &stream_config,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(decrypted_buffer, original_data);
     }
 } 

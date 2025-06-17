@@ -7,14 +7,16 @@ use crate::primitives::{from_base64, to_base64, Base64String, CryptoConfig};
 use crate::errors::Error;
 use crate::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
 use crate::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
-use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
-use aes_gcm::{Aes256Gcm, aead::Aead, Nonce};
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem, AsyncStreamingSystem};
+use aes_gcm::aead::Aead;
 use aes_gcm::aead::AeadCore;
 #[cfg(feature = "chacha")]
 use chacha20poly1305::{aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit}, ChaCha20Poly1305, Nonce as ChaNonce, aead::generic_array::GenericArray};
 use rsa::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use crate::primitives::async_streaming::AsyncStreamingConfig;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // --- 密钥结构 ---
 
@@ -216,6 +218,119 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
     }
 }
 
+#[cfg(feature = "async-engine")]
+#[async_trait::async_trait]
+impl AsyncStreamingSystem for RsaKyberCryptoSystem {
+    async fn encrypt_stream_async<R, W>(
+        public_key: &Self::PublicKey,
+        mut reader: R,
+        mut writer: W,
+        config: &AsyncStreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<crate::primitives::StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        let mut buffer = vec![0u8; config.buffer_size];
+        let mut bytes_processed = 0;
+        let mut output_buffer = if config.keep_in_memory { Some(Vec::new()) } else { None };
+
+        loop {
+            let read_bytes = reader.read(&mut buffer).await.map_err(Error::Io)?;
+            if read_bytes == 0 {
+                break;
+            }
+
+            let plaintext = &buffer[..read_bytes];
+            let ciphertext_output = Self::encrypt(public_key, plaintext, additional_data)?;
+
+            let ciphertext_str = ciphertext_output.to_string();
+            let ciphertext_bytes = ciphertext_str.as_bytes();
+            let length = ciphertext_bytes.len() as u32;
+
+            writer.write_all(&length.to_le_bytes()).await.map_err(Error::Io)?;
+            writer.write_all(ciphertext_bytes).await.map_err(Error::Io)?;
+
+            if let Some(buf) = output_buffer.as_mut() {
+                buf.extend_from_slice(ciphertext_bytes);
+            }
+
+            bytes_processed += read_bytes as u64;
+
+            if let Some(cb) = &config.progress_callback {
+                cb(bytes_processed, config.total_bytes);
+            }
+            if config.show_progress {
+                if let Some(total) = config.total_bytes {
+                    println!("[Async Encrypt] Processed {}/{} bytes", bytes_processed, total);
+                } else {
+                    println!("[Async Encrypt] Processed {} bytes", bytes_processed);
+                }
+            }
+        }
+
+        writer.flush().await.map_err(Error::Io)?;
+
+        Ok(crate::primitives::StreamingResult {
+            bytes_processed,
+            buffer: output_buffer,
+        })
+    }
+
+    async fn decrypt_stream_async<R, W>(
+        private_key: &Self::PrivateKey,
+        mut reader: R,
+        mut writer: W,
+        config: &AsyncStreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<crate::primitives::StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        let mut length_buffer = [0u8; 4];
+        let mut bytes_processed = 0;
+        let mut output_buffer = if config.keep_in_memory { Some(Vec::new()) } else { None };
+
+        while reader.read_exact(&mut length_buffer).await.is_ok() {
+            let length = u32::from_le_bytes(length_buffer) as usize;
+            let mut ciphertext_buffer = vec![0u8; length];
+            reader.read_exact(&mut ciphertext_buffer).await.map_err(Error::Io)?;
+
+            let ciphertext_str = String::from_utf8(ciphertext_buffer)
+                .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext chunk: {}", e)))?;
+            
+            let plaintext = Self::decrypt(private_key, &ciphertext_str, additional_data)?;
+            
+            writer.write_all(&plaintext).await.map_err(Error::Io)?;
+
+            if let Some(buf) = output_buffer.as_mut() {
+                buf.extend_from_slice(&plaintext);
+            }
+
+            bytes_processed += length as u64;
+
+            if let Some(cb) = &config.progress_callback {
+                cb(bytes_processed, config.total_bytes);
+            }
+            if config.show_progress {
+                if let Some(total) = config.total_bytes {
+                    println!("[Async Decrypt] Processed approx. {}/{} bytes", bytes_processed, total);
+                } else {
+                    println!("[Async Decrypt] Processed approx. {} bytes", bytes_processed);
+                }
+            }
+        }
+
+        writer.flush().await.map_err(Error::Io)?;
+
+        Ok(crate::primitives::StreamingResult {
+            bytes_processed,
+            buffer: output_buffer,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -282,5 +397,73 @@ mod tests {
         let result = RsaKyberCryptoSystem::decrypt_authenticated(&sk, tampered_ciphertext.as_ref(), None, Some(&pk));
         assert!(result.is_err(), "认证解密被篡改的签名应该失败");
         assert_eq!(result.unwrap_err().to_string(), "操作失败: 签名验证失败");
+    }
+}
+
+#[cfg(all(test, feature = "async-engine"))]
+mod async_tests {
+    use super::*;
+    use crate::primitives::CryptoConfig;
+    use std::io::Cursor;
+    use tokio::io::BufWriter;
+
+    #[tokio::test]
+    async fn test_async_streaming_roundtrip() {
+        // 1. Setup
+        let config = CryptoConfig::default();
+        let (public_key, private_key) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
+        
+        let original_data = b"This is a larger block of data for testing asynchronous streaming encryption and decryption.";
+        
+        // 2. Encrypt
+        let mut encrypted_buffer = Vec::new();
+        {
+            let reader = Cursor::new(original_data);
+            let writer = BufWriter::new(&mut encrypted_buffer);
+            let stream_config = AsyncStreamingConfig {
+                buffer_size: 64, // Small buffer to force multiple chunks
+                keep_in_memory: true,
+                ..Default::default()
+            };
+
+            let result = RsaKyberCryptoSystem::encrypt_stream_async(
+                &public_key,
+                reader,
+                writer,
+                &stream_config,
+                None,
+            )
+            .await
+            .unwrap();
+            
+            assert!(result.bytes_processed > 0);
+            assert_eq!(result.bytes_processed, original_data.len() as u64);
+        }
+
+        // 3. Decrypt
+        let mut decrypted_buffer = Vec::new();
+        {
+            let reader = Cursor::new(&encrypted_buffer);
+            let writer = BufWriter::new(&mut decrypted_buffer);
+            let stream_config = AsyncStreamingConfig {
+                buffer_size: 128,
+                ..Default::default()
+            };
+
+            let result = RsaKyberCryptoSystem::decrypt_stream_async(
+                &private_key,
+                reader,
+                writer,
+                &stream_config,
+                None,
+            )
+            .await
+            .unwrap();
+            
+            assert!(result.bytes_processed > 0);
+        }
+
+        // 4. Verify
+        assert_eq!(decrypted_buffer, original_data);
     }
 } 

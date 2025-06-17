@@ -1,6 +1,14 @@
 use std::fmt::Debug;
 use serde::{Serialize, Deserialize};
 use crate::primitives::CryptoConfig;
+use crate::errors::Error;
+use crate::primitives::{StreamingConfig, StreamingResult};
+use std::io::{Read, Write};
+
+#[cfg(feature = "async-engine")]
+use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(feature = "async-engine")]
+use crate::primitives::async_streaming::AsyncStreamingConfig;
 
 /// 密钥状态
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -74,6 +82,63 @@ pub trait CryptographicSystem: Sized {
     
     /// 从标准格式导入私钥
     fn import_private_key(key_data: &str) -> Result<Self::PrivateKey, Self::Error>;
+}
+
+/// 同步流式加密系统扩展
+pub trait SyncStreamingSystem: CryptographicSystem
+where
+    Error: From<Self::Error>,
+{
+    /// 同步流式加密
+    fn encrypt_stream<R: Read, W: Write>(
+        public_key: &Self::PublicKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>;
+
+    /// 同步流式解密
+    fn decrypt_stream<R: Read, W: Write>(
+        private_key: &Self::PrivateKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>;
+}
+
+/// 异步流式加密系统扩展
+#[cfg(feature = "async-engine")]
+#[async_trait::async_trait]
+pub trait AsyncStreamingSystem: CryptographicSystem + Send + Sync
+where
+    Self::Error: Send,
+    Error: From<Self::Error>,
+{
+    /// 异步流式加密
+    async fn encrypt_stream_async<R, W>(
+        public_key: &Self::PublicKey,
+        reader: R,
+        writer: W,
+        config: &AsyncStreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send;
+
+    /// 异步流式解密
+    async fn decrypt_stream_async<R, W>(
+        private_key: &Self::PrivateKey,
+        reader: R,
+        writer: W,
+        config: &AsyncStreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send;
 }
 
 /// 认证加密系统扩展特征

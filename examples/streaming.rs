@@ -1,47 +1,46 @@
 use std::io::Cursor;
-use crypto_seal::TraditionalRsa;
-use crypto_seal::CryptographicSystem;
-use crypto_seal::primitives::{CryptoConfig, StreamingConfig, StreamingCryptoExt};
+use crypto_seal::{QSealEngine, TraditionalRsa, ConfigManager};
+use crypto_seal::primitives::StreamingConfig;
+use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 准备用于加解密的数据
     let data = (0u8..100).collect::<Vec<u8>>();
 
-    // 生成 RSA 密钥对
-    let config = CryptoConfig::default();
-    let (pub_key, priv_key) = TraditionalRsa::generate_keypair(&config)?;
+    // 1. 使用默认配置初始化同步引擎
+    // QSealEngine 会自动处理密钥的生成、加载和轮换
+    let config = Arc::new(ConfigManager::new());
+    let mut engine = QSealEngine::<TraditionalRsa>::new(config, "streaming_example_keys")?;
 
-    // 构建流式配置
+    // 2. 构建流式配置
     let sc = StreamingConfig::default()
         .with_buffer_size(16)
-        .with_keep_in_memory(true)
-        .with_show_progress(false)
+        .with_keep_in_memory(true) // 在内存中保留结果以便验证
+        .with_show_progress(true)
         .with_total_bytes(data.len() as u64);
 
-    // 流式加密到内存
+    // 3. 流式加密到内存缓冲区
     let mut encrypted_buf = Vec::new();
-    let encrypt_result = TraditionalRsa::encrypt_stream(
-        &pub_key,
+    let encrypt_result = engine.encrypt_stream(
         Cursor::new(&data),
-        Cursor::new(&mut encrypted_buf),
+        &mut encrypted_buf, // 直接写入 Vec
         &sc,
-        None,
     )?;
-    println!("Encrypted {} bytes", encrypt_result.bytes_processed);
+    println!("\nEncryption complete. Processed {} original bytes.", encrypt_result.bytes_processed);
 
-    // 流式解密到内存
+    // 4. 流式解密回内存缓冲区
     let mut decrypted_buf = Vec::new();
-    let decrypt_result = TraditionalRsa::decrypt_stream(
-        &priv_key,
+    // 注意：解密时，total_bytes应基于加密数据的大小，但此处为了示例简洁，复用sc
+    let decrypt_result = engine.decrypt_stream(
         Cursor::new(&encrypted_buf),
-        Cursor::new(&mut decrypted_buf),
+        &mut decrypted_buf,
         &sc,
-        None,
     )?;
-    println!("Decrypted {} bytes", decrypt_result.bytes_processed);
+    println!("\nDecryption complete. Processed {} encrypted bytes.", decrypt_result.bytes_processed);
 
-    // 验证数据一致性
+    // 5. 验证数据一致性
     assert_eq!(decrypted_buf, data);
-    println!("Streaming example success");
+    println!("\nStreaming example success: Original data and decrypted data match.");
+    
     Ok(())
 } 

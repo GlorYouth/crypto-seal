@@ -114,31 +114,36 @@ fn main() {
 
 ```rust
 use std::fs::File;
-use crypto_seal::crypto::common::streaming::{StreamingConfig, StreamingCryptoExt};
-use crypto_seal::{TraditionalRsa, CryptoConfig};
+use std::sync::Arc;
+use crypto_seal::{QSealEngine, TraditionalRsa, ConfigManager};
+use crypto_seal::primitives::StreamingConfig;
 
 fn main() -> anyhow::Result<()> {
-    let config = CryptoConfig::default();
-    let (pk, sk) = TraditionalRsa::generate_keypair(&config)?;
+    // 1. 初始化引擎
+    let config = Arc::new(ConfigManager::new());
+    let mut engine = QSealEngine::<TraditionalRsa>::new(config, "file_stream_keys")?;
 
-    // 流式加密
+    // 准备明文文件 (请自行创建 plain.txt)
     let mut reader = File::open("plain.txt")?;
     let mut writer = File::create("cipher.dat")?;
-    // 获取明文总大小，用于进度
+    
+    // 2. 配置流式处理
     let total_size = reader.metadata()?.len();
-    let mut sc = StreamingConfig::default();
-    sc.total_bytes = Some(total_size);
-    sc.keep_in_memory = false;
-    sc.progress_callback = Some(std::sync::Arc::new(move |processed, total| {
-        let total = total.unwrap_or(0);
-        println!("Encrypted {}/{} bytes", processed, total);
-    }));
-    TraditionalRsa::encrypt_stream(&pk, reader, writer, &sc, None)?;
+    let sc = StreamingConfig::default()
+        .with_keep_in_memory(false) // 处理大文件时无需在内存保留
+        .with_progress_callback(Arc::new(move |processed, total| {
+            let total = total.unwrap_or(0);
+            println!("Encrypting... {} / {} bytes processed.", processed, total);
+        }))
+        .with_total_bytes(total_size);
 
-    // 流式解密
+    // 3. 执行流式加密
+    engine.encrypt_stream(reader, &mut writer, &sc)?;
+
+    // 4. 执行流式解密
     let mut reader2 = File::open("cipher.dat")?;
-    let mut writer2 = File::create("plain_out.txt")?;
-    TraditionalRsa::decrypt_stream(&sk, reader2, writer2, &sc, None)?;
+    let mut writer2 = File::create("plain_decrypted.txt")?;
+    engine.decrypt_stream(&mut reader2, &mut writer2, &sc)?;
 
     Ok(())
 }

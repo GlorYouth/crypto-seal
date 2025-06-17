@@ -4,19 +4,20 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::io::{Read, Write};
 
 use crate::config::ConfigManager;
 use crate::errors::Error;
 use crate::rotation::KeyRotationManager;
 use crate::storage::KeyFileStorage;
-use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
-use crate::primitives::{from_base64, Base64String, CryptoConfig};
+use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem, SyncStreamingSystem};
+use crate::primitives::{StreamingConfig, StreamingResult};
 
 /// Q-Seal核心引擎
 ///
 /// 这是一个高级API，它封装了所有底层组件，提供了一个简单、统一的接口。
-/// `C` 是一个实现了 `CryptographicSystem` 特征的加密系统类型。
-pub struct QSealEngine<C: CryptographicSystem>
+/// `C` 是一个实现了 `CryptographicSystem` 和 `SyncStreamingSystem` 特征的加密系统类型。
+pub struct QSealEngine<C: CryptographicSystem + SyncStreamingSystem>
 where
     // 确保引擎内可以处理其使用的加密系统的错误
     Error: From<<C as CryptographicSystem>::Error>
@@ -27,7 +28,7 @@ where
     key_manager: KeyRotationManager<C>,
 }
 
-impl<C: CryptographicSystem> QSealEngine<C>
+impl<C: CryptographicSystem + SyncStreamingSystem> QSealEngine<C>
 where
     Error: From<<C as CryptographicSystem>::Error>,
     <C as CryptographicSystem>::Error: std::error::Error + 'static,
@@ -136,6 +137,49 @@ where
         Err(Error::Operation("解密失败：所有可用密钥都无法解密该密文".to_string()))
     }
     
+    /// 同步流式加密
+    pub fn encrypt_stream<R: Read, W: Write>(
+        &mut self,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+    ) -> Result<StreamingResult, Error> {
+        let manager = &mut self.key_manager;
+        manager.complete_rotation()?;
+        if manager.needs_rotation() {
+            manager.start_rotation(&self.config.get_crypto_config())?;
+        }
+        let public_key = manager.get_primary_key()
+            .map(|(pk, _)| pk.clone())
+            .ok_or_else(|| Error::Key("没有可用的主加密密钥".to_string()))?;
+        manager.increment_usage_count()?;
+        
+        C::encrypt_stream(&public_key, reader, writer, config, None)
+            .map_err(Into::into)
+    }
+
+    /// 同步流式解密
+    pub fn decrypt_stream<R: Read, W: Write>(
+        &mut self,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+    ) -> Result<StreamingResult, Error> {
+        let manager = &mut self.key_manager;
+        manager.complete_rotation()?;
+
+        // 注意：流式解密无法像块解密一样轻易地"尝试"多个密钥。
+        // 一个简单的实现是只使用主密钥。
+        // 更复杂的实现需要协议层支持，比如在流的开头包含密钥ID。
+        // 这里我们选择只用主密钥进行解密。
+        let private_key = manager.get_primary_key()
+            .map(|(_, sk)| sk.clone())
+            .ok_or_else(|| Error::Key("没有可用的主解密密钥".to_string()))?;
+
+        C::decrypt_stream(&private_key, reader, writer, config, None)
+            .map_err(Into::into)
+    }
+
     /// 获取当前的配置管理器
     pub fn config(&self) -> Arc<ConfigManager> {
         Arc::clone(&self.config)

@@ -9,12 +9,12 @@ fn main() {
 #[cfg(feature = "async-engine")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{sync::Arc, fs};
-    use crypto_seal::{ConfigManager, AsyncQSealEngine, PostQuantumKyber};
+    use crypto_seal::{ConfigManager, AsyncQSealEngine, HybridRsaKyber};
 
     // 初始化配置
     let config = Arc::new(ConfigManager::new());
-    // 创建并发引擎，使用后量子 Kyber
-    let engine = AsyncQSealEngine::<PostQuantumKyber>::new(config, "async_example")?;
+    // 创建并发引擎，使用混合加密 HybridRsaKyber
+    let engine = AsyncQSealEngine::<HybridRsaKyber>::new(config, "async_example")?;
 
     let data = b"Hello, Async QSeal!";
     // 执行加解密
