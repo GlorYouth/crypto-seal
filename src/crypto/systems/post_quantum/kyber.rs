@@ -2,7 +2,7 @@ use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Serialize, Deserialize};
 use crate::crypto::traits::CryptographicSystem;
-use crate::crypto::common::{Base64String, to_base64, from_base64, CryptoConfig};
+use crate::crypto::common::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec};
 use crate::crypto::errors::Error;
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -15,7 +15,7 @@ pub struct KyberPublicKeyWrapper(pub Vec<u8>);
 
 /// Kyber私钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KyberPrivateKeyWrapper(pub Vec<u8>);
+pub struct KyberPrivateKeyWrapper(pub ZeroizingVec);
 
 /// Kyber后量子加密系统实现
 /// 
@@ -58,10 +58,12 @@ impl CryptographicSystem for KyberCryptoSystem {
             k => return Err(Error::PostQuantum(format!("不支持的Kyber安全级别: {}", k))),
         };
 
-        Ok((
-            KyberPublicKeyWrapper(public_key_vec),
-            KyberPrivateKeyWrapper(private_key_vec),
-        ))
+        Ok(
+            (
+                KyberPublicKeyWrapper(public_key_vec),
+                KyberPrivateKeyWrapper(ZeroizingVec(private_key_vec)),
+            )
+        )
     }
     
     fn encrypt(
@@ -135,7 +137,7 @@ impl CryptographicSystem for KyberCryptoSystem {
                     return Err(Error::Format("Kyber512密文格式无效".to_string()));
                 }
                 let ct_bytes = &rest[..KYBER512_CIPHERTEXTBYTES];
-                let sk = kyber512::SecretKey::from_bytes(&private_key.0)
+                let sk = kyber512::SecretKey::from_bytes(private_key.0.as_ref())
                     .map_err(|_| Error::PostQuantum("无效的Kyber512私钥格式".to_string()))?;
                 let ct = kyber512::Ciphertext::from_bytes(ct_bytes)
                     .map_err(|_| Error::PostQuantum("无效的Kyber512密文格式".to_string()))?;
@@ -147,7 +149,7 @@ impl CryptographicSystem for KyberCryptoSystem {
                     return Err(Error::Format("Kyber768密文格式无效".to_string()));
                 }
                 let ct_bytes = &rest[..KYBER768_CIPHERTEXTBYTES];
-                let sk = kyber768::SecretKey::from_bytes(&private_key.0)
+                let sk = kyber768::SecretKey::from_bytes(private_key.0.as_ref())
                     .map_err(|_| Error::PostQuantum("无效的Kyber768私钥格式".to_string()))?;
                 let ct = kyber768::Ciphertext::from_bytes(ct_bytes)
                     .map_err(|_| Error::PostQuantum("无效的Kyber768密文格式".to_string()))?;
@@ -159,7 +161,7 @@ impl CryptographicSystem for KyberCryptoSystem {
                     return Err(Error::Format("Kyber1024密文格式无效".to_string()));
                 }
                 let ct_bytes = &rest[..KYBER1024_CIPHERTEXTBYTES];
-                let sk = kyber1024::SecretKey::from_bytes(&private_key.0)
+                let sk = kyber1024::SecretKey::from_bytes(private_key.0.as_ref())
                     .map_err(|_| Error::PostQuantum("无效的Kyber1024私钥格式".to_string()))?;
                 let ct = kyber1024::Ciphertext::from_bytes(ct_bytes)
                     .map_err(|_| Error::PostQuantum("无效的Kyber1024密文格式".to_string()))?;
@@ -204,7 +206,7 @@ impl CryptographicSystem for KyberCryptoSystem {
     }
     
     fn export_private_key(private_key: &Self::PrivateKey) -> Result<String, Self::Error> {
-        Ok(to_base64(&private_key.0))
+        Ok(to_base64(private_key.0.as_ref()))
     }
     
     fn import_public_key(key_data: &str) -> Result<Self::PublicKey, Self::Error> {
@@ -232,7 +234,7 @@ impl CryptographicSystem for KyberCryptoSystem {
             ))),
         }
         
-        Ok(KyberPrivateKeyWrapper(decoded))
+        Ok(KyberPrivateKeyWrapper(ZeroizingVec(decoded)))
     }
 }
 

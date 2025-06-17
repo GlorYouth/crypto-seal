@@ -6,7 +6,7 @@ use sha2::Sha256;
 use rsa::rand_core::OsRng as RsaOsRng;
 use serde::{Serialize, Deserialize};
 use crate::crypto::traits::CryptographicSystem;
-use crate::crypto::common::{Base64String, from_base64, CryptoConfig};
+use crate::crypto::common::{Base64String, from_base64, CryptoConfig, ZeroizingVec};
 use crate::crypto::errors::Error;
 
 /// RSA公钥包装器，提供序列化支持
@@ -26,7 +26,7 @@ impl RsaPublicKeyWrapper {
 
 /// RSA私钥包装器，提供序列化和安全擦除支持
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RsaPrivateKeyWrapper(pub Vec<u8>);
+pub struct RsaPrivateKeyWrapper(pub ZeroizingVec);
 
 impl RsaPrivateKeyWrapper {
     /// 获取内部DER编码的私钥数据
@@ -112,10 +112,12 @@ impl CryptographicSystem for RsaCryptoSystem {
         let private_der = private_key.to_pkcs8_der()
             .map_err(|e| Error::Traditional(format!("导出RSA私钥DER失败: {}", e)))?;
         
-        Ok((
-            RsaPublicKeyWrapper(public_der.as_bytes().to_vec()),
-            RsaPrivateKeyWrapper(private_der.as_bytes().to_vec())
-        ))
+        Ok(
+            (
+                RsaPublicKeyWrapper(public_der.as_bytes().to_vec()),
+                RsaPrivateKeyWrapper(ZeroizingVec(private_der.as_bytes().to_vec()))
+            )
+        )
     }
     
     fn encrypt(
@@ -188,7 +190,7 @@ impl CryptographicSystem for RsaCryptoSystem {
         let private_der = private_key.to_pkcs8_der()
             .map_err(|e| Error::Traditional(format!("导出RSA私钥DER失败: {}", e)))?;
             
-        Ok(RsaPrivateKeyWrapper(private_der.as_bytes().to_vec()))
+        Ok(RsaPrivateKeyWrapper(ZeroizingVec(private_der.as_bytes().to_vec())))
     }
 }
 

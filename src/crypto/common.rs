@@ -2,6 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use std::ops::{Deref, DerefMut};
 use serde::{Serialize, Deserialize};
+use serde_bytes;
 
 /// 将字节数组转换为Base64字符串
 pub fn to_base64(data: &[u8]) -> String {
@@ -160,6 +161,23 @@ impl Default for CryptoConfig {
             argon2_memory_cost: 19456, // 19MB
             argon2_time_cost: 2,
         }
+    }
+}
+
+/// 自动清零的字节向量，用于私钥等敏感数据
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct ZeroizingVec(#[serde(with = "serde_bytes")] pub Vec<u8>);
+
+impl std::ops::Deref for ZeroizingVec {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for ZeroizingVec {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
