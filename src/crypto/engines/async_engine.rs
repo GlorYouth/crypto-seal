@@ -4,6 +4,9 @@ use arc_swap::ArcSwapOption;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use rsa::rand_core::{OsRng, RngCore};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use crate::crypto::common::CryptoConfig;
 use crate::crypto::config::ConfigManager;
@@ -260,6 +263,33 @@ where
             }
         }
         Err(Error::Operation("解密失败：所有可用密钥都无法解密该密文".to_string()))
+    }
+
+    /// 批量加密（并行）。需要公钥和私钥可安全在线程间共享。
+    #[cfg(feature = "parallel")]
+    pub fn encrypt_batch<T>(&self, inputs: &[T]) -> Vec<Result<String, Error>>
+    where
+        Self: Sync,
+        T: AsRef<[u8]> + Sync,
+        <C as CryptographicSystem>::PublicKey: Send + Sync,
+        <C as CryptographicSystem>::PrivateKey: Send + Sync,
+    {
+        inputs
+            .par_iter()
+            .map(|data| self.encrypt(data.as_ref()))
+            .collect()
+    }
+
+    /// 批量加密（顺序）。不需要额外的线程安全约束。
+    #[cfg(not(feature = "parallel"))]
+    pub fn encrypt_batch<T>(&self, inputs: &[T]) -> Vec<Result<String, Error>>
+    where
+        T: AsRef<[u8]>,
+    {
+        inputs
+            .iter()
+            .map(|data| self.encrypt(data.as_ref()))
+            .collect()
     }
 }
 

@@ -15,10 +15,11 @@ traditional = ["rsa"]
 post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
 secure-storage = ["argon2", "secrecy"]
 async-engine = ["dashmap", "arc-swap"]
+chacha = ["chacha20poly1305"]
+parallel = ["rayon"]
 
 [dependencies]
 # 基础依赖
-rand = "0.9.1"
 base64 = "0.22.1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
@@ -38,12 +39,14 @@ pqcrypto-traits = { version = "0.3.5", optional = true }
 
 # 安全存储相关
 aes-gcm = "0.10.3"
+chacha20poly1305 = { version = "0.10", optional = true }
 argon2 = { version = "0.5.3", optional = true }
 tempfile = "3.20.0"
 uuid = { version = "1.17.0", features = ["v4"] }
 
 # 可选依赖
-dashmap = { version = "5", optional = true }
+dashmap = { version = "6.1.0", optional = true }
 arc-swap = { version = "1", optional = true }
+rayon = { version = "1.10.0", optional = true }
 
 [dev-dependencies]

@@ -2,15 +2,19 @@
 //! 一个混合加密方案，结合了经典的RSA-PSS签名和后量子的Kyber密钥封装机制。
 //!
 
-use serde::{Serialize, Deserialize};
-use crate::crypto::traits::{CryptographicSystem, AuthenticatedCryptoSystem};
-use crate::crypto::systems::traditional::rsa::{RsaCryptoSystem, RsaPublicKeyWrapper, RsaPrivateKeyWrapper};
-use crate::crypto::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPublicKeyWrapper, KyberPrivateKeyWrapper};
+use aes_gcm::KeyInit;
+use crate::crypto::common::{from_base64, to_base64, Base64String, CryptoConfig};
 use crate::crypto::errors::Error;
-use crate::crypto::common::{Base64String, to_base64, from_base64, CryptoConfig};
-use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, AeadCore, Nonce}};
+use crate::crypto::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
+use crate::crypto::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
+use crate::crypto::traits::{AuthenticatedCryptoSystem, CryptographicSystem};
+use aes_gcm::{Aes256Gcm, aead::Aead, Nonce};
+use aes_gcm::aead::AeadCore;
+#[cfg(feature = "chacha")]
+use chacha20poly1305::{aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit}, ChaCha20Poly1305, Nonce as ChaNonce, aead::generic_array::GenericArray};
 use rsa::rand_core::{OsRng, RngCore};
-use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // --- 密钥结构 ---
 
@@ -79,10 +83,16 @@ impl CryptographicSystem for RsaKyberCryptoSystem {
         let kem_ciphertext = KyberCryptoSystem::encrypt(&public_key.kyber_public_key, &aes_key, None)?;
 
         // 3. DEM: 使用AES密钥加密实际数据。
+        #[cfg(feature = "chacha")]
+        let cipher = ChaCha20Poly1305::new((&aes_key).into());
+        #[cfg(not(feature = "chacha"))]
         let cipher = Aes256Gcm::new(&aes_key.into());
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 12字节 Nonce
+        #[cfg(feature = "chacha")]
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        #[cfg(not(feature = "chacha"))]
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let dem_ciphertext = cipher.encrypt(&nonce, plaintext)
-            .map_err(|e| Error::Operation(format!("AES加密失败: {}", e)))?;
+            .map_err(|e| Error::Operation(format!("AEAD 加密失败: {}", e)))?;
         
         // 4. 将 Kyber密文、Nonce 和 AES密文 组合在一起。
         // 格式: [Kyber密文]::[Nonce]::[AES密文]
@@ -125,13 +135,17 @@ impl CryptographicSystem for RsaKyberCryptoSystem {
         let aes_key_bytes = KyberCryptoSystem::decrypt(&private_key.kyber_private_key, &kem_ciphertext_b64, None)?;
 
         // 2. DEM: 使用AES密钥和Nonce解密数据。
+        #[cfg(feature = "chacha")]
+        let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(&aes_key_bytes));
+        #[cfg(not(feature = "chacha"))]
         let cipher = Aes256Gcm::new_from_slice(&aes_key_bytes)
-             .map_err(|_| Error::Key("无效的AES密钥".to_string()))?;
-        
-        let nonce = Nonce::<Aes256Gcm>::from_slice(nonce_part);
-        
-        cipher.decrypt(nonce, dem_part)
-            .map_err(|_| Error::Operation("AES解密或认证失败".to_string()))
+            .map_err(|_| Error::Key("无效的对称密钥".to_string()))?;
+        #[cfg(feature = "chacha")]
+        let nonce = ChaNonce::from_slice(nonce_part);
+        #[cfg(not(feature = "chacha"))]
+        let nonce = Nonce::from_slice(nonce_part);
+        cipher.decrypt(&nonce, dem_part)
+            .map_err(|_| Error::Operation("AEAD 解密或认证失败".to_string()))
     }
 }
 

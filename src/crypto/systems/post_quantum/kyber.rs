@@ -5,9 +5,20 @@ use crate::crypto::traits::CryptographicSystem;
 use crate::crypto::common::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec};
 use crate::crypto::errors::Error;
 use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce
+    aead::{Aead, AeadCore, KeyInit},
 };
+#[cfg(not(feature = "chacha"))]
+use aes_gcm::{
+    Aes256Gcm, Nonce, aead::OsRng
+};
+#[cfg(feature = "chacha")]
+use chacha20poly1305::{
+    ChaCha20Poly1305,
+    aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit, generic_array::GenericArray},
+    Nonce as ChaNonce
+};
+#[cfg(feature = "chacha")]
+use rsa::rand_core::OsRng;
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,22 +105,24 @@ impl CryptographicSystem for KyberCryptoSystem {
             len => return Err(Error::PostQuantum(format!("无效的Kyber公钥长度: {}", len))),
         };
 
-        // 使用共享密钥创建AES-GCM加密器
+        // 使用共享密钥执行AEAD加密
+        #[cfg(feature = "chacha")]
+        let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(&shared_secret_bytes));
+        #[cfg(not(feature = "chacha"))]
         let cipher = Aes256Gcm::new_from_slice(&shared_secret_bytes)
-            .map_err(|e| Error::Operation(format!("创建AES-GCM加密器失败: {}", e)))?;
-        
-        // 创建随机nonce
-        let nonce_bytes = rand::random::<[u8; 12]>();
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        
+            .map_err(|e| Error::Operation(format!("创建AEAD加密器失败: {}", e)))?;
+        #[cfg(feature = "chacha")]
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        #[cfg(not(feature = "chacha"))]
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         // 加密数据
-        let aes_ciphertext = cipher.encrypt(nonce, plaintext)
-            .map_err(|e| Error::PostQuantum(format!("AES-GCM加密失败: {}", e)))?;
+        let aes_ciphertext = cipher.encrypt(&nonce, plaintext)
+            .map_err(|e| Error::PostQuantum(format!("AEAD加密失败: {}", e)))?;
         
-        // 组合数据：变体ID(1字节) + kyber密文 + nonce + AES-GCM密文
+        // 组合数据：变体ID(1字节) + kyber密文 + nonce + AEAD密文
         let mut combined = vec![variant_id];
         combined.extend_from_slice(&kyber_ciphertext_bytes);
-        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&nonce);
         combined.extend_from_slice(&aes_ciphertext);
         
         Ok(Base64String::from(combined))
@@ -182,23 +195,25 @@ impl CryptographicSystem for KyberCryptoSystem {
             return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
         }
 
-        // 提取nonce和AES-GCM密文
+        // 提取nonce和AEAD密文
         if rest.len() < kyber_ct_len + 12 {
             return Err(Error::Format("密文缺少nonce或主体部分".to_string()));
         }
         let nonce_bytes = &rest[kyber_ct_len..kyber_ct_len + 12];
         let aes_ciphertext = &rest[kyber_ct_len + 12..];
 
-        // 使用共享密钥创建AES-GCM解密器
+        // 使用共享密钥执行AEAD解密
+        #[cfg(feature = "chacha")]
+        let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(&shared_secret_bytes));
+        #[cfg(not(feature = "chacha"))]
         let cipher = Aes256Gcm::new_from_slice(&shared_secret_bytes)
-            .map_err(|e| Error::Operation(format!("创建AES-GCM解密器失败: {}", e)))?;
-        
-        // 解密数据
+            .map_err(|e| Error::Operation(format!("创建AEAD解密器失败: {}", e)))?;
+        #[cfg(feature = "chacha")]
+        let nonce = ChaNonce::from_slice(nonce_bytes);
+        #[cfg(not(feature = "chacha"))]
         let nonce = Nonce::from_slice(nonce_bytes);
-        cipher.decrypt(
-            nonce,
-            aes_ciphertext
-        ).map_err(|e| Error::PostQuantum(format!("AES-GCM解密失败: {}", e)))
+        cipher.decrypt(&nonce, aes_ciphertext)
+            .map_err(|e| Error::PostQuantum(format!("AEAD解密失败: {}", e)))
     }
     
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error> {
