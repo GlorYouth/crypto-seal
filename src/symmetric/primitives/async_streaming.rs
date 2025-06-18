@@ -259,4 +259,110 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_async_streaming_empty_input() {
+        let (key, config) = get_test_key_and_config();
+        let original_data = b"".to_vec();
+
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+            .await
+            .unwrap();
+
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, None)
+            .await
+            .unwrap();
+
+        assert_eq!(original_data, decrypted_dest);
+    }
+    
+    #[tokio::test]
+    async fn test_async_streaming_multiple_buffer_sizes() {
+        let (key, mut config) = get_test_key_and_config();
+        config.buffer_size = 64;
+
+        let data_cases = vec![
+            vec![1u8; 32],
+            vec![2u8; 64],
+            vec![3u8; 150],
+        ];
+
+        for original_data in data_cases {
+            let source = BufReader::new(Cursor::new(original_data.clone()));
+            let mut encrypted_dest = Vec::new();
+            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+                .await
+                .unwrap();
+
+            let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+            let mut decrypted_dest = Vec::new();
+            AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, None)
+                .await
+                .unwrap();
+
+            assert_eq!(original_data, decrypted_dest);
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_async_streaming_progress_callback() {
+        use std::sync::{Arc, Mutex};
+
+        let (key, mut config) = get_test_key_and_config();
+        let original_data = vec![0u8; 1024];
+        config.buffer_size = 256;
+        config.total_bytes = Some(original_data.len() as u64);
+
+        let progress_calls = Arc::new(Mutex::new(Vec::new()));
+        let progress_calls_clone = progress_calls.clone();
+
+        config.progress_callback = Some(Arc::new(move |processed, total| {
+            progress_calls_clone.lock().unwrap().push((processed, total));
+        }));
+        
+        let source = BufReader::new(Cursor::new(original_data));
+        let mut encrypted_dest = Vec::new();
+        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+            .await
+            .unwrap();
+
+        let calls = progress_calls.lock().unwrap();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[3], (1024, Some(1024)));
+    }
+    
+    #[tokio::test]
+    async fn test_async_streaming_incomplete_data_fails() {
+        let (key, config) = get_test_key_and_config();
+        
+        let mut encrypted_data = (100u32).to_le_bytes().to_vec();
+        encrypted_data.extend_from_slice(&[0u8; 50]);
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_data));
+        let mut decrypted_dest = Vec::new();
+        let result = AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_async_streaming_wrong_aad_fails() {
+        let (key, config) = get_test_key_and_config();
+        let original_data = b"some data".to_vec();
+        let aad1 = b"correct aad";
+        let aad2 = b"wrong aad";
+
+        let source = BufReader::new(Cursor::new(original_data));
+        let mut encrypted_dest = Vec::new();
+        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, Some(aad1))
+            .await
+            .unwrap();
+
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        let result = AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, Some(aad2)).await;
+        assert!(result.is_err());
+    }
 } 

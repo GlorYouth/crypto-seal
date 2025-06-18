@@ -467,13 +467,61 @@ mod tests {
 
     #[test]
     fn test_kyber_import_invalid_key_fails() {
-        let invalid_b64_key = "not_a_valid_base64_string";
-        assert!(KyberCryptoSystem::import_public_key(invalid_b64_key).is_err());
-        assert!(KyberCryptoSystem::import_private_key(invalid_b64_key).is_err());
+        // 无效的Base64
+        assert!(KyberCryptoSystem::import_public_key("!@#$").is_err());
+        assert!(KyberCryptoSystem::import_private_key("!@#$").is_err());
+        
+        // 长度不匹配
+        let short_key = to_base64(&[0u8; 100]);
+        assert!(KyberCryptoSystem::import_public_key(&short_key).is_err());
+        assert!(KyberCryptoSystem::import_private_key(&short_key).is_err());
+    }
 
-        let wrong_size_key = to_base64(&[0u8; 100]);
-        assert!(KyberCryptoSystem::import_public_key(&wrong_size_key).is_err());
-        assert!(KyberCryptoSystem::import_private_key(&wrong_size_key).is_err());
+    #[test]
+    fn test_empty_plaintext_roundtrip() {
+        let (pk, sk) = setup_keys(768);
+        let plaintext = b"";
+        let aad = b"some aad";
+        
+        let encrypted = KyberCryptoSystem::encrypt(&pk, plaintext, Some(aad)).unwrap();
+        let decrypted = KyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
+        
+        assert_eq!(plaintext, decrypted.as_slice());
+    }
+    
+    #[test]
+    fn test_empty_aad_roundtrip() {
+        let (pk, sk) = setup_keys(768);
+        let plaintext = b"some data";
+        let aad = b"";
+        
+        let encrypted = KyberCryptoSystem::encrypt(&pk, plaintext, Some(aad)).unwrap();
+        let decrypted = KyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
+        
+        assert_eq!(plaintext, decrypted.as_slice());
+    }
+
+    #[test]
+    fn test_decrypt_with_different_key_of_same_level_fails() {
+        let (pk1, _) = setup_keys(768);
+        let (_, sk2) = setup_keys(768); // 不同的密钥对
+        let plaintext = b"data for key 1";
+        
+        let encrypted = KyberCryptoSystem::encrypt(&pk1, plaintext, None).unwrap();
+        let result = KyberCryptoSystem::decrypt(&sk2, &encrypted.to_string(), None);
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ciphertext_uniqueness() {
+        let (pk, _) = setup_keys(768);
+        let plaintext = b"the same data";
+        
+        let ciphertext1 = KyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        let ciphertext2 = KyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        
+        assert_ne!(ciphertext1.to_string(), ciphertext2.to_string());
     }
 }
 

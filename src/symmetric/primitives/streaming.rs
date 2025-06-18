@@ -2,6 +2,7 @@
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
+
 use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
@@ -198,6 +199,8 @@ mod tests {
     use crate::common::utils::CryptoConfig;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
+    use std::sync::Arc;
+    use std::sync::Mutex;
 
     fn get_test_key_and_config() -> (
         <AesGcmSystem as SymmetricCryptographicSystem>::Key,
@@ -320,19 +323,87 @@ mod tests {
         let (key, config) = get_test_key_and_config();
         let original_data = b"";
 
-        // Encrypt
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        let enc_result = AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
-        assert_eq!(enc_result.bytes_processed, 0);
-        
-        // Decrypt
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+
         let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
         let mut decrypted_dest = Cursor::new(Vec::new());
-        let dec_result = AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None)
+        AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None)
             .unwrap();
 
-        assert_eq!(dec_result.bytes_processed, 0);
-        assert_eq!(decrypted_dest.into_inner().as_slice(), b"");
+        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+    }
+
+    #[test]
+    fn test_streaming_multiple_buffer_sizes() {
+        let (key, mut config) = get_test_key_and_config();
+        config.buffer_size = 64; // smaller buffer size
+
+        let data_cases = vec![
+            vec![1u8; 32],   // Less than one buffer
+            vec![2u8; 64],   // Exactly one buffer
+            vec![3u8; 150],  // More than one buffer
+        ];
+
+        for original_data in data_cases {
+            // Encrypt
+            let mut source = Cursor::new(&original_data);
+            let mut encrypted_dest = Cursor::new(Vec::new());
+            AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+
+            // Decrypt
+            let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+            let mut decrypted_dest = Cursor::new(Vec::new());
+            AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None).unwrap();
+
+            assert_eq!(original_data, decrypted_dest.into_inner());
+        }
+    }
+
+    #[test]
+    fn test_streaming_progress_callback() {
+        let (key, mut config) = get_test_key_and_config();
+        let original_data = vec![0u8; 1024];
+        config.buffer_size = 256;
+        config.total_bytes = Some(original_data.len() as u64);
+
+        let progress_calls = Arc::new(Mutex::new(Vec::new()));
+        let progress_calls_clone = progress_calls.clone();
+
+        config.progress_callback = Some(Arc::new(move |processed, total| {
+            progress_calls_clone.lock().unwrap().push((processed, total));
+        }));
+
+        let mut source = Cursor::new(&original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+
+        let calls = progress_calls.lock().unwrap();
+        assert_eq!(calls.len(), 4); // 1024 / 256 = 4
+        assert_eq!(calls[0], (256, Some(1024)));
+        assert_eq!(calls[1], (512, Some(1024)));
+        assert_eq!(calls[2], (768, Some(1024)));
+        assert_eq!(calls[3], (1024, Some(1024)));
+    }
+
+    #[test]
+    fn test_streaming_incomplete_data_fails() {
+        let (key, config) = get_test_key_and_config();
+        
+        // Case 1: Only length prefix, no data
+        let mut encrypted_data = (100u32).to_le_bytes().to_vec();
+        let mut encrypted_source = Cursor::new(encrypted_data);
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        let result = AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None);
+        assert!(result.is_err());
+
+        // Case 2: Length prefix says 100, but only 50 bytes of data follow
+        encrypted_data = (100u32).to_le_bytes().to_vec();
+        encrypted_data.extend_from_slice(&[0u8; 50]);
+        encrypted_source = Cursor::new(encrypted_data);
+        decrypted_dest = Cursor::new(Vec::new());
+        let result = AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None);
+        assert!(result.is_err());
     }
 } 

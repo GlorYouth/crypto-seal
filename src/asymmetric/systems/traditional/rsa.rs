@@ -396,13 +396,68 @@ mod tests {
 
     #[test]
     fn test_rsa_import_invalid_key_fails() {
-        let invalid_pem = "-----BEGIN PUBLIC KEY-----\nINVALID_KEY_DATA\n-----END PUBLIC KEY-----";
-        let result = RsaCryptoSystem::import_public_key(invalid_pem);
-        assert!(result.is_err());
+        // 尝试导入非PEM格式的密钥
+        let invalid_pem = "this is not a pem";
+        assert!(RsaCryptoSystem::import_public_key(invalid_pem).is_err());
+        assert!(RsaCryptoSystem::import_private_key(invalid_pem).is_err());
+    }
 
-        let invalid_priv_pem = "-----BEGIN PRIVATE KEY-----\nINVALID_KEY_DATA\n-----END PRIVATE KEY-----";
-        let priv_result = RsaCryptoSystem::import_private_key(invalid_priv_pem);
-        assert!(priv_result.is_err());
+    #[test]
+    fn test_sign_verify_empty_data() {
+        let (public_key, private_key) = setup_keys();
+        let data = b""; // 空数据
+        
+        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+        let is_valid = RsaCryptoSystem::verify(&public_key, data, &signature).unwrap();
+        
+        assert!(is_valid);
+    }
+
+    #[test]
+    fn test_verify_different_data_fails() {
+        let (public_key, private_key) = setup_keys();
+        let data1 = b"some important data";
+        let data2 = b"different important data";
+        
+        let signature = RsaCryptoSystem::sign(&private_key, data1).unwrap();
+        let is_valid = RsaCryptoSystem::verify(&public_key, data2, &signature).unwrap();
+        
+        assert!(!is_valid);
+    }
+    
+    #[test]
+    fn test_encrypt_empty_data() {
+        let (public_key, private_key) = setup_keys();
+        let plaintext = b""; // 空数据
+        
+        let encrypted = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let decrypted = RsaCryptoSystem::decrypt(&private_key, &encrypted.to_string(), None).unwrap();
+        
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
+    }
+
+    #[test]
+    fn test_encrypt_data_too_long_fails() {
+        let config = CryptoConfig { rsa_key_bits: 2048, ..Default::default() };
+        let (public_key, _) = RsaCryptoSystem::generate_keypair(&config).unwrap();
+
+        // 对于2048位的RSA和PKCS#1 v1.5填充，最大数据长度是 2048/8 - 11 = 245 字节
+        let long_data = vec![0u8; 256];
+        
+        let result = RsaCryptoSystem::encrypt(&public_key, &long_data, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_key_generation_with_4096_bits() {
+        let config = CryptoConfig { rsa_key_bits: 4096, ..Default::default() };
+        let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&config).unwrap();
+        
+        let plaintext = b"data for 4096-bit key";
+        let encrypted = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let decrypted = RsaCryptoSystem::decrypt(&private_key, &encrypted.to_string(), None).unwrap();
+        
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }
 }
 

@@ -355,6 +355,10 @@ impl AsyncStreamingSystem for RsaKyberCryptoSystem {
 mod tests {
     use super::*;
 
+    fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
+        RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap()
+    }
+
     #[test]
     fn test_hybrid_roundtrip_unauthenticated() {
         let config = CryptoConfig::default();
@@ -474,6 +478,33 @@ mod tests {
         let decrypted = RsaKyberCryptoSystem::decrypt(&imported_sk, ciphertext.to_string().as_ref(), None).unwrap();
         assert_eq!(plaintext.as_slice(), decrypted.as_slice());
     }
+
+    #[test]
+    fn test_encrypt_decrypt_empty_plaintext() {
+        let (pk, sk) = setup_keys();
+        let plaintext = b""; // Empty plaintext
+
+        // Unauthenticated
+        let encrypted1 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        let decrypted1 = RsaKyberCryptoSystem::decrypt(&sk, &encrypted1.to_string(), None).unwrap();
+        assert_eq!(decrypted1, plaintext);
+
+        // Authenticated
+        let encrypted2 = RsaKyberCryptoSystem::encrypt_authenticated(&pk, plaintext, None, Some(&sk)).unwrap();
+        let decrypted2 = RsaKyberCryptoSystem::decrypt_authenticated(&sk, &encrypted2.to_string(), None, Some(&pk)).unwrap();
+        assert_eq!(decrypted2, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_with_empty_aad() {
+        let (pk, sk) = setup_keys();
+        let plaintext = b"some secret data";
+        let aad = b""; // Empty AAD
+
+        let encrypted = RsaKyberCryptoSystem::encrypt(&pk, plaintext, Some(aad)).unwrap();
+        let decrypted = RsaKyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
 }
 
 #[cfg(all(test, feature = "async-engine"))]
@@ -482,6 +513,10 @@ mod async_tests {
     use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
+
+    fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
+        RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap()
+    }
 
     #[tokio::test]
     async fn test_async_streaming_roundtrip() {

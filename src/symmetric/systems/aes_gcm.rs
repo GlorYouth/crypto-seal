@@ -250,4 +250,55 @@ mod tests {
         let result = AesGcmSystem::decrypt(&key, &short_ciphertext, None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_empty_plaintext_roundtrip() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"";
+        let aad = b"some_aad";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
+        let decrypted = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad)).unwrap();
+        
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_with_aad_decrypt_without_fails() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"some data";
+        let aad = b"should_be_present";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ciphertext_uniqueness() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"the same data";
+
+        let ciphertext1 = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+        let ciphertext2 = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+
+        assert_ne!(ciphertext1, ciphertext2, "Encrypting the same data twice should produce different ciphertexts due to random nonce.");
+    }
+    
+    #[test]
+    fn test_empty_aad_roundtrip() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"some data";
+        let aad = b"";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
+        let decrypted = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad)).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
 } 
