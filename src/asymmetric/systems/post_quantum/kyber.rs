@@ -1,29 +1,27 @@
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
-use serde::{Serialize, Deserialize};
-use crate::traits::CryptographicSystem;
+use serde::{Deserialize, Serialize};
+use crate::asymmetric::traits::CryptographicSystem;
 #[cfg(feature = "async-engine")]
-use crate::traits::AsyncStreamingSystem;
-use crate::primitives::{Base64String, to_base64, from_base64, CryptoConfig, ZeroizingVec, StreamingResult};
+use crate::asymmetric::traits::AsyncStreamingSystem;
+use crate::primitives::{from_base64, to_base64, Base64String, CryptoConfig, StreamingResult, ZeroizingVec};
 use crate::errors::Error;
-use aes_gcm::{
-    aead::{AeadCore, KeyInit},
-};
+use aes_gcm::aead::{AeadCore, KeyInit};
 #[cfg(not(feature = "chacha"))]
 use aes_gcm::{
-    Aes256Gcm, Nonce, aead::{Aead, OsRng}
+    aead::{Aead, OsRng}, Aes256Gcm, Nonce
 };
 #[cfg(feature = "chacha")]
 use chacha20poly1305::{
+    aead::{generic_array::GenericArray, Aead as ChaAead},
     ChaCha20Poly1305,
-    aead::{Aead as ChaAead, generic_array::GenericArray},
     Nonce as ChaNonce
 };
 #[cfg(feature = "chacha")]
 use rsa::rand_core::OsRng;
 
 #[cfg(feature = "async-engine")]
-use crate::primitives::async_streaming::AsyncStreamingConfig;
+use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -397,9 +395,10 @@ mod tests {
 #[cfg(all(test, feature = "async-engine"))]
 mod async_tests {
     use super::*;
-    use crate::primitives::{CryptoConfig, async_streaming::AsyncStreamingConfig};
+    use crate::primitives::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
+    use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 
     #[tokio::test]
     async fn test_async_streaming_roundtrip() {

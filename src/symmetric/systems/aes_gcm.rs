@@ -1,14 +1,14 @@
 //! AES-GCM 对称加密实现
+use rsa::rand_core::RngCore;
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::{Aead, Payload};
 use base64::{Engine as _, engine::general_purpose};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Serialize, Deserialize};
 use crate::errors::Error;
 use crate::primitives::{CryptoConfig, Base64String};
-use crate::traits::SymmetricCryptographicSystem;
+use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::fmt::Debug;
+use rsa::rand_core::OsRng;
 
 const KEY_SIZE: usize = 32; // AES-256 需要 32 字节的密钥
 const NONCE_SIZE: usize = 12; // GCM 标准的 Nonce 大小是 12 字节

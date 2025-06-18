@@ -5,40 +5,41 @@
 //!
 //! 新版本添加了混合加密系统，同时使用RSA和Kyber提供双重安全保障。
 
-pub mod systems;
 pub mod storage;
-pub mod engines;
 pub mod primitives;
 pub mod traits;
 pub mod rotation;
 pub mod config;
 pub mod errors;
+pub mod asymmetric;
+pub mod symmetric;
 
-pub use traits::CryptographicSystem;
+pub use asymmetric::traits::CryptographicSystem;
 #[cfg(feature = "secure-storage")]
 pub use traits::SecureKeyStorage;
 pub use traits::AuthenticatedCryptoSystem;
 pub use errors::Error;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-pub use systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-pub use rotation::KeyRotationManager;
+pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+pub use asymmetric::rotation::KeyRotationManager;
 pub use config::ConfigManager;
-pub use engines::QSealEngine;
+pub use asymmetric::engines::QSealEngine;
 #[cfg(feature = "async-engine")]
-pub use engines::AsyncQSealEngine;
+pub use asymmetric::engines::AsyncQSealEngine;
+pub use symmetric::engines::SymmetricQSealEngine;
 
 // 条件编译特性
 /// 传统RSA加密系统别名
 #[cfg(feature = "traditional")]
-pub use systems::traditional::rsa::RsaCryptoSystem as TraditionalRsa;
+pub use asymmetric::systems::traditional::rsa::RsaCryptoSystem as TraditionalRsa;
 
 /// 后量子Kyber加密系统别名
 #[cfg(feature = "post-quantum")]
-pub use systems::post_quantum::kyber::KyberCryptoSystem as PostQuantumKyber;
+pub use asymmetric::systems::post_quantum::kyber::KyberCryptoSystem as PostQuantumKyber;
 
 /// 混合RSA+Kyber加密系统别名
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-pub use systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRsaKyber;
+pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRsaKyber;
 
 // 导出密钥存储
 #[cfg(feature = "secure-storage")]

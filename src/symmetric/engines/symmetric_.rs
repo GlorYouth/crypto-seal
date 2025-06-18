@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex};
 use std::io::{Read, Write};
 use crate::errors::Error;
 use crate::primitives::CryptoConfig;
-use crate::primitives::streaming::{StreamingConfig, StreamingResult};
-use crate::rotation::{RotationPolicy, KeyStorage, SymmetricKeyRotationManager};
-use crate::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
-
+use crate::asymmetric::primitives::streaming::{StreamingConfig, StreamingResult};
+use crate::rotation::{KeyStorage, RotationPolicy};
+use crate::symmetric::rotation::SymmetricKeyRotationManager;
+use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
 /// `SymmetricQSealEngine`：一个使用对称加密算法并支持密钥自动轮换的用户友好引擎。
 ///
 /// 该引擎泛型于一个 `SymmetricCryptographicSystem`，负责处理所有的密钥管理、

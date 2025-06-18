@@ -12,10 +12,11 @@ use crate::config::ConfigManager;
 use crate::errors::Error;
 use crate::rotation::{KeyMetadata, KeyStorage, RotationPolicy};
 use crate::storage::KeyFileStorage;
-use crate::traits::{AuthenticatedCryptoSystem, CryptographicSystem, AsyncStreamingSystem};
+use crate::traits::AuthenticatedCryptoSystem;
 use crate::primitives::StreamingResult;
-use crate::primitives::async_streaming::AsyncStreamingConfig;
+use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
+use crate::asymmetric::traits::{AsyncStreamingSystem, CryptographicSystem};
 
 /// 并发版 QSeal 引擎，支持多线程同时调用
 pub struct AsyncQSealEngine<C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>

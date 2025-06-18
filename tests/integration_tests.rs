@@ -21,7 +21,7 @@ fn integration_sync_engine() {
 fn integration_async_engine() {
     use std::fs;
     use seal_kit::AsyncQSealEngine;
-    use seal_kit::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use seal_kit::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use std::sync::Arc;
     use seal_kit::ConfigManager; 
     // 测试并发 AsyncQSealEngine（混合加密）

@@ -2,7 +2,7 @@
 
 use crate::errors::Error;
 use crate::primitives::StreamingResult;
-use crate::traits::CryptographicSystem;
+use crate::asymmetric::traits::CryptographicSystem;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

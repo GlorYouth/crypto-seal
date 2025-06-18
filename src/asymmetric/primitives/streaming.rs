@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use crate::traits::CryptographicSystem;
+use crate::asymmetric::traits::CryptographicSystem;
 use crate::errors::Error;
 use std::sync::Arc;
 #[cfg(feature = "parallel")]
@@ -314,7 +314,7 @@ where
     }
 }
 
-impl<T> crate::traits::SyncStreamingSystem for T
+impl<T> crate::asymmetric::traits::SyncStreamingSystem for T
 where
     T: CryptographicSystem,
     Error: From<T::Error>,
@@ -466,15 +466,15 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use crate::primitives::{constant_time_eq, Base64String, CryptoConfig, from_base64};
-    use crate::traits::CryptographicSystem;
+    use crate::asymmetric::traits::CryptographicSystem;
     use std::sync::Mutex;
     
-    use crate::traits::SyncStreamingSystem;
+    use crate::asymmetric::traits::SyncStreamingSystem;
 
     #[cfg(feature = "post-quantum")]
     #[test]
     fn test_streaming_encryption_decryption() {
-        use crate::systems::post_quantum::KyberCryptoSystem;
+        use crate::asymmetric::systems::post_quantum::KyberCryptoSystem;
         // 生成测试数据（100KB）
         let data_size = 100 * 1024;
         let mut test_data = Vec::with_capacity(data_size);
@@ -577,7 +577,7 @@ mod tests {
     #[cfg(all(feature = "parallel", feature = "post-quantum"))]
     #[test]
     fn test_streaming_parallel_matches_sequential() {
-        use crate::systems::post_quantum::KyberCryptoSystem;
+        use crate::asymmetric::systems::post_quantum::KyberCryptoSystem;
         // 验证并行与顺序流式加解密结果一致 (使用Kyber)
         let data = (0u8..100u8).collect::<Vec<u8>>();
         let config = CryptoConfig::default();

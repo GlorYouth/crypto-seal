@@ -1,17 +1,17 @@
-use rsa::{RsaPrivateKey, RsaPublicKey, Pkcs1v15Encrypt};
-use rsa::pkcs8::{EncodePublicKey, EncodePrivateKey, DecodePublicKey, DecodePrivateKey};
+use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::pss::{SigningKey, VerifyingKey};
-use rsa::signature::{RandomizedSigner, Verifier, SignatureEncoding};
+use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use sha2::Sha256;
 use rsa::rand_core::OsRng as RsaOsRng;
-use serde::{Serialize, Deserialize};
-use crate::traits::CryptographicSystem;
+use serde::{Deserialize, Serialize};
+use crate::asymmetric::traits::CryptographicSystem;
 #[cfg(feature = "async-engine")]
-use crate::traits::AsyncStreamingSystem;
-use crate::primitives::{Base64String, from_base64, CryptoConfig, ZeroizingVec, StreamingResult};
+use crate::asymmetric::traits::AsyncStreamingSystem;
+use crate::primitives::{from_base64, Base64String, CryptoConfig, StreamingResult, ZeroizingVec};
 use crate::errors::Error;
 #[cfg(feature = "async-engine")]
-use crate::primitives::async_streaming::AsyncStreamingConfig;
+use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -335,9 +335,10 @@ mod tests {
 #[cfg(all(test, feature = "async-engine"))]
 mod async_tests {
     use super::*;
-    use crate::primitives::{CryptoConfig, async_streaming::AsyncStreamingConfig};
+    use crate::primitives::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
+    use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 
     #[tokio::test]
     async fn test_async_streaming_roundtrip() {

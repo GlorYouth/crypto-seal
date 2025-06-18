@@ -3,9 +3,8 @@ use std::io::{Read, Write};
 use std::marker::PhantomData;
 
 use crate::errors::Error;
-use crate::primitives::streaming::{StreamingConfig, StreamingResult};
-use crate::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
-
+use crate::asymmetric::primitives::streaming::{StreamingConfig, StreamingResult};
+use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
 /// 对称流式加密器
 pub struct SymmetricStreamingEncryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
 where

@@ -31,7 +31,6 @@ zeroize = { version = "1.8.1", features = ["derive"] }
 
 # 传统加密相关
 rsa = { version = "0.9.8", optional = true }
-rand = "0.8.5"
 rand_core = "0.9.3"
 sha2 = "0.10.9"
 

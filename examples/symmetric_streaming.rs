@@ -6,12 +6,12 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use seal_kit::primitives::streaming::StreamingConfig;
+use seal_kit::asymmetric::primitives::streaming::StreamingConfig;
 use seal_kit::primitives::CryptoConfig;
-use seal_kit::rotation::{KeyStorage, RotationPolicy};
+use seal_kit::rotation::RotationPolicy;
 use seal_kit::storage::KeyFileStorage;
-use seal_kit::systems::symmetric::aes_gcm::AesGcmSystem;
-use seal_kit::engines::SymmetricQSealEngine;
+use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
+use seal_kit::SymmetricQSealEngine;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 对称加密流式 API 示例 ---");
