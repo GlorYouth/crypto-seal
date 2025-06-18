@@ -1,7 +1,7 @@
 #![cfg(feature = "traditional")]
 use std::io::Cursor;
 use seal_kit::{QSealEngine, TraditionalRsa, ConfigManager};
-use seal_kit::primitives::StreamingConfig;
+use seal_kit::common::streaming::StreamingConfig;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

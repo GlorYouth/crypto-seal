@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 pub(crate) use crate::asymmetric::traits::CryptographicSystem;
-pub(crate) use crate::traits::{KeyMetadata, KeyStatus};
-use crate::errors::Error;
-use crate::primitives::CryptoConfig;
+pub(crate) use crate::common::traits::{KeyMetadata, KeyStatus};
+use crate::common::errors::Error;
+use crate::common::utils::CryptoConfig;
 
 /// 密钥轮换策略
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,11 +51,6 @@ pub(crate) struct KeyPairData {
     pub(crate) private_key: String,
 }
 
-// ===================================================================================
-// ========================= 对称密钥轮换管理器 ============================
-// ===================================================================================
-use crate::symmetric::traits::SymmetricCryptographicSystem;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,9 +58,9 @@ mod tests {
     use std::collections::HashMap;
     use crate::asymmetric::rotation::KeyRotationManager;
     use crate::asymmetric::traits::CryptographicSystem;
-    use crate::traits::{KeyMetadata, KeyStatus};
-    use crate::errors::Error;
-    use crate::primitives::Base64String;
+    use crate::common::traits::{KeyMetadata, KeyStatus};
+    use crate::common::errors::Error;
+    use crate::common::utils::Base64String;
 
     /// 内存存储用于测试
     struct InMemoryStorage {

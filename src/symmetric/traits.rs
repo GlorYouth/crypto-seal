@@ -1,7 +1,8 @@
 use std::io::{Read, Write};
 use std::fmt::Debug;
 use crate::Error;
-use crate::primitives::{CryptoConfig, StreamingConfig, StreamingResult};
+use crate::common::utils::CryptoConfig;
+use crate::common::streaming::{StreamingConfig, StreamingResult};
 
 /// 对称加密系统的公共特征
 pub trait SymmetricCryptographicSystem: Sized {

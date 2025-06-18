@@ -1,7 +1,7 @@
 #![cfg(feature = "secure-storage")]
 
-use serde::{Serialize, Deserialize};
-use secrecy::{SecretString, ExposeSecret};
+use serde::{Deserialize, Serialize};
+use secrecy::{ExposeSecret, SecretString};
 use chrono::Utc;
 use argon2::{
     password_hash::{
@@ -15,9 +15,9 @@ use aes_gcm::{
     Aes256Gcm, Nonce
 };
 
-use crate::traits::SecureKeyStorage;
-use crate::errors::Error;
-use crate::primitives::{to_base64, from_base64, CryptoConfig};
+use crate::common::traits::SecureKeyStorage;
+use crate::common::errors::Error;
+use crate::common::utils::{from_base64, to_base64, CryptoConfig};
 
 /// 加密的密钥容器，实现了SecureKeyStorage特征
 /// 提供密码保护的密钥存储功能

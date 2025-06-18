@@ -6,23 +6,20 @@
 //! 新版本添加了混合加密系统，同时使用RSA和Kyber提供双重安全保障。
 
 pub mod storage;
-pub mod primitives;
-pub mod traits;
+pub mod common;
 pub mod rotation;
-pub mod config;
-pub mod errors;
 pub mod asymmetric;
 pub mod symmetric;
 
 pub use asymmetric::traits::CryptographicSystem;
 #[cfg(feature = "secure-storage")]
-pub use traits::SecureKeyStorage;
-pub use traits::AuthenticatedCryptoSystem;
-pub use errors::Error;
+pub use common::traits::SecureKeyStorage;
+pub use common::traits::AuthenticatedCryptoSystem;
+pub use common::errors::Error;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 pub use asymmetric::rotation::KeyRotationManager;
-pub use config::ConfigManager;
+pub use common::config::ConfigManager;
 pub use asymmetric::engines::QSealEngine;
 #[cfg(feature = "async-engine")]
 pub use asymmetric::engines::AsyncQSealEngine;
@@ -51,8 +48,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{constant_time_eq, CryptoConfig};
-    
+    use crate::common::utils::{constant_time_eq, CryptoConfig};
+
     #[test]
     #[cfg(all(feature = "traditional", feature = "post-quantum"))]
     fn test_unified_encrypt_decrypt() {

@@ -6,9 +6,9 @@ use seal_kit::TraditionalRsa;
 #[cfg(feature = "post-quantum")]
 use seal_kit::PostQuantumKyber;
 use seal_kit::rotation::{KeyStorage, RotationPolicy};
-use seal_kit::primitives::CryptoConfig;
+use seal_kit::common::utils::CryptoConfig;
 use seal_kit::storage::file::KeyFileStorage;
-use seal_kit::traits::KeyStatus;
+use seal_kit::common::traits::KeyStatus;
 
 #[cfg(feature = "traditional")]
 #[test]

@@ -1,9 +1,9 @@
 //! 对称加密引擎 `SymmetricQSealEngine`
 use std::sync::{Arc, Mutex};
 use std::io::{Read, Write};
-use crate::errors::Error;
-use crate::primitives::CryptoConfig;
-use crate::asymmetric::primitives::streaming::{StreamingConfig, StreamingResult};
+use crate::common::errors::Error;
+use crate::common::utils::CryptoConfig;
+use crate::common::streaming::{StreamingConfig, StreamingResult};
 use crate::rotation::{KeyStorage, RotationPolicy};
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};

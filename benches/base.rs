@@ -1,16 +1,17 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
-use seal_kit::{TraditionalRsa, PostQuantumKyber, HybridRsaKyber, QSealEngine};
+use seal_kit::{HybridRsaKyber, PostQuantumKyber, QSealEngine, TraditionalRsa};
 use seal_kit::asymmetric::traits::CryptographicSystem;
 use seal_kit::ConfigManager;
 use std::sync::Arc;
 use std::io::Cursor;
 use std::fs;
-use rsa::{RsaPrivateKey, Pkcs1v15Encrypt};
+use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use rsa::pkcs8::DecodePrivateKey;
 use criterion::SamplingMode;
-use seal_kit::primitives::{from_base64, CryptoConfig, StreamingConfig};
 use seal_kit::asymmetric::traits::SyncStreamingSystem;
+use seal_kit::common::streaming::StreamingConfig;
+use seal_kit::common::utils::{from_base64, CryptoConfig};
 
 fn bench_rsa(c: &mut Criterion) {
     let mut config = CryptoConfig::default();

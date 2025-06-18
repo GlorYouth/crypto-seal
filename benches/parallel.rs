@@ -1,11 +1,13 @@
 #![cfg(feature = "parallel")]
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use seal_kit::primitives::{decrypt_stream_parallel, encrypt_stream_parallel, CryptoConfig, StreamingConfig};
+use seal_kit::common::{decrypt_stream_parallel, encrypt_stream_parallel};
 use seal_kit::{HybridRsaKyber, PostQuantumKyber, TraditionalRsa};
 use seal_kit::asymmetric::traits::SyncStreamingSystem;
 use std::io::Cursor;
 use seal_kit::asymmetric::traits::CryptographicSystem;
+use seal_kit::common::streaming::StreamingConfig;
+use seal_kit::common::utils::CryptoConfig;
 
 fn bench_stream_rsa_encrypt_parallel(c: &mut Criterion) {
     let mut config = CryptoConfig::default();

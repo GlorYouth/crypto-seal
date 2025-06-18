@@ -3,7 +3,9 @@ use std::fmt::Debug;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::io::{Read, Write};
 use crate::Error;
-use crate::primitives::{AsyncStreamingConfig, CryptoConfig, StreamingConfig, StreamingResult};
+use crate::common::AsyncStreamingConfig;
+use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::utils::CryptoConfig;
 
 /// 加密系统的公共特征，统一各种加密算法的接口
 pub trait CryptographicSystem: Sized {

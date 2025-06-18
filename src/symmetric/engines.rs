@@ -1,3 +1,3 @@
-pub mod symmetric_;
+pub mod sync_;
 
-pub use symmetric_::*;
+pub use sync_::*;

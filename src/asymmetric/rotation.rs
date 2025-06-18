@@ -2,7 +2,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use crate::{CryptographicSystem, Error};
-use crate::primitives::CryptoConfig;
+use crate::common::utils::CryptoConfig;
 use crate::rotation::{KeyMetadata, KeyPairData, KeyStatus, KeyStorage, RotationPolicy};
 
 /// 密钥轮换管理器

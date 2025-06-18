@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::asymmetric::traits::CryptographicSystem;
 #[cfg(feature = "async-engine")]
 use crate::asymmetric::traits::AsyncStreamingSystem;
-use crate::primitives::{from_base64, Base64String, CryptoConfig, StreamingResult, ZeroizingVec};
-use crate::errors::Error;
+use crate::common::errors::Error;
 #[cfg(feature = "async-engine")]
 use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use crate::common::streaming::StreamingResult;
+use crate::common::utils::{from_base64, Base64String, CryptoConfig, ZeroizingVec};
 
 /// RSA公钥包装器，提供序列化支持
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -294,7 +295,7 @@ impl AsyncStreamingSystem for RsaCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::constant_time_eq;
+    use crate::common::utils::constant_time_eq;
     
     #[test]
     fn rsa_encryption_roundtrip() {
@@ -335,7 +336,7 @@ mod tests {
 #[cfg(all(test, feature = "async-engine"))]
 mod async_tests {
     use super::*;
-    use crate::primitives::CryptoConfig;
+    use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
     use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;

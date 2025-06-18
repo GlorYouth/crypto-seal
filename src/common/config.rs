@@ -11,9 +11,9 @@ use tokio::sync::mpsc;
 
 use serde::{Serialize, Deserialize};
 
-use crate::errors::Error;
+use crate::common::errors::Error;
 use crate::rotation::RotationPolicy;
-use crate::primitives::CryptoConfig;
+use crate::common::utils::CryptoConfig;
 
 /// 配置来源
 #[derive(Debug, Clone, PartialEq)]

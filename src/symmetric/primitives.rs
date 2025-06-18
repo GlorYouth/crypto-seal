@@ -1,1 +1,1 @@
-pub mod symmetric_streaming;
+pub mod streaming;

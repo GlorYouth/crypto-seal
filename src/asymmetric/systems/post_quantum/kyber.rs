@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::asymmetric::traits::CryptographicSystem;
 #[cfg(feature = "async-engine")]
 use crate::asymmetric::traits::AsyncStreamingSystem;
-use crate::primitives::{from_base64, to_base64, Base64String, CryptoConfig, StreamingResult, ZeroizingVec};
-use crate::errors::Error;
+use crate::common::errors::Error;
 use aes_gcm::aead::{AeadCore, KeyInit};
 #[cfg(not(feature = "chacha"))]
 use aes_gcm::{
@@ -24,6 +23,8 @@ use rsa::rand_core::OsRng;
 use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use crate::common::streaming::StreamingResult;
+use crate::common::utils::{from_base64, to_base64, Base64String, CryptoConfig, ZeroizingVec};
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -353,8 +354,8 @@ impl AsyncStreamingSystem for KyberCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{constant_time_eq, CryptoConfig};
-    
+    use crate::common::utils::{constant_time_eq, CryptoConfig};
+
     #[test]
     fn kyber_encryption_roundtrip() {
         let config = CryptoConfig::default(); // Kyber768
@@ -395,7 +396,7 @@ mod tests {
 #[cfg(all(test, feature = "async-engine"))]
 mod async_tests {
     use super::*;
-    use crate::primitives::CryptoConfig;
+    use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
     use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use crate::Error;
-use crate::primitives::CryptoConfig;
+use crate::common::utils::CryptoConfig;
 use crate::rotation::{KeyMetadata, KeyStatus, KeyStorage, RotationPolicy};
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 

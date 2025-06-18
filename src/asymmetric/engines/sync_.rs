@@ -6,12 +6,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::io::{Read, Write};
 use crate::asymmetric::traits::{CryptographicSystem, SyncStreamingSystem};
-use crate::config::ConfigManager;
-use crate::errors::Error;
+use crate::common::config::ConfigManager;
+use crate::common::errors::Error;
 use crate::asymmetric::rotation::KeyRotationManager;
 use crate::storage::KeyFileStorage;
-use crate::traits::AuthenticatedCryptoSystem;
-use crate::primitives::{StreamingConfig, StreamingResult};
+use crate::common::traits::AuthenticatedCryptoSystem;
+use crate::common::streaming::{StreamingConfig, StreamingResult};
 
 /// Q-Seal核心引擎
 ///
@@ -342,10 +342,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{from_base64, Base64String, CryptoConfig};
-    use crate::config::ConfigManager;
+    use crate::common::config::ConfigManager;
     use std::sync::Arc;
     use tempfile::TempDir;
+    use crate::common::utils::{from_base64, Base64String, CryptoConfig};
 
     /// 简单的测试用系统，仅实现基础加密/解密
     #[derive(Clone)]

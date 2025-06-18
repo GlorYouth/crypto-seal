@@ -7,13 +7,13 @@ use std::sync::Arc;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::primitives::CryptoConfig;
-use crate::config::ConfigManager;
-use crate::errors::Error;
+use crate::common::utils::CryptoConfig;
+use crate::common::config::ConfigManager;
+use crate::common::errors::Error;
 use crate::rotation::{KeyMetadata, KeyStorage, RotationPolicy};
 use crate::storage::KeyFileStorage;
-use crate::traits::AuthenticatedCryptoSystem;
-use crate::primitives::StreamingResult;
+use crate::common::traits::AuthenticatedCryptoSystem;
+use crate::common::streaming::StreamingResult;
 use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 use crate::asymmetric::traits::{AsyncStreamingSystem, CryptographicSystem};
@@ -77,15 +77,15 @@ where
             if name.starts_with(&self.key_prefix) {
                 let (meta, data) = self.key_storage.load_key(&name)?;
                 match meta.status {
-                    crate::traits::KeyStatus::Active => {
+                    crate::common::traits::KeyStatus::Active => {
                         let (pubk, privk) = Self::deserialize(&data)?;
                         self.primary.store(Some(Arc::new((pubk, privk, meta))));
                     }
-                    crate::traits::KeyStatus::Rotating => {
+                    crate::common::traits::KeyStatus::Rotating => {
                         let (pubk, privk) = Self::deserialize(&data)?;
                         self.secondary.insert(name, (pubk, privk, meta));
                     }
-                    crate::traits::KeyStatus::Expired => {
+                    crate::common::traits::KeyStatus::Expired => {
                         let _ = self.key_storage.delete_key(&name);
                     }
                 }
@@ -156,13 +156,13 @@ where
         if let Some(old) = self.primary.load_full() {
             let (_opk, _osk, mut om) = (&*old).clone();
             version = om.version + 1;
-            om.status = crate::traits::KeyStatus::Rotating;
+            om.status = crate::common::traits::KeyStatus::Rotating;
             let key_name = format!("{}-{}", self.key_prefix, om.id);
             let data = Self::serialize(&_opk, &_osk)?;
             self.key_storage.save_key(&key_name, &om, &data)?;
             self.secondary.insert(key_name.clone(), (_opk, _osk, om));
         }
-        let metadata = KeyMetadata { id: id.clone(), created_at: now.clone(), expires_at: Some(exp), usage_count: 0, status: crate::traits::KeyStatus::Active, version, algorithm: format!("{}", std::any::type_name::<C>()) };
+        let metadata = KeyMetadata { id: id.clone(), created_at: now.clone(), expires_at: Some(exp), usage_count: 0, status: crate::common::traits::KeyStatus::Active, version, algorithm: format!("{}", std::any::type_name::<C>()) };
         let key_name = format!("{}-{}", self.key_prefix, id);
         let data = Self::serialize(&new_pk, &new_sk)?;
         self.key_storage.save_key(&key_name, &metadata, &data)?;
@@ -175,7 +175,7 @@ where
         let mut to_remove = Vec::new();
         for entry in self.secondary.iter() {
             let (name, (_pk, _sk, meta)) = (entry.key(), entry.value());
-            if meta.status == crate::traits::KeyStatus::Rotating {
+            if meta.status == crate::common::traits::KeyStatus::Rotating {
                 to_remove.push(name.clone());
             }
         }
@@ -442,9 +442,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{from_base64, Base64String, CryptoConfig, StreamingResult};
     use std::io::Cursor;
     use tokio::io::{copy, AsyncWriteExt};
+    use crate::common::streaming::StreamingResult;
+    use crate::common::utils::{from_base64, Base64String, CryptoConfig};
 
     // A dummy crypto system for testing
     struct DummyCryptoSystem;

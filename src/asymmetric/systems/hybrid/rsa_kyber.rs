@@ -3,11 +3,10 @@
 //!
 
 use aes_gcm::KeyInit;
-use crate::primitives::{from_base64, to_base64, Base64String, CryptoConfig};
-use crate::errors::Error;
+use crate::common::errors::Error;
 use crate::asymmetric::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
 use crate::asymmetric::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
-use crate::traits::AuthenticatedCryptoSystem;
+use crate::common::traits::AuthenticatedCryptoSystem;
 use aes_gcm::aead::Aead;
 use aes_gcm::aead::AeadCore;
 #[cfg(not(feature = "chacha"))]
@@ -25,6 +24,7 @@ use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::asymmetric::traits::CryptographicSystem;
+use crate::common::utils::{from_base64, to_base64, Base64String, CryptoConfig};
 // --- 密钥结构 ---
 
 /// 混合公钥，包含用于签名的RSA公钥和用于密钥封装的Kyber公钥。
@@ -234,7 +234,7 @@ impl AsyncStreamingSystem for RsaKyberCryptoSystem {
         mut writer: W,
         config: &AsyncStreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<crate::primitives::StreamingResult, Error>
+    ) -> Result<crate::common::streaming::StreamingResult, Error>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
@@ -279,7 +279,7 @@ impl AsyncStreamingSystem for RsaKyberCryptoSystem {
 
         writer.flush().await.map_err(Error::Io)?;
 
-        Ok(crate::primitives::StreamingResult {
+        Ok(crate::common::streaming::StreamingResult {
             bytes_processed,
             buffer: output_buffer,
         })
@@ -291,7 +291,7 @@ impl AsyncStreamingSystem for RsaKyberCryptoSystem {
         mut writer: W,
         config: &AsyncStreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<crate::primitives::StreamingResult, Error>
+    ) -> Result<crate::common::streaming::StreamingResult, Error>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
@@ -332,7 +332,7 @@ impl AsyncStreamingSystem for RsaKyberCryptoSystem {
 
         writer.flush().await.map_err(Error::Io)?;
 
-        Ok(crate::primitives::StreamingResult {
+        Ok(crate::common::streaming::StreamingResult {
             bytes_processed,
             buffer: output_buffer,
         })
@@ -410,7 +410,7 @@ mod tests {
 #[cfg(all(test, feature = "async-engine"))]
 mod async_tests {
     use super::*;
-    use crate::primitives::CryptoConfig;
+    use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
 

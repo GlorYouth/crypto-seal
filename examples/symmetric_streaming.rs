@@ -6,8 +6,8 @@ use std::io::Cursor;
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use seal_kit::asymmetric::primitives::streaming::StreamingConfig;
-use seal_kit::primitives::CryptoConfig;
+use seal_kit::common::streaming::StreamingConfig;
+use seal_kit::common::utils::CryptoConfig;
 use seal_kit::rotation::RotationPolicy;
 use seal_kit::storage::KeyFileStorage;
 use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;

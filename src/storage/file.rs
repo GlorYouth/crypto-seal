@@ -3,13 +3,13 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use dashmap::DashMap;
 
-use crate::traits::KeyMetadata;
+use crate::common::traits::KeyMetadata;
 use crate::rotation::KeyStorage;
-use crate::errors::Error;
+use crate::common::errors::Error;
 
 // 以下仅在启用 secure-storage 特性时可用
 #[cfg(feature = "secure-storage")]
-use crate::traits::SecureKeyStorage;
+use crate::common::traits::SecureKeyStorage;
 #[cfg(feature = "secure-storage")]
 use crate::storage::container::EncryptedKeyContainer;
 
@@ -395,7 +395,7 @@ mod tests {
     #[cfg(feature = "secure-storage")]
     use secrecy::SecretString;
     use tempfile::tempdir;
-    use crate::traits::KeyStatus;
+    use crate::common::traits::KeyStatus;
 
     #[cfg(feature = "secure-storage")]
     #[test]

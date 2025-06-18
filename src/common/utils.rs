@@ -1,14 +1,8 @@
-//! 基础工具模块，提供 Base64 编解码、ZeroizingVec、安全比较等工具
-pub use crate::asymmetric::primitives::streaming::*;
-
-#[cfg(feature = "async-engine")]
-pub use crate::asymmetric::primitives::async_streaming::{AsyncStreamingConfig, AsyncStreamingDecryptor, AsyncStreamingEncryptor};
-
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use std::ops::{Deref, DerefMut};
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
-use serde_bytes;
+use std::ops::{Deref, DerefMut};
+use base64::Engine;
 
 /// 将字节数组转换为Base64字符串
 pub fn to_base64(data: &[u8]) -> String {
@@ -189,8 +183,8 @@ impl AsRef<[u8]> for ZeroizingVec {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
+    use crate::common::utils::{constant_time_eq, from_base64, to_base64, Base64String, CryptoConfig, SecureBytes};
+
     #[test]
     fn test_base64_roundtrip() {
         let original = b"Hello, crypto world!";
@@ -253,5 +247,4 @@ mod tests {
         assert!(config.auto_verify_signatures);
         assert_eq!(config.default_signature_algorithm, "RSA-PSS-SHA256");
     }
-} 
-
+}

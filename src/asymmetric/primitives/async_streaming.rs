@@ -1,7 +1,7 @@
 #![cfg(feature = "async-engine")]
 
-use crate::errors::Error;
-use crate::primitives::StreamingResult;
+use crate::common::errors::Error;
+use crate::common::streaming::StreamingResult;
 use crate::asymmetric::traits::CryptographicSystem;
 use std::marker::PhantomData;
 use std::sync::Arc;
