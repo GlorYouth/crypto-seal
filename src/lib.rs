@@ -25,12 +25,11 @@ pub use common::errors::Error;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::rotation::KeyRotationManager;
-pub use common::config::ConfigManager;
+pub use asymmetric::rotation::AsymmetricKeyRotationManager;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::engines::AsymmetricQSealEngine;
 #[cfg(all(feature = "async-engine", any(feature = "traditional", feature = "post-quantum")))]
-pub use asymmetric::engines::AsymmetricQSealEngineAsync;
+pub use asymmetric::engines::AsymmetricQSealAsyncEngine;
 #[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
 pub use symmetric::engines::SymmetricQSealEngine;
 

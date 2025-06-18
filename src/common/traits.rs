@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 use serde::{Deserialize, Serialize};
+use secrecy::{SerializableSecret, SecretBox, CloneableSecret};
+use zeroize::Zeroize;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 
@@ -13,6 +15,14 @@ pub enum KeyStatus {
     /// 已过期，仅用于解密旧数据
     Expired,
 }
+
+#[derive(Clone, Serialize, Deserialize, Zeroize)]
+pub struct SecString(pub String);
+
+// 为我们的 newtype 选择加入秘密序列化。
+impl SerializableSecret for SecString {}
+// 允许包含此 newtype 的 SecretBox 被克隆。
+impl CloneableSecret for SecString {}
 
 /// 密钥元数据结构
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -31,6 +41,12 @@ pub struct KeyMetadata {
     pub version: u32,
     /// 算法标识符
     pub algorithm: String,
+    /// (非对称) 公钥 (Base64编码)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// (非对称) 加密后的私钥 (Base64编码)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_private_key: Option<SecretBox<SecString>>,
 }
 
 /// 认证加密系统扩展特征

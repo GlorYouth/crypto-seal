@@ -5,5 +5,5 @@ mod async_;
 mod sync_;
 
 #[cfg(feature = "async-engine")]
-pub use async_::SymmetricQSealEngineAsync;
+pub use async_::SymmetricQSealAsyncEngine;
 pub use sync_::SymmetricQSealEngine;

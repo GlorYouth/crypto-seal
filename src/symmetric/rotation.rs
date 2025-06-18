@@ -112,6 +112,8 @@ impl SymmetricKeyRotationManager {
             status: KeyStatus::Active,
             version: new_version,
             algorithm: algorithm_name.to_string(),
+            public_key: None,
+            encrypted_private_key: None,
         };
 
         let old_primary_metadata = self.primary_key_metadata.clone();
@@ -137,6 +139,47 @@ impl SymmetricKeyRotationManager {
         Ok(())
     }
 
+    /// (Async) 开始密钥轮换过程。
+    pub async fn start_rotation_async(&mut self, password: &SecretString, algorithm_name: &str) -> Result<(), Error> {
+        let new_version = self.get_next_version();
+        let new_id = format!("{}-{}", self.key_prefix, Uuid::new_v4());
+
+        let now = Utc::now();
+        let created_at = now.to_rfc3339();
+        let expires_at = now + Duration::days(self.rotation_policy.validity_period_days as i64);
+
+        let new_metadata = KeyMetadata {
+            id: new_id.clone(),
+            created_at,
+            expires_at: Some(expires_at.to_rfc3339()),
+            usage_count: 0,
+            status: KeyStatus::Active,
+            version: new_version,
+            algorithm: algorithm_name.to_string(),
+            public_key: None,
+            encrypted_private_key: None,
+        };
+
+        let old_primary_metadata = self.primary_key_metadata.clone();
+
+        self.seal.commit_payload_async(password, |payload| {
+            if let Some(mut old_meta) = old_primary_metadata {
+                old_meta.status = KeyStatus::Rotating;
+                payload.key_registry.insert(old_meta.id.clone(), old_meta);
+            }
+            payload.key_registry.insert(new_id, new_metadata.clone());
+        }).await?;
+
+        if let Some(old_meta) = self.primary_key_metadata.take() {
+            let mut rotating_meta = old_meta.clone();
+            rotating_meta.status = KeyStatus::Rotating;
+            self.secondary_keys_metadata.push(rotating_meta);
+        }
+        self.primary_key_metadata = Some(new_metadata);
+
+        Ok(())
+    }
+
     /// 增加主密钥的使用计数。
     pub fn increment_usage_count(&mut self, password: &SecretString) -> Result<(), Error> {
         if let Some(meta) = &mut self.primary_key_metadata {
@@ -148,6 +191,24 @@ impl SymmetricKeyRotationManager {
                     m.usage_count = new_count;
                 }
             })?;
+
+            // 更新内存状态
+            meta.usage_count = new_count;
+        }
+        Ok(())
+    }
+
+    /// (Async) 增加主密钥的使用计数。
+    pub async fn increment_usage_count_async(&mut self, password: &SecretString) -> Result<(), Error> {
+        if let Some(meta) = &mut self.primary_key_metadata {
+            let key_id = meta.id.clone();
+            let new_count = meta.usage_count + 1;
+
+            self.seal.commit_payload_async(password, |payload| {
+                if let Some(m) = payload.key_registry.get_mut(&key_id) {
+                    m.usage_count = new_count;
+                }
+            }).await?;
 
             // 更新内存状态
             meta.usage_count = new_count;

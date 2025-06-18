@@ -1,7 +1,9 @@
-#[cfg(feature = "async-engine")]
-pub mod async_;
-pub mod sync_;
+//! 非对称加密引擎模块
 
-pub use self::sync_::*;
 #[cfg(feature = "async-engine")]
-pub use self::async_::*;
+mod async_;
+mod sync_;
+
+#[cfg(feature = "async-engine")]
+pub use async_::AsymmetricQSealAsyncEngine;
+pub use sync_::AsymmetricQSealEngine;

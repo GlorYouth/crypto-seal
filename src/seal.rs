@@ -5,18 +5,24 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::fs as tokio_fs;
 
-use crate::common::config::ConfigFile;
 use crate::common::errors::Error;
 use crate::common::traits::{KeyMetadata, SecureKeyStorage};
 use crate::storage::EncryptedKeyContainer;
 use crate::symmetric::engines::SymmetricQSealEngine;
-use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
+use crate::symmetric::engines::SymmetricQSealAsyncEngine;
+use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem, SymmetricAsyncStreamingSystem};
+use crate::asymmetric::engines::AsymmetricQSealEngine;
+use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
+use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
 use hkdf::Hkdf;
 use rand_core::{OsRng, TryRngCore};
 use sha2::Sha256;
 use zeroize::Zeroize;
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
+use crate::asymmetric::engines::AsymmetricQSealAsyncEngine;
+use crate::common::ConfigFile;
 
 const MASTER_SEED_SIZE: usize = 32; // 256-bit master seed
 const SEAL_ALGORITHM_ID: &str = "seal-kit-v1-vault";
@@ -129,6 +135,26 @@ impl Seal {
         Ok(())
     }
     
+    /// (Async) 将给定的载荷加密并原子地写入文件。
+    async fn write_payload_async(path: &Path, payload: &VaultPayload, password: &SecretString) -> Result<(), Error> {
+        let payload_json = serde_json::to_string(payload)?;
+        
+        let container = EncryptedKeyContainer::encrypt_key(
+            password,
+            payload_json.as_bytes(),
+            SEAL_ALGORITHM_ID,
+        )?;
+        
+        let container_json = container.to_json()?;
+        
+        // 原子写入：先写入临时文件，成功后再重命名。
+        let temp_path = path.with_extension("tmp");
+        tokio_fs::write(&temp_path, container_json).await?;
+        tokio_fs::rename(&temp_path, path).await?;
+            
+        Ok(())
+    }
+    
     /// 从文件读取保险库，解密并返回其JSON字符串形式的内容。
     fn read_and_decrypt_payload(path: &Path, password: &SecretString) -> Result<String, Error> {
         let container_json = fs::read_to_string(path)
@@ -167,6 +193,82 @@ impl Seal {
 
         // 3. 创建并返回引擎实例。
         Ok(SymmetricQSealEngine::new(key_manager, password))
+    }
+
+    /// 创建一个异步对称加密引擎。
+    pub async fn symmetric_async_engine<T>(
+        self: &Arc<Self>,
+        password: SecretString,
+    ) -> Result<SymmetricQSealAsyncEngine<T>, Error>
+    where
+        T: SymmetricCryptographicSystem + SymmetricAsyncStreamingSystem + Send + Sync + 'static,
+        T::Key: Send + Sync,
+        T::Error: std::error::Error + Send + Sync + 'static,
+        Error: From<T::Error>,
+    {
+        // 1. 创建并初始化密钥管理器。
+        let mut key_manager =
+            SymmetricKeyRotationManager::new(Arc::clone(self), "symmetric-default-async");
+        key_manager.initialize()?;
+
+        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
+        if key_manager.needs_rotation() {
+            let algorithm_name = std::any::type_name::<T>().to_string();
+            key_manager.start_rotation_async(&password, &algorithm_name).await?;
+        }
+        
+        // 3. 创建并返回引擎实例。
+        Ok(SymmetricQSealAsyncEngine::new(key_manager, password))
+    }
+
+    /// 创建一个同步非对称加密引擎。
+    pub fn asymmetric_sync_engine<T>(
+        self: &Arc<Self>,
+        password: SecretString,
+    ) -> Result<AsymmetricQSealEngine<T>, Error>
+    where
+        T: AsymmetricCryptographicSystem + AsymmetricSyncStreamingSystem,
+        T::Error: std::error::Error + 'static,
+        Error: From<T::Error>,
+    {
+        // 1. 创建并初始化密钥管理器。
+        let mut key_manager =
+            AsymmetricKeyRotationManager::new(Arc::clone(self), "asymmetric-default");
+        key_manager.initialize()?;
+
+        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
+        if key_manager.needs_rotation() {
+            key_manager.start_rotation::<T>(&password)?;
+        }
+        
+        // 3. 创建并返回引擎实例。
+        Ok(AsymmetricQSealEngine::new(key_manager, password))
+    }
+
+    /// 创建一个异步非对称加密引擎。
+    pub async fn asymmetric_async_engine<T>(
+        self: &Arc<Self>,
+        password: SecretString,
+    ) -> Result<AsymmetricQSealAsyncEngine<T>, Error>
+    where
+        T: crate::asymmetric::traits::AsyncStreamingSystem + Send + Sync + 'static,
+        T::PublicKey: Send + Sync,
+        T::PrivateKey: Send + Sync,
+        T::Error: std::error::Error + Send + Sync + 'static,
+        Error: From<T::Error>,
+    {
+        // 1. 创建并初始化密钥管理器。
+        let mut key_manager =
+            AsymmetricKeyRotationManager::new(Arc::clone(self), "asymmetric-default-async");
+        key_manager.initialize()?;
+
+        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
+        if key_manager.needs_rotation() {
+            key_manager.start_rotation_async::<T>(&password).await?;
+        }
+
+        // 3. 创建并返回引擎实例。
+        Ok(AsymmetricQSealAsyncEngine::new(key_manager, password))
     }
 
     /// 使用HKDF从主密钥派生出一个新的密钥。
@@ -227,6 +329,29 @@ impl Seal {
 
         // 4. 将更新后的载荷原子地写入文件。
         Self::write_payload(&self.path, &new_payload, password)?;
+
+        // 5. 用新的载荷原子地替换内存中的旧载荷。
+        self.payload.store(Arc::new(new_payload));
+
+        Ok(())
+    }
+
+    /// (Async) 以原子方式提交对保险库载荷的修改。
+    pub(crate) async fn commit_payload_async<F>(&self, password: &SecretString, update_fn: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut VaultPayload),
+    {
+        // 1. 加载当前载荷的 Arc 指针。
+        let old_payload_arc = self.payload.load();
+        
+        // 2. 克隆载荷以进行修改。
+        let mut new_payload = (**old_payload_arc).clone();
+
+        // 3. 将可变引用传递给闭包以执行更新。
+        update_fn(&mut new_payload);
+
+        // 4. 将更新后的载荷原子地写入文件。
+        Self::write_payload_async(&self.path, &new_payload, password).await?;
 
         // 5. 用新的载荷原子地替换内存中的旧载荷。
         self.payload.store(Arc::new(new_payload));

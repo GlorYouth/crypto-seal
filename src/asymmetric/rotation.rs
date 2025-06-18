@@ -1,329 +1,314 @@
+use crate::common::errors::Error;
+use crate::common::traits::{KeyMetadata, KeyStatus, SecureKeyStorage};
+use crate::seal::Seal;
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use chrono::{DateTime, Duration, Utc};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
-use crate::{AsymmetricCryptographicSystem, Error};
-use crate::common::utils::CryptoConfig;
-use crate::common::traits::KeyStatus;
-use crate::rotation::{KeyMetadata, KeyPairData, KeyStorage, RotationPolicy};
+use crate::rotation::RotationPolicy;
+use crate::common::to_base64;
+use crate::common::traits::SecString;
 
-/// 密钥轮换管理器
-pub struct KeyRotationManager<T: AsymmetricCryptographicSystem> {
-    /// 主密钥（当前活跃密钥）
-    primary_key: Option<(T::PublicKey, T::PrivateKey, KeyMetadata)>,
-    /// 次要密钥（用于解密旧数据，或即将启用的新密钥）
-    secondary_keys: Vec<(T::PublicKey, T::PrivateKey, KeyMetadata)>,
-    /// 密钥存储
-    key_storage: Arc<dyn KeyStorage>,
-    /// 轮换策略
+/// 非对称密钥轮换管理器。
+///
+/// 管理存储在 `Seal` 保险库中的非对称密钥元数据。
+/// 私钥被 `Seal` 的主种子加密存储，公钥则明文存储。
+pub struct AsymmetricKeyRotationManager {
+    primary_key_metadata: Option<KeyMetadata>,
+    secondary_keys_metadata: Vec<KeyMetadata>,
+    seal: Arc<Seal>,
     rotation_policy: RotationPolicy,
-    /// 密钥名称前缀
     key_prefix: String,
 }
 
-impl<T: AsymmetricCryptographicSystem> KeyRotationManager<T> 
-where
-    T::Error: std::error::Error + 'static,
-{
-    /// 创建新的密钥轮换管理器
-    pub fn new(
-        key_storage: Arc<dyn KeyStorage>,
-        rotation_policy: RotationPolicy,
-        key_prefix: &str,
-    ) -> Self {
+impl AsymmetricKeyRotationManager {
+    /// 创建新的非对称密钥轮换管理器。
+    pub fn new(seal: Arc<Seal>, key_prefix: &str) -> Self {
+        let rotation_policy = seal.config().rotation.clone();
         Self {
-            primary_key: None,
-            secondary_keys: Vec::new(),
-            key_storage,
+            primary_key_metadata: None,
+            secondary_keys_metadata: Vec::new(),
+            seal,
             rotation_policy,
             key_prefix: key_prefix.to_string(),
         }
     }
-    
-    /// 初始化管理器，加载现有密钥或创建新密钥
-    pub fn initialize(&mut self, config: &CryptoConfig) -> Result<(), Error> {
-        let keys = self.key_storage.list_keys()?;
-        
-        // 查找以指定前缀开头的密钥
-        let mut primary_key_name = None;
-        let mut secondary_key_names = Vec::new();
-        
-        for key_name in &keys {
-            if key_name.starts_with(&self.key_prefix) {
-                // 加载密钥元数据
-                let (metadata, _) = self.key_storage.load_key(key_name)?;
-                
-                // 根据状态分类
-                match metadata.status {
-                    KeyStatus::Active => {
-                        primary_key_name = Some(key_name.clone());
-                    },
-                    KeyStatus::Rotating => {
-                        secondary_key_names.push(key_name.clone());
-                    },
-                    KeyStatus::Expired => {
-                        // 删除过期密钥
-                        let _ = self.key_storage.delete_key(key_name);
-                    }
-                }
+
+    /// 初始化管理器，从 Seal 保险库加载密钥元数据。
+    pub fn initialize(&mut self) -> Result<(), Error> {
+        let payload = self.seal.payload();
+        let mut relevant_keys = BTreeMap::new();
+
+        for (key_id, metadata) in &payload.key_registry {
+            if key_id.starts_with(&self.key_prefix) {
+                relevant_keys.insert(metadata.version, metadata.clone());
             }
         }
-        
-        // 加载主密钥
-        if let Some(name) = primary_key_name {
-            self.load_primary_key(&name)?;
-        } else {
-            // 没有找到主密钥，创建新密钥
-            self.create_new_primary_key(config)?;
+
+        if let Some((_, primary_metadata)) = relevant_keys.pop_last() {
+            if primary_metadata.status == KeyStatus::Active {
+                self.primary_key_metadata = Some(primary_metadata.clone());
+            }
         }
-        
-        // 加载次要密钥
-        for name in secondary_key_names {
-            self.load_secondary_key(&name)?;
-        }
-        
+
+        self.secondary_keys_metadata = relevant_keys.into_values().collect();
         Ok(())
     }
-    
-    /// 检查密钥是否需要轮换
+
+    /// 检查主密钥是否根据策略需要轮换。
     pub fn needs_rotation(&self) -> bool {
-        if let Some((_, _, metadata)) = &self.primary_key {
-            // 检查基于时间的轮换需求
+        if let Some(metadata) = &self.primary_key_metadata {
             if let Some(expires_at) = &metadata.expires_at {
                 if let Ok(expiry_time) = DateTime::parse_from_rfc3339(expires_at) {
                     let now = Utc::now();
-                    let warning_period = chrono::Duration::days(self.rotation_policy.rotation_start_days as i64);
-                    
-                    // 如果当前时间加上警告期超过过期时间，则需要轮换
+                    let warning_period = Duration::days(self.rotation_policy.rotation_start_days as i64);
                     if (now + warning_period) >= expiry_time {
                         return true;
                     }
                 }
             }
-            
-            // 检查基于使用次数的轮换需求
             if let Some(max_count) = self.rotation_policy.max_usage_count {
                 if metadata.usage_count >= max_count {
                     return true;
                 }
             }
+            false
         } else {
-            // 如果没有主密钥，则需要创建
-            return true;
+            true // 没有主密钥，就需要创建第一个。
         }
-        
-        false
     }
-    
-    /// 开始密钥轮换过程
-    pub fn start_rotation(&mut self, config: &CryptoConfig) -> Result<(), Error> {
-        if self.primary_key.is_none() {
-            return self.create_new_primary_key(config);
-        }
-        
-        // 生成新密钥
-        let (new_public_key, new_private_key) = T::generate_keypair(config)
-            .map_err(|e| Error::Operation(format!("生成密钥对失败: {}", e)))?;
-        
-        // 生成唯一ID
-        let id = Uuid::new_v4().to_string();
+
+    /// 开始密钥轮换：创建一个新的主密钥，并将旧的降级。
+    pub fn start_rotation<T>(
+        &mut self,
+        password: &SecretString,
+    ) -> Result<(), Error>
+    where
+        T: AsymmetricCryptographicSystem,
+        Error: From<T::Error>,
+    {
+        let crypto_config = self.seal.config().crypto;
+        let (public_key, private_key) = T::generate_keypair(&crypto_config)?;
+
+        let public_key_b64 = T::export_public_key(&public_key)?;
+        let private_key_b64 = T::export_private_key(&private_key)?;
+
+        let encrypted_private_key = {
+            let payload = self.seal.payload();
+            let key_derivation_key = self.seal.derive_key(
+                &payload.master_seed,
+                b"private-key-encryption",
+                32,
+            )?;
+            let container = crate::storage::EncryptedKeyContainer::encrypt_key(
+                &SecretString::new(to_base64(&key_derivation_key).into_boxed_str()),
+                private_key_b64.as_bytes(),
+                "asymmetric-private-key",
+            )?;
+            SecretBox::new(Box::new(SecString(container.to_json()?)))
+        };
+
+        let new_version = self.get_next_version();
+        let new_id = format!("{}-{}", self.key_prefix, Uuid::new_v4());
         let now = Utc::now();
-        let created_at = now.to_rfc3339();
-        
-        // 计算过期时间
-        let expires_at = now + chrono::Duration::days(self.rotation_policy.validity_period_days as i64);
-        let expires_at_str = expires_at.to_rfc3339();
-        
-        // 创建元数据
-        let metadata = KeyMetadata {
-            id,
-            created_at,
-            expires_at: Some(expires_at_str),
+        let expires_at = now + Duration::days(self.rotation_policy.validity_period_days as i64);
+
+        let new_metadata = KeyMetadata {
+            id: new_id.clone(),
+            created_at: now.to_rfc3339(),
+            expires_at: Some(expires_at.to_rfc3339()),
             usage_count: 0,
             status: KeyStatus::Active,
-            version: self.get_next_version(),
-            algorithm: format!("{}", std::any::type_name::<T>()),
+            version: new_version,
+            algorithm: std::any::type_name::<T>().to_string(),
+            public_key: Some(public_key_b64),
+            encrypted_private_key: Some(encrypted_private_key),
         };
-        
-        // 更新现有主密钥状态为轮换中
-        if let Some((pub_key, priv_key, mut old_metadata)) = self.primary_key.take() {
-            old_metadata.status = KeyStatus::Rotating;
-            
-            // 保存更新后的旧密钥
-            let key_name = format!("{}-{}", self.key_prefix, old_metadata.id);
-            let key_data = self.serialize_key_pair(&pub_key, &priv_key)?;
-            self.key_storage.save_key(&key_name, &old_metadata, &key_data)?;
-            
-            // 将旧密钥移到次要密钥
-            self.secondary_keys.push((pub_key, priv_key, old_metadata));
-        }
-        
-        // 保存新密钥
-        let key_name = format!("{}-{}", self.key_prefix, metadata.id);
-        let key_data = self.serialize_key_pair(&new_public_key, &new_private_key)?;
-        self.key_storage.save_key(&key_name, &metadata, &key_data)?;
-        
-        // 设置新主密钥
-        self.primary_key = Some((new_public_key, new_private_key, metadata));
-        
-        Ok(())
-    }
-    
-    /// 完成密钥轮换过程
-    pub fn complete_rotation(&mut self) -> Result<(), Error> {
-        // 查找状态为Rotating的次要密钥
-        let mut rotating_index = None;
-        for (i, (_, _, metadata)) in self.secondary_keys.iter().enumerate() {
-            if metadata.status == KeyStatus::Rotating {
-                rotating_index = Some(i);
-                break;
+
+        let old_primary_metadata = self.primary_key_metadata.clone();
+
+        self.seal.commit_payload(password, |payload| {
+            if let Some(mut old_meta) = old_primary_metadata {
+                old_meta.status = KeyStatus::Rotating;
+                payload.key_registry.insert(old_meta.id.clone(), old_meta);
             }
+            payload.key_registry.insert(new_id, new_metadata.clone());
+        })?;
+
+        if let Some(old_meta) = self.primary_key_metadata.take() {
+            let mut rotating_meta = old_meta;
+            rotating_meta.status = KeyStatus::Rotating;
+            self.secondary_keys_metadata.push(rotating_meta);
         }
-        
-        // 如果找到处于轮换中的密钥，将其状态更新为过期
-        if let Some(index) = rotating_index {
-            // 移除轮换中的密钥并删除存储
-            let (_pub_key, _priv_key, metadata) = self.secondary_keys.remove(index);
-            let key_name = format!("{}-{}", self.key_prefix, metadata.id);
-            // 删除已过期密钥文件
-            let _ = self.key_storage.delete_key(&key_name);
-        }
-        
+        self.primary_key_metadata = Some(new_metadata);
+
         Ok(())
     }
-    
-    /// 增加主密钥的使用计数
-    pub fn increment_usage_count(&mut self) -> Result<(), Error> {
-        if let Some((pub_key, priv_key, mut metadata)) = self.primary_key.take() {
-            // 更新使用计数
-            metadata.usage_count += 1;
-            // 序列化并保存更新后的密钥元数据
-            let key_name = format!("{}-{}", self.key_prefix, metadata.id);
-            let key_data = self.serialize_key_pair(&pub_key, &priv_key)?;
-            if let Err(e) = self.key_storage.save_key(&key_name, &metadata, &key_data) {
-                // 保存失败，回滚并恢复原主密钥
-                metadata.usage_count -= 1;
-                self.primary_key = Some((pub_key, priv_key, metadata));
-                return Err(e);
+
+    /// (Async) 开始密钥轮换
+    pub async fn start_rotation_async<T>(
+        &mut self,
+        password: &SecretString,
+    ) -> Result<(), Error>
+    where
+        T: AsymmetricCryptographicSystem,
+        Error: From<T::Error>,
+    {
+        let crypto_config = self.seal.config().crypto;
+        let (public_key, private_key) = T::generate_keypair(&crypto_config)?;
+
+        let public_key_b64 = T::export_public_key(&public_key)?;
+        let private_key_b64 = T::export_private_key(&private_key)?;
+
+        let encrypted_private_key = {
+            let payload = self.seal.payload();
+            let key_derivation_key = self.seal.derive_key(
+                &payload.master_seed,
+                b"private-key-encryption",
+                32,
+            )?;
+            let container = crate::storage::EncryptedKeyContainer::encrypt_key(
+                &SecretString::new(to_base64(&key_derivation_key).into_boxed_str()),
+                private_key_b64.as_bytes(),
+                "asymmetric-private-key",
+            )?;
+            SecretBox::new(Box::new(SecString(container.to_json()?)))
+        };
+
+        let new_version = self.get_next_version();
+        let new_id = format!("{}-{}", self.key_prefix, Uuid::new_v4());
+        let now = Utc::now();
+        let expires_at = now + Duration::days(self.rotation_policy.validity_period_days as i64);
+
+        let new_metadata = KeyMetadata {
+            id: new_id.clone(),
+            created_at: now.to_rfc3339(),
+            expires_at: Some(expires_at.to_rfc3339()),
+            usage_count: 0,
+            status: KeyStatus::Active,
+            version: new_version,
+            algorithm: std::any::type_name::<T>().to_string(),
+            public_key: Some(public_key_b64),
+            encrypted_private_key: Some(encrypted_private_key),
+        };
+
+        let old_primary_metadata = self.primary_key_metadata.clone();
+
+        self.seal.commit_payload_async(password, |payload| {
+            if let Some(mut old_meta) = old_primary_metadata {
+                old_meta.status = KeyStatus::Rotating;
+                payload.key_registry.insert(old_meta.id.clone(), old_meta);
             }
-            // 保存成功，恢复主密钥
-            self.primary_key = Some((pub_key, priv_key, metadata));
+            payload.key_registry.insert(new_id, new_metadata.clone());
+        }).await?;
+
+        if let Some(old_meta) = self.primary_key_metadata.take() {
+            let mut rotating_meta = old_meta;
+            rotating_meta.status = KeyStatus::Rotating;
+            self.secondary_keys_metadata.push(rotating_meta);
+        }
+        self.primary_key_metadata = Some(new_metadata);
+
+        Ok(())
+    }
+
+    /// 增加主密钥的使用计数。
+    pub fn increment_usage_count(&mut self, password: &SecretString) -> Result<(), Error> {
+        if let Some(meta) = &mut self.primary_key_metadata {
+            let key_id = meta.id.clone();
+            let new_count = meta.usage_count + 1;
+
+            self.seal.commit_payload(password, |payload| {
+                if let Some(m) = payload.key_registry.get_mut(&key_id) {
+                    m.usage_count = new_count;
+                }
+            })?;
+            meta.usage_count = new_count;
         }
         Ok(())
     }
-    
-    /// 获取主密钥
-    pub fn get_primary_key(&self) -> Option<(&T::PublicKey, &T::PrivateKey)> {
-        self.primary_key.as_ref().map(|(pub_key, priv_key, _)| (pub_key, priv_key))
+
+    /// (Async) 增加主密钥的使用计数。
+    pub async fn increment_usage_count_async(&mut self, password: &SecretString) -> Result<(), Error> {
+        if let Some(meta) = &mut self.primary_key_metadata {
+            let key_id = meta.id.clone();
+            let new_count = meta.usage_count + 1;
+
+            self.seal.commit_payload_async(password, |payload| {
+                if let Some(m) = payload.key_registry.get_mut(&key_id) {
+                    m.usage_count = new_count;
+                }
+            }).await?;
+            meta.usage_count = new_count;
+        }
+        Ok(())
     }
-    
-    /// 获取主密钥引用
+
+    /// 获取主密钥的元数据。
     pub fn get_primary_key_metadata(&self) -> Option<&KeyMetadata> {
-        self.primary_key.as_ref().map(|(_, _, metadata)| metadata)
+        self.primary_key_metadata.as_ref()
     }
-    
-    /// 获取所有次要密钥
-    pub fn get_secondary_keys(&self) -> Vec<(&T::PublicKey, &T::PrivateKey, &KeyMetadata)> {
-        self.secondary_keys.iter().map(|(pub_key, priv_key, metadata)| (pub_key, priv_key, metadata)).collect()
-    }
-    
-    // 私有方法
-    
-    /// 创建新的主密钥
-    fn create_new_primary_key(&mut self, config: &CryptoConfig) -> Result<(), Error> {
-        // 生成密钥对
-        let (public_key, private_key) = T::generate_keypair(config)
-            .map_err(|e| Error::Operation(format!("生成密钥对失败: {}", e)))?;
-        
-        // 生成唯一ID
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now();
-        let created_at = now.to_rfc3339();
-        
-        // 计算过期时间
-        let expires_at = now + chrono::Duration::days(self.rotation_policy.validity_period_days as i64);
-        let expires_at_str = expires_at.to_rfc3339();
-        
-        // 创建元数据
-        let metadata = KeyMetadata {
-            id: id.clone(),
-            created_at,
-            expires_at: Some(expires_at_str),
-            usage_count: 0,
-            status: KeyStatus::Active,
-            version: 1,
-            algorithm: format!("{}", std::any::type_name::<T>()),
-        };
-        
-        // 保存密钥
-        let key_name = format!("{}-{}", self.key_prefix, id);
-        let key_data = self.serialize_key_pair(&public_key, &private_key)?;
-        self.key_storage.save_key(&key_name, &metadata, &key_data)?;
-        
-        // 设置为主密钥
-        self.primary_key = Some((public_key, private_key, metadata));
-        
-        Ok(())
-    }
-    
-    /// 加载主密钥
-    fn load_primary_key(&mut self, name: &str) -> Result<(), Error> {
-        let (metadata, key_data) = self.key_storage.load_key(name)?;
-        let (public_key, private_key) = self.deserialize_key_pair(&key_data)?;
-        self.primary_key = Some((public_key, private_key, metadata));
-        Ok(())
-    }
-    
-    /// 加载次要密钥
-    fn load_secondary_key(&mut self, name: &str) -> Result<(), Error> {
-        let (metadata, key_data) = self.key_storage.load_key(name)?;
-        let (public_key, private_key) = self.deserialize_key_pair(&key_data)?;
-        self.secondary_keys.push((public_key, private_key, metadata));
-        Ok(())
-    }
-    
-    /// 获取下一个版本号
-    fn get_next_version(&self) -> u32 {
-        let mut max_version = 0;
-        
-        if let Some((_, _, metadata)) = &self.primary_key {
-            max_version = metadata.version;
-        }
-        
-        for (_, _, metadata) in &self.secondary_keys {
-            if metadata.version > max_version {
-                max_version = metadata.version;
+
+    /// 根据给定的密钥 ID 获取公钥。
+    pub fn get_public_key_by_id<T>(&self, key_id: &str) -> Result<Option<T::PublicKey>, Error>
+    where
+        T: AsymmetricCryptographicSystem,
+        Error: From<T::Error>,
+    {
+        let payload = self.seal.payload();
+        if let Some(metadata) = payload.key_registry.get(key_id) {
+            if let Some(pk_b64) = &metadata.public_key {
+                let pk = T::import_public_key(pk_b64)?;
+                return Ok(Some(pk));
             }
         }
-        
-        max_version + 1
+        Ok(None)
     }
-    
-    /// 序列化密钥对
-    fn serialize_key_pair(&self, public_key: &T::PublicKey, private_key: &T::PrivateKey) -> Result<Vec<u8>, Error> {
-        let pub_key = T::export_public_key(public_key)
-            .map_err(|e| Error::Operation(format!("导出公钥失败: {}", e)))?;
-        let priv_key = T::export_private_key(private_key)
-            .map_err(|e| Error::Operation(format!("导出私钥失败: {}", e)))?;
-        
-        let key_pair = KeyPairData {
-            public_key: pub_key,
-            private_key: priv_key,
-        };
-        
-        serde_json::to_vec(&key_pair)
-            .map_err(|e| Error::Serialization(format!("序列化密钥对失败: {}", e)))
-    }
-    
-    /// 反序列化密钥对
-    fn deserialize_key_pair(&self, data: &[u8]) -> Result<(T::PublicKey, T::PrivateKey), Error> {
-        let pair_data: KeyPairData = serde_json::from_slice(data)
-            .map_err(|e| Error::Serialization(e.to_string()))?;
-        
-        let public_key = T::import_public_key(&pair_data.public_key)
-            .map_err(|e| Error::Operation(e.to_string()))?;
-        let private_key = T::import_private_key(&pair_data.private_key)
-            .map_err(|e| Error::Operation(e.to_string()))?;
+
+    /// 按需解密并返回给定ID的密钥对。
+    pub fn get_keypair_by_id<T>(&self, key_id: &str) -> Result<Option<(T::PublicKey, T::PrivateKey)>, Error>
+    where
+        T: AsymmetricCryptographicSystem,
+        Error: From<T::Error>,
+    {
+        let payload = self.seal.payload();
+        if let Some(metadata) = payload.key_registry.get(key_id) {
+            let public_key_b64 = metadata.public_key.as_ref()
+                .ok_or_else(|| Error::KeyManagement("Public key not found in metadata".to_string()))?;
             
-        Ok((public_key, private_key))
+            let encrypted_private_key = metadata.encrypted_private_key.as_ref()
+                .ok_or_else(|| Error::KeyManagement("Encrypted private key not found in metadata".to_string()))?;
+
+            let key_derivation_key = self.seal.derive_key(
+                &payload.master_seed,
+                b"private-key-encryption",
+                32,
+            )?;
+            
+            let container = crate::storage::EncryptedKeyContainer::from_json(encrypted_private_key.expose_secret().0.as_str())?;
+            let private_key_b64_bytes = container.decrypt_key(&SecretString::new(to_base64(&key_derivation_key).into_boxed_str()))?;
+            let private_key_b64 = String::from_utf8(private_key_b64_bytes)
+                .map_err(|_| Error::Format("Decrypted private key is not valid UTF-8".to_string()))?;
+
+            let pk = T::import_public_key(public_key_b64)?;
+            let sk = T::import_private_key(&private_key_b64)?;
+
+            return Ok(Some((pk, sk)));
+        }
+        Ok(None)
+    }
+
+    /// 获取下一个可用的密钥版本号。
+    fn get_next_version(&self) -> u32 {
+        let primary_version = self.primary_key_metadata.as_ref().map(|m| m.version).unwrap_or(0);
+        let max_secondary_version = self
+            .secondary_keys_metadata
+            .iter()
+            .map(|m| m.version)
+            .max()
+            .unwrap_or(0);
+        std::cmp::max(primary_version, max_secondary_version) + 1
     }
 }
