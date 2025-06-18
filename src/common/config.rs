@@ -1,3 +1,9 @@
+//!
+//! # 通用配置模块
+//!
+//! 负责管理整个应用程序的配置，包括加密参数、旋转策略等。
+//! 它支持从文件加载配置、环境变量覆盖以及动态更新通知。
+//!
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +14,6 @@ use std::collections::HashMap;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event as NotifyEvent};
 #[cfg(feature = "async")]
 use tokio::sync::mpsc;
-
 use serde::{Serialize, Deserialize};
 
 use crate::common::errors::Error;
@@ -143,6 +148,19 @@ impl ConfigManager {
         manager.config_path = Some(path.to_path_buf());
         
         Ok(manager)
+    }
+    
+    
+    /// 从内存中的 `ConfigFile` 结构创建配置管理器
+    pub fn from_config_file(config: ConfigFile) -> Self {
+        let manager = Self::new();
+        let arc = manager.state.load_full();
+        let mut new_state = (*arc).clone();
+        new_state.crypto = config.crypto;
+        new_state.rotation = config.rotation;
+        new_state.storage = config.storage;
+        manager.state.store(Arc::new(new_state));
+        manager
     }
     
     /// 启用热加载

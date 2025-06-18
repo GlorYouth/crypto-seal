@@ -82,7 +82,7 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     fn encrypt(
         public_key: &Self::PublicKey,
         plaintext: &[u8],
-        _additional_data: Option<&[u8]>,
+        additional_data: Option<&[u8]>,
     ) -> Result<Self::CiphertextOutput, Self::Error> {
         // 1. 生成一个一次性的AES-256密钥。
         let mut aes_key = [0u8; 32];
@@ -100,7 +100,13 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
         #[cfg(not(feature = "chacha"))]
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let dem_ciphertext = cipher.encrypt(&nonce, plaintext)
+
+        use aes_gcm::aead::Payload;
+        let payload = Payload {
+            msg: plaintext,
+            aad: additional_data.unwrap_or_default(),
+        };
+        let dem_ciphertext = cipher.encrypt(&nonce, payload)
             .map_err(|e| Error::Operation(format!("AEAD 加密失败: {}", e)))?;
         
         // 4. 将 KEM 密文的 Base64 ASCII 与 DEM 密文及 Nonce 组合
@@ -120,7 +126,7 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     fn decrypt(
         private_key: &Self::PrivateKey,
         ciphertext: &str,
-        _additional_data: Option<&[u8]>,
+        additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
         // 解码Base64得到原始字节
         let combined = from_base64(ciphertext)?;
@@ -154,7 +160,13 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         let nonce = ChaNonce::from_slice(nonce_part);
         #[cfg(not(feature = "chacha"))]
         let nonce = Nonce::from_slice(nonce_part);
-        cipher.decrypt(&nonce, dem_part)
+        
+        use aes_gcm::aead::Payload;
+        let payload = Payload {
+            msg: dem_part,
+            aad: additional_data.unwrap_or_default(),
+        };
+        cipher.decrypt(&nonce, payload)
             .map_err(|_| Error::Operation("AEAD 解密或认证失败".to_string()))
     }
 }
@@ -404,6 +416,63 @@ mod tests {
         let result = RsaKyberCryptoSystem::decrypt_authenticated(&sk, tampered_ciphertext.as_ref(), None, Some(&pk));
         assert!(result.is_err(), "认证解密被篡改的签名应该失败");
         assert_eq!(result.unwrap_err().to_string(), "操作失败: 签名验证失败");
+    }
+
+    #[test]
+    fn test_hybrid_tampered_kem_part_fails() {
+        let config = CryptoConfig::default();
+        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
+        let plaintext = b"another test message";
+        
+        let ciphertext_b64 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        let mut combined = from_base64(ciphertext_b64.to_string().as_ref()).unwrap();
+
+        // 篡改 KEM 部分（密文的开头）
+        combined[10] ^= 0xff;
+        
+        let tampered_ciphertext = to_base64(&combined);
+
+        let result = RsaKyberCryptoSystem::decrypt(&sk, &tampered_ciphertext, None);
+        assert!(result.is_err(), "解密被篡改的KEM部分应该失败");
+    }
+
+    #[test]
+    fn test_hybrid_decrypt_with_wrong_key_fails() {
+        let config = CryptoConfig::default();
+        let (pk1, sk1) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
+        let (_pk2, sk2) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap(); // wrong key
+        let plaintext = b"message to be encrypted";
+        
+        // 1. Test decrypt with wrong private key
+        let ciphertext1 = RsaKyberCryptoSystem::encrypt(&pk1, plaintext, None).unwrap();
+        let result1 = RsaKyberCryptoSystem::decrypt(&sk2, ciphertext1.to_string().as_ref(), None);
+        assert!(result1.is_err(), "使用错误的私钥解密应该失败");
+
+        // 2. Test decrypt_authenticated with wrong private key
+        let ciphertext2 = RsaKyberCryptoSystem::encrypt_authenticated(&pk1, plaintext, None, Some(&sk1)).unwrap();
+        let result2 = RsaKyberCryptoSystem::decrypt_authenticated(&sk2, ciphertext2.to_string().as_ref(), None, Some(&pk1));
+        assert!(result2.is_err(), "使用错误的私钥进行认证解密应该失败");
+    }
+    
+    #[test]
+    fn test_hybrid_key_export_import() {
+        let config = CryptoConfig::default();
+        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
+        
+        let pk_str = RsaKyberCryptoSystem::export_public_key(&pk).unwrap();
+        let sk_str = RsaKyberCryptoSystem::export_private_key(&sk).unwrap();
+
+        let imported_pk = RsaKyberCryptoSystem::import_public_key(&pk_str).unwrap();
+        let imported_sk = RsaKyberCryptoSystem::import_private_key(&sk_str).unwrap();
+
+        assert_eq!(pk, imported_pk);
+        assert_eq!(sk, imported_sk);
+        
+        // Final check: encrypt with imported_pk, decrypt with imported_sk
+        let plaintext = b"test with imported keys";
+        let ciphertext = RsaKyberCryptoSystem::encrypt(&imported_pk, plaintext, None).unwrap();
+        let decrypted = RsaKyberCryptoSystem::decrypt(&imported_sk, ciphertext.to_string().as_ref(), None).unwrap();
+        assert_eq!(plaintext.as_slice(), decrypted.as_slice());
     }
 }
 

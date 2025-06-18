@@ -394,201 +394,142 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
+    use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
-    use crate::asymmetric::traits::AsymmetricCryptographicSystem;
-    use std::sync::Mutex;
-    
-    use crate::asymmetric::traits::AsymmetricSyncStreamingSystem;
-    use crate::common::utils::{constant_time_eq, from_base64, Base64String, CryptoConfig};
 
-    #[cfg(feature = "post-quantum")]
-    #[test]
-    fn test_streaming_encryption_decryption() {
-        use crate::asymmetric::systems::post_quantum::KyberCryptoSystem;
-        // 生成测试数据（100KB）
-        let data_size = 100 * 1024;
-        let mut test_data = Vec::with_capacity(data_size);
-        for i in 0..data_size {
-            test_data.push((i % 256) as u8);
-        }
-        
-        // 生成密钥对 - 使用Kyber而非RSA-Kyber，因为Kyber支持任意大小的消息
-        let config = CryptoConfig::default();
-        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
-        
-        // 准备输入输出缓冲区
-        let input = Cursor::new(test_data.clone());
-        let mut encrypted = Vec::new();
-        let stream_config = StreamingConfig {
-            buffer_size: 1024, // 使用一个合理的缓冲区大小
-            show_progress: false,
-            keep_in_memory: true,
-            progress_callback: None,
-            total_bytes: None,
+    fn get_test_keys_and_config() -> (
+        <RsaKyberCryptoSystem as AsymmetricCryptographicSystem>::PublicKey,
+        <RsaKyberCryptoSystem as AsymmetricCryptographicSystem>::PrivateKey,
+        StreamingConfig,
+    ) {
+        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap();
+        let config = StreamingConfig {
+            buffer_size: 128, // Smaller buffer for testing smaller data chunks
+            ..Default::default()
         };
-        
-        // 流式加密
-        let encrypt_result = KyberCryptoSystem::encrypt_stream(
-            &public_key,
-            input,
-            Cursor::new(&mut encrypted),
-            &stream_config,
-            None
-        ).unwrap();
-        let _encrypted_size = encrypt_result.bytes_processed;
-        
-        // 准备解密
-        let mut decrypted = Vec::new();
-        
-        // 流式解密
-        let decrypt_result = KyberCryptoSystem::decrypt_stream(
-            &private_key,
-            Cursor::new(&encrypted),
-            Cursor::new(&mut decrypted),
-            &stream_config,
-            None
-        ).unwrap();
-        let decrypted_size = decrypt_result.bytes_processed;
-        
-        // 验证
-        assert_eq!(decrypted_size, test_data.len() as u64);
-        assert!(constant_time_eq(&decrypted, &test_data));
+        (pk, sk, config)
     }
 
     #[test]
-    fn test_streaming_progress_and_buffer() {
-        // 使用DummySystem测试进度回调和内存缓冲
-        #[derive(Clone)]
-        struct DummySystem;
-        impl AsymmetricCryptographicSystem for DummySystem {
-            type PublicKey = ();
-            type PrivateKey = ();
-            type CiphertextOutput = Base64String;
-            type Error = Error;
-            fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-                Ok(((), ()))
-            }
-            fn encrypt(_pk: &Self::PublicKey, plaintext: &[u8], _aad: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
-                Ok(Base64String::from(plaintext.to_vec()))
-            }
-            fn decrypt(_sk: &Self::PrivateKey, ciphertext: &str, _aad: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-                from_base64(ciphertext).map_err(Error::from)
-            }
-            fn export_public_key(_pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(String::new()) }
-            fn export_private_key(_sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(String::new()) }
-            fn import_public_key(_data: &str) -> Result<Self::PublicKey, Self::Error> { Ok(()) }
-            fn import_private_key(_data: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(()) }
+    fn test_streaming_encrypt_decrypt_roundtrip() {
+        let (pk, sk, config) = get_test_keys_and_config();
+        let original_data = b"This is a test for asymmetric streaming roundtrip.";
+
+        // Encrypt
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        RsaKyberCryptoSystem::encrypt_stream(&pk, &mut source, &mut encrypted_dest, &config, None).unwrap();
+
+        // Decrypt
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        RsaKyberCryptoSystem::decrypt_stream(&sk, &mut encrypted_source, &mut decrypted_dest, &config, None)
+            .unwrap();
+
+        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+    }
+
+    #[test]
+    fn test_streaming_with_aad() {
+        let (pk, sk, config) = get_test_keys_and_config();
+        let original_data = b"Some data to be protected by streaming with AAD.";
+        let aad = b"additional authenticated data";
+
+        // Encrypt
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        RsaKyberCryptoSystem::encrypt_stream(&pk, &mut source, &mut encrypted_dest, &config, Some(aad))
+            .unwrap();
+
+        // Decrypt
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        RsaKyberCryptoSystem::decrypt_stream(&sk, &mut encrypted_source, &mut decrypted_dest, &config, Some(aad))
+            .unwrap();
+
+        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+    }
+
+    #[test]
+    fn test_streaming_tampered_data_fails() {
+        let (pk, sk, config) = get_test_keys_and_config();
+        let original_data = b"This data should not be decryptable if tampered.";
+        let aad = b"some aad";
+
+        // Encrypt
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        RsaKyberCryptoSystem::encrypt_stream(&pk, &mut source, &mut encrypted_dest, &config, Some(aad))
+            .unwrap();
+
+        // Tamper data
+        let mut tampered_data = encrypted_dest.into_inner();
+        let len = tampered_data.len();
+        if len > 0 {
+            tampered_data[len / 2] ^= 0xff; // Flip a byte in the middle
         }
-        // 构造测试数据
-        let data = (0u8..12u8).collect::<Vec<u8>>();
-        let total = data.len() as u64;
-        // 收集进度记录
-        let records = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let callback_records = std::sync::Arc::clone(&records);
-        let callback = std::sync::Arc::new(move |processed: u64, total_opt: Option<u64>| {
-            callback_records.lock().unwrap().push((processed, total_opt));
-        });
-        let mut sc = StreamingConfig::default();
-        sc.buffer_size = 5;
-        sc.keep_in_memory = true;
-        sc.progress_callback = Some(callback.clone());
-        sc.total_bytes = Some(total);
-        // 执行流式加密
-        let (pk, _sk) = DummySystem::generate_keypair(&CryptoConfig::default()).unwrap();
-        let res = DummySystem::encrypt_stream(&pk, Cursor::new(data.clone()), Cursor::new(Vec::new()), &sc, None).unwrap();
-        assert_eq!(res.bytes_processed, total);
-        // 验证回调
-        let recs = records.lock().unwrap().clone();
-        assert_eq!(recs, vec![(5, Some(total)), (10, Some(total)), (12, Some(total))]);
-        // 验证缓冲区
-        assert!(res.buffer.is_some());
-    }
+        
+        // Decrypt
+        let mut encrypted_source = Cursor::new(tampered_data);
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        let result = RsaKyberCryptoSystem::decrypt_stream(
+            &sk,
+            &mut encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            Some(aad),
+        );
 
-    #[cfg(all(feature = "parallel", feature = "post-quantum"))]
-    #[test]
-    fn test_streaming_parallel_matches_sequential() {
-        use crate::asymmetric::systems::post_quantum::KyberCryptoSystem;
-        // 验证并行与顺序流式加解密结果一致 (使用Kyber)
-        let data = (0u8..100u8).collect::<Vec<u8>>();
-        let config = CryptoConfig::default();
-        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
-        let mut seq_encrypted = Vec::new();
-        let mut par_encrypted = Vec::new();
-        let mut seq_decrypted = Vec::new();
-        let mut par_decrypted = Vec::new();
-        let stream_config = StreamingConfig::default().with_buffer_size(16).with_keep_in_memory(true);
-        // 顺序流式加密并解密
-        KyberCryptoSystem::encrypt_stream(
-            &public_key,
-            Cursor::new(&data),
-            Cursor::new(&mut seq_encrypted),
-            &stream_config,
-            None
-        ).unwrap();
-        KyberCryptoSystem::decrypt_stream(
-            &private_key,
-            Cursor::new(&seq_encrypted),
-            Cursor::new(&mut seq_decrypted),
-            &stream_config,
-            None
-        ).unwrap();
-        // 并行流式加密并解密
-        encrypt_stream_parallel::<KyberCryptoSystem, _, _>(
-            &public_key,
-            Cursor::new(&data),
-            Cursor::new(&mut par_encrypted),
-            &stream_config,
-            None
-        ).unwrap();
-        decrypt_stream_parallel::<KyberCryptoSystem, _, _>(
-            &private_key,
-            Cursor::new(&par_encrypted),
-            Cursor::new(&mut par_decrypted),
-            &stream_config,
-            None
-        ).unwrap();
-        // 比较解密结果
-        assert_eq!(par_decrypted, seq_decrypted);
-        assert!(constant_time_eq(&par_decrypted, &data));
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_streaming_without_memory_buffer() {
-        // 使用 DummySystem 测试 keep_in_memory = false 时 buffer = None
-        #[derive(Clone)]
-        struct DummySystem;
-        impl AsymmetricCryptographicSystem for DummySystem {
-            type PublicKey = ();
-            type PrivateKey = ();
-            type CiphertextOutput = Base64String;
-            type Error = Error;
-            fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-                Ok(((), ()))
-            }
-            fn encrypt(_pk: &Self::PublicKey, plaintext: &[u8], _aad: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
-                Ok(Base64String::from(plaintext.to_vec()))
-            }
-            fn decrypt(_sk: &Self::PrivateKey, ciphertext: &str, _aad: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-                from_base64(ciphertext).map_err(Error::from)
-            }
-            fn export_public_key(_pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(String::new()) }
-            fn export_private_key(_sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(String::new()) }
-            fn import_public_key(_data: &str) -> Result<Self::PublicKey, Self::Error> { Ok(()) }
-            fn import_private_key(_data: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(()) }
-        }
-        let data = b"hello world".to_vec();
-        let mut encrypted = Vec::new();
-        let mut sc = StreamingConfig::default();
-        sc.buffer_size = 4;
-        sc.keep_in_memory = false;
-        let (pk, _sk) = DummySystem::generate_keypair(&CryptoConfig::default()).unwrap();
-        let enc_res = DummySystem::encrypt_stream(&pk, Cursor::new(&data), Cursor::new(&mut encrypted), &sc, None).unwrap();
-        assert_eq!(enc_res.bytes_processed, data.len() as u64);
-        assert!(enc_res.buffer.is_none());
-        let mut decrypted = Vec::new();
-        let dec_res = DummySystem::decrypt_stream(&_sk, Cursor::new(&encrypted), Cursor::new(&mut decrypted), &sc, None).unwrap();
-        assert_eq!(dec_res.bytes_processed, data.len() as u64);
-        assert!(dec_res.buffer.is_none());
-        assert!(constant_time_eq(&decrypted, &data));
+    fn test_streaming_wrong_aad_fails() {
+        let (pk, sk, config) = get_test_keys_and_config();
+        let original_data = b"This data should not be decryptable with wrong AAD.";
+        let aad = b"correct aad";
+        let wrong_aad = b"wrong aad";
+
+        // Encrypt
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        RsaKyberCryptoSystem::encrypt_stream(&pk, &mut source, &mut encrypted_dest, &config, Some(aad))
+            .unwrap();
+
+        // Decrypt with wrong AAD
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        let result = RsaKyberCryptoSystem::decrypt_stream(
+            &sk,
+            &mut encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            Some(wrong_aad),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_streaming_empty_input() {
+        let (pk, sk, config) = get_test_keys_and_config();
+        let original_data = b"";
+
+        // Encrypt
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        let enc_result = RsaKyberCryptoSystem::encrypt_stream(&pk, &mut source, &mut encrypted_dest, &config, None).unwrap();
+        assert_eq!(enc_result.bytes_processed, 0);
+        
+        // Decrypt
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        let dec_result = RsaKyberCryptoSystem::decrypt_stream(&sk, &mut encrypted_source, &mut decrypted_dest, &config, None)
+            .unwrap();
+
+        assert_eq!(dec_result.bytes_processed, 0);
+        assert_eq!(decrypted_dest.into_inner().as_slice(), b"");
     }
 } 

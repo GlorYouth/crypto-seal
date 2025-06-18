@@ -295,41 +295,113 @@ impl AsyncStreamingSystem for RsaCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::utils::constant_time_eq;
-    
+    use crate::common::utils::CryptoConfig;
+
+    fn setup_keys() -> (RsaPublicKeyWrapper, RsaPrivateKeyWrapper) {
+        let config = CryptoConfig { rsa_key_bits: 2048, ..Default::default() };
+        RsaCryptoSystem::generate_keypair(&config).unwrap()
+    }
+
     #[test]
-    fn rsa_encryption_roundtrip() {
-        let config = CryptoConfig::default();
-        let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&config).unwrap();
-        
-        let plaintext = b"Hello, RSA world!";
+    fn test_rsa_encryption_roundtrip() {
+        let (public_key, private_key) = setup_keys();
+        let plaintext = b"some secret data";
+
         let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        
         let decrypted = RsaCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), None).unwrap();
-        
-        // Use constant_time_eq for secure comparison
-        assert!(constant_time_eq(&decrypted, plaintext));
+
+        assert_eq!(plaintext, decrypted.as_slice());
+    }
+
+    #[test]
+    fn test_rsa_sign_verify_roundtrip() {
+        let (public_key, private_key) = setup_keys();
+        let data = b"data to be signed";
+
+        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+        let is_valid = RsaCryptoSystem::verify(&public_key, data, &signature).unwrap();
+
+        assert!(is_valid);
+    }
+
+    #[test]
+    fn test_rsa_verify_tampered_signature_fails() {
+        let (public_key, private_key) = setup_keys();
+        let data = b"some important data";
+
+        let mut signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+        // Tamper with the signature
+        signature[0] ^= 0xff;
+
+        let is_valid = RsaCryptoSystem::verify(&public_key, data, &signature).unwrap();
+        assert!(!is_valid);
     }
     
     #[test]
-    fn rsa_key_export_import() {
-        let config = CryptoConfig::default();
-        let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&config).unwrap();
+    fn test_rsa_verify_wrong_key_fails() {
+        let (_public_key, private_key) = setup_keys();
+        let (wrong_public_key, _) = setup_keys(); // A different key pair
+        let data = b"data for signature";
+
+        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+        // Verify with the wrong public key
+        let is_valid = RsaCryptoSystem::verify(&wrong_public_key, data, &signature).unwrap();
+
+        assert!(!is_valid);
+    }
+
+    #[test]
+    fn test_rsa_decrypt_wrong_key_fails() {
+        let (public_key, _) = setup_keys();
+        let (_, wrong_private_key) = setup_keys();
+        let plaintext = b"top secret";
+
+        let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let result = RsaCryptoSystem::decrypt(&wrong_private_key, &ciphertext.to_string(), None);
         
-        let public_pem = RsaCryptoSystem::export_public_key(&public_key).unwrap();
-        let private_pem = RsaCryptoSystem::export_private_key(&private_key).unwrap();
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_rsa_decrypt_tampered_ciphertext_fails() {
+        let (public_key, private_key) = setup_keys();
+        let plaintext = b"another secret";
+
+        let ciphertext_b64 = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let mut ciphertext_bytes = from_base64(&ciphertext_b64.to_string()).unwrap();
         
-        let imported_public = RsaCryptoSystem::import_public_key(&public_pem).unwrap();
-        let imported_private = RsaCryptoSystem::import_private_key(&private_pem).unwrap();
-        
-        // 测试导入的密钥是否可用
-        let plaintext = b"Test exported/imported keys";
-        let ciphertext = RsaCryptoSystem::encrypt(&imported_public, plaintext, None).unwrap();
-        
-        let decrypted = RsaCryptoSystem::decrypt(&imported_private, &ciphertext.to_string(), None).unwrap();
-        
-        // Use constant_time_eq for secure comparison
-        assert!(constant_time_eq(&decrypted, plaintext));
+        // Tamper
+        let len = ciphertext_bytes.len();
+        ciphertext_bytes[len / 2] ^= 0xff;
+        let tampered_ciphertext_b64 = Base64String::from(ciphertext_bytes);
+
+        let result = RsaCryptoSystem::decrypt(&private_key, &tampered_ciphertext_b64.to_string(), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rsa_key_export_import() {
+        let (public_key, private_key) = setup_keys();
+
+        let exported_pub = RsaCryptoSystem::export_public_key(&public_key).unwrap();
+        let exported_priv = RsaCryptoSystem::export_private_key(&private_key).unwrap();
+
+        let imported_pub = RsaCryptoSystem::import_public_key(&exported_pub).unwrap();
+        let imported_priv = RsaCryptoSystem::import_private_key(&exported_priv).unwrap();
+
+        assert_eq!(public_key, imported_pub);
+        assert_eq!(private_key, imported_priv);
+    }
+
+    #[test]
+    fn test_rsa_import_invalid_key_fails() {
+        let invalid_pem = "-----BEGIN PUBLIC KEY-----\nINVALID_KEY_DATA\n-----END PUBLIC KEY-----";
+        let result = RsaCryptoSystem::import_public_key(invalid_pem);
+        assert!(result.is_err());
+
+        let invalid_priv_pem = "-----BEGIN PRIVATE KEY-----\nINVALID_KEY_DATA\n-----END PRIVATE KEY-----";
+        let priv_result = RsaCryptoSystem::import_private_key(invalid_priv_pem);
+        assert!(priv_result.is_err());
     }
 }
 

@@ -186,6 +186,18 @@ where
         self.primary_key.as_ref().map(|(key, _)| key)
     }
 
+    /// 获取主密钥元数据
+    pub fn get_primary_key_metadata(&self) -> Option<&KeyMetadata> {
+        self.primary_key.as_ref().map(|(_, metadata)| metadata)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_usage_count(&mut self, count: u64) {
+        if let Some((_, metadata)) = &mut self.primary_key {
+            metadata.usage_count = count;
+        }
+    }
+
     /// 获取所有密钥（主密钥和次要密钥）
     pub fn get_all_keys(&self) -> Vec<&T::Key> {
         let mut keys = Vec::new();

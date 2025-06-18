@@ -91,9 +91,28 @@ where
     }
 
     fn needs_rotation(&self) -> bool {
-        // Simplified compared to asymmetric, as there is no policy yet in ConfigManager for symmetric
-        // For now, let's assume it never needs rotation to avoid complexity.
-        // In a real scenario, this would check expiration and usage count from policy.
+        if let Some(arc) = self.primary.load_full() {
+            let (_, metadata) = &*arc;
+            let policy = self.config.get_rotation_policy();
+
+            if let Some(expires_at) = &metadata.expires_at {
+                if let Ok(expiry_time) = chrono::DateTime::parse_from_rfc3339(expires_at) {
+                    let now = chrono::Utc::now();
+                    let warning_period = chrono::Duration::days(policy.rotation_start_days as i64);
+                    if (now + warning_period) >= expiry_time {
+                        return true;
+                    }
+                }
+            }
+            
+            if let Some(max_count) = policy.max_usage_count {
+                if metadata.usage_count >= max_count {
+                    return true;
+                }
+            }
+        } else {
+            return true; // No primary key, so we need one.
+        }
         false
     }
     
@@ -125,19 +144,6 @@ where
         Ok(())
     }
 
-    fn complete_rotation(&self) -> Result<(), Error> {
-        let to_remove: Vec<_> = self.secondary.iter()
-            .filter(|entry| entry.value().1.status == crate::common::traits::KeyStatus::Rotating)
-            .map(|entry| entry.key().clone())
-            .collect();
-        
-        for name in to_remove {
-            self.secondary.remove(&name);
-            let _ = self.key_storage.delete_key(&name);
-        }
-        Ok(())
-    }
-
     fn increment_usage_count(&self) -> Result<(), Error> {
         if let Some(old) = self.primary.load_full() {
             let (key, mut meta) = (&*old).clone();
@@ -151,7 +157,6 @@ where
     }
     
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<String, Error> {
-        self.complete_rotation()?;
         if self.needs_rotation() {
             self.start_rotation()?;
         }
@@ -163,7 +168,6 @@ where
     }
 
     pub fn decrypt(&self, ciphertext: &str) -> Result<Vec<u8>, Error> {
-        self.complete_rotation()?;
         if let Some(arc) = self.primary.load_full() {
             let (key, _) = &*arc;
             if let Ok(pt) = C::decrypt(key, ciphertext, None) {
@@ -184,7 +188,6 @@ where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
-        self.complete_rotation()?;
         if self.needs_rotation() {
             self.start_rotation()?;
         }
@@ -199,9 +202,133 @@ where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
-        self.complete_rotation()?;
         let arc = self.primary.load_full().ok_or_else(|| Error::Key("没有可用主密钥".to_string()))?;
         let (key, _) = &*arc;
         C::decrypt_stream_async(key, reader, writer, config, None).await
+    }
+
+    #[cfg(test)]
+    fn set_usage_count(&self, count: u64) -> Result<(), Error> {
+        if let Some(old) = self.primary.load_full() {
+            let (key, mut meta) = (&*old).clone();
+            meta.usage_count = count;
+            self.primary.store(Some(Arc::new((key, meta))));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::config::{ConfigFile, StorageConfig};
+    use crate::rotation::RotationPolicy;
+    use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+    use std::io::Cursor;
+    use tempfile::tempdir;
+    use tokio::io::BufReader;
+
+    type TestEngine = SymmetricQSealEngineAsync<AesGcmSystem>;
+
+    fn setup_test_engine(dir: &std::path::Path, key_prefix: &str) -> TestEngine {
+        let storage_config = StorageConfig {
+            key_storage_dir: dir.to_path_buf().to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let rotation_policy = RotationPolicy {
+            max_usage_count: Some(10),
+            ..Default::default()
+        };
+        let config = ConfigFile {
+            storage: storage_config,
+            rotation: rotation_policy,
+            crypto: Default::default(),
+        };
+        let config_manager = Arc::new(ConfigManager::from_config_file(config));
+        TestEngine::new(config_manager, key_prefix).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_async_engine_encrypt_decrypt_roundtrip() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "test_async_roundtrip");
+        let plaintext = b"async top secret data";
+
+        let ciphertext = engine.encrypt(plaintext).unwrap();
+        let decrypted = engine.decrypt(&ciphertext).unwrap();
+
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
+    }
+
+    #[tokio::test]
+    async fn test_async_engine_streaming_roundtrip() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "test_async_streaming");
+        let original_data = b"some async streaming data".to_vec();
+
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        let streaming_config = StreamingConfig::default();
+
+        engine
+            .encrypt_stream(source, &mut encrypted_dest, &streaming_config)
+            .await
+            .unwrap();
+
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+
+        engine
+            .decrypt_stream(encrypted_source, &mut decrypted_dest, &streaming_config)
+            .await
+            .unwrap();
+
+        assert_eq!(original_data, decrypted_dest);
+    }
+
+    #[tokio::test]
+    async fn test_async_decrypt_with_rotated_key() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "test_async_rotation");
+        let plaintext1 = b"async data encrypted with key v1";
+
+        let ciphertext1 = engine.encrypt(plaintext1).unwrap();
+
+        engine.set_usage_count(11).unwrap();
+
+        let plaintext2 = b"async data encrypted with key v2";
+        let ciphertext2 = engine.encrypt(plaintext2).unwrap();
+
+        let decrypted1 = engine.decrypt(&ciphertext1).unwrap();
+        assert_eq!(plaintext1.as_ref(), decrypted1.as_slice());
+
+        let decrypted2 = engine.decrypt(&ciphertext2).unwrap();
+        assert_eq!(plaintext2.as_ref(), decrypted2.as_slice());
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_async_streaming_decrypt_with_rotated_key_fails() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "test_async_streaming_rotation_fail");
+        let streaming_config = StreamingConfig::default();
+
+        let original_data = b"this async stream was encrypted with key v1".to_vec();
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        engine
+            .encrypt_stream(source, &mut encrypted_dest, &streaming_config)
+            .await
+            .unwrap();
+
+        engine.set_usage_count(11).unwrap();
+        engine.encrypt(b"trigger rotation").unwrap();
+
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        engine
+            .decrypt_stream(encrypted_source, &mut decrypted_dest, &streaming_config)
+            .await
+            .unwrap();
     }
 } 

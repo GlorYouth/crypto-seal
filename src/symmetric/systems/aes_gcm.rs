@@ -106,4 +106,138 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
 
         Ok(AesGcmKey(key_bytes))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::utils::CryptoConfig;
+
+    #[test]
+    fn test_generate_key() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        assert_eq!(key.0.len(), KEY_SIZE);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_success() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"this is a secret message";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+        let ciphertext_b64 = ciphertext.to_string();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext_b64, None).unwrap();
+
+        assert_eq!(plaintext, decrypted_plaintext.as_slice());
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_with_aad_success() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"this is a secret message with aad";
+        let aad = b"additional authenticated data";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
+        let ciphertext_b64 = ciphertext.to_string();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext_b64, Some(aad)).unwrap();
+
+        assert_eq!(plaintext, decrypted_plaintext.as_slice());
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key() {
+        let config = CryptoConfig::default();
+        let key1 = AesGcmSystem::generate_key(&config).unwrap();
+        let key2 = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"this is another secret";
+
+        let ciphertext = AesGcmSystem::encrypt(&key1, plaintext, None).unwrap();
+        let ciphertext_b64 = ciphertext.to_string();
+        let result = AesGcmSystem::decrypt(&key2, &ciphertext_b64, None);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_tampered_ciphertext() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"secret message, do not tamper";
+
+        let ciphertext_obj = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+        let mut raw_data = ciphertext_obj.0.clone();
+        
+        // Tamper with the ciphertext part
+        let len = raw_data.len();
+        raw_data[len - 1] ^= 0xff; // Flip the last byte
+
+        let tampered_ciphertext_b64 = general_purpose::STANDARD.encode(&raw_data);
+        
+        let result = AesGcmSystem::decrypt(&key, &tampered_ciphertext_b64, None);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_tampered_aad() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"secret message";
+        let aad = b"authentic data";
+        let tampered_aad = b"tampered authentic data";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
+        let ciphertext_b64 = ciphertext.to_string();
+        let result = AesGcmSystem::decrypt(&key, &ciphertext_b64, Some(tampered_aad));
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_export_import_key() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"message for exported/imported key";
+
+        let exported_key = AesGcmSystem::export_key(&key).unwrap();
+        let imported_key = AesGcmSystem::import_key(&exported_key).unwrap();
+
+        assert_eq!(key.0, imported_key.0);
+        
+        let ciphertext = AesGcmSystem::encrypt(&imported_key, plaintext, None).unwrap();
+        let ciphertext_b64 = ciphertext.to_string();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext_b64, None).unwrap();
+        
+        assert_eq!(plaintext, decrypted_plaintext.as_slice());
+    }
+
+    #[test]
+    fn test_import_invalid_key() {
+        let invalid_key_b64 = "invalid-base64-key";
+        let result = AesGcmSystem::import_key(invalid_key_b64);
+        assert!(result.is_err());
+
+        let short_key_bytes = vec![0; 16];
+        let short_key_b64 = general_purpose::STANDARD.encode(&short_key_bytes);
+        let result = AesGcmSystem::import_key(&short_key_b64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_invalid_ciphertext() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        
+        let invalid_ciphertext = "not-even-base64";
+        let result = AesGcmSystem::decrypt(&key, invalid_ciphertext, None);
+        assert!(result.is_err());
+
+        // Ciphertext too short
+        let short_ciphertext = general_purpose::STANDARD.encode(&[0; NONCE_SIZE - 1]);
+        let result = AesGcmSystem::decrypt(&key, &short_ciphertext, None);
+        assert!(result.is_err());
+    }
 } 

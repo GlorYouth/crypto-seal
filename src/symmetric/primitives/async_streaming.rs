@@ -164,4 +164,99 @@ where
     {
         AsyncStreamingDecryptor::<Self, R, W>::new(reader, writer, key, config.clone(), additional_data).process().await
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::utils::CryptoConfig;
+    use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+    use tokio::io::BufReader;
+    use std::io::Cursor;
+
+    fn get_test_key_and_config() -> (
+        <AesGcmSystem as SymmetricCryptographicSystem>::Key,
+        StreamingConfig,
+    ) {
+        let key = AesGcmSystem::generate_key(&CryptoConfig::default()).unwrap();
+        let config = StreamingConfig {
+            buffer_size: 256,
+            ..Default::default()
+        };
+        (key, config)
+    }
+
+    #[tokio::test]
+    async fn test_async_streaming_roundtrip() {
+        let (key, config) = get_test_key_and_config();
+        let original_data = b"This is a test for async streaming encryption.".to_vec();
+
+        // Encrypt
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+            .await
+            .unwrap();
+
+        // Decrypt
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, None)
+            .await
+            .unwrap();
+
+        assert_eq!(original_data, decrypted_dest);
+    }
+
+    #[tokio::test]
+    async fn test_async_streaming_with_aad() {
+        let (key, config) = get_test_key_and_config();
+        let original_data = b"Async streaming with AAD.".to_vec();
+        let aad = b"my_aad";
+
+        // Encrypt
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, Some(aad))
+            .await
+            .unwrap();
+
+        // Decrypt
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, Some(aad))
+            .await
+            .unwrap();
+        
+        assert_eq!(original_data, decrypted_dest);
+    }
+
+    #[tokio::test]
+    async fn test_async_streaming_tampered_fails() {
+        let (key, config) = get_test_key_and_config();
+        let original_data = b"This data will be tampered.".to_vec();
+        let aad = b"some_aad_here";
+
+        // Encrypt
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, Some(aad))
+            .await
+            .unwrap();
+
+        // Tamper
+        let len = encrypted_dest.len();
+        if len > 0 {
+            encrypted_dest[len / 2] ^= 0xff;
+        }
+
+        // Decrypt
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        let result =
+            AesGcmSystem::decrypt_stream_async(&key, encrypted_source, &mut decrypted_dest, &config, Some(aad))
+                .await;
+
+        assert!(result.is_err());
+    }
 } 

@@ -121,8 +121,15 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
         #[cfg(not(feature = "chacha"))]
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+
+        use aes_gcm::aead::Payload;
+        let payload = Payload {
+            msg: plaintext,
+            aad: _additional_data.unwrap_or_default(),
+        };
+
         // 加密数据
-        let aes_ciphertext = cipher.encrypt(&nonce, plaintext)
+        let aes_ciphertext = cipher.encrypt(&nonce, payload)
             .map_err(|e| Error::PostQuantum(format!("AEAD加密失败: {}", e)))?;
         
         // 组合数据：变体ID(1字节) + kyber密文 + nonce + AEAD密文
@@ -137,7 +144,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
     fn decrypt(
         private_key: &Self::PrivateKey,
         ciphertext: &str,
-        _additional_data: Option<&[u8]>, // AAD在KEM+DEM中不由KEM部分直接处理
+        additional_data: Option<&[u8]>, // AAD在KEM+DEM中不由KEM部分直接处理
     ) -> Result<Vec<u8>, Self::Error> {
         // 解码Base64
         let combined = from_base64(ciphertext)?;
@@ -152,6 +159,9 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
 
         let (kyber_ct_len, shared_secret_bytes) = match variant_id {
             1 => { // Kyber512
+                if private_key.0.len() != KYBER512_SECRETKEYBYTES {
+                    return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
+                }
                 if rest.len() < KYBER512_CIPHERTEXTBYTES {
                     return Err(Error::Format("Kyber512密文格式无效".to_string()));
                 }
@@ -164,6 +174,9 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 (KYBER512_CIPHERTEXTBYTES, ss.as_bytes().to_vec())
             }
             2 => { // Kyber768
+                if private_key.0.len() != KYBER768_SECRETKEYBYTES {
+                    return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
+                }
                 if rest.len() < KYBER768_CIPHERTEXTBYTES {
                     return Err(Error::Format("Kyber768密文格式无效".to_string()));
                 }
@@ -176,6 +189,9 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 (KYBER768_CIPHERTEXTBYTES, ss.as_bytes().to_vec())
             }
             3 => { // Kyber1024
+                if private_key.0.len() != KYBER1024_SECRETKEYBYTES {
+                    return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
+                }
                 if rest.len() < KYBER1024_CIPHERTEXTBYTES {
                     return Err(Error::Format("Kyber1024密文格式无效".to_string()));
                 }
@@ -189,17 +205,6 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             },
             _ => return Err(Error::PostQuantum("未知的Kyber变体ID".to_string())),
         };
-
-        // 检查私钥是否与密文匹配
-        let expected_sk_len = match variant_id {
-            1 => KYBER512_SECRETKEYBYTES,
-            2 => KYBER768_SECRETKEYBYTES,
-            3 => KYBER1024_SECRETKEYBYTES,
-            _ => 0,
-        };
-        if private_key.0.len() != expected_sk_len {
-            return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
-        }
 
         // 提取nonce和AEAD密文
         if rest.len() < kyber_ct_len + 12 {
@@ -218,7 +223,14 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         let nonce = ChaNonce::from_slice(nonce_bytes);
         #[cfg(not(feature = "chacha"))]
         let nonce = Nonce::from_slice(nonce_bytes);
-        cipher.decrypt(&nonce, aes_ciphertext)
+
+        use aes_gcm::aead::Payload;
+        let payload = Payload {
+            msg: aes_ciphertext,
+            aad: additional_data.unwrap_or_default(),
+        };
+
+        cipher.decrypt(&nonce, payload)
             .map_err(|e| Error::PostQuantum(format!("AEAD解密失败: {}", e)))
     }
     
@@ -354,42 +366,113 @@ impl AsyncStreamingSystem for KyberCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::utils::{constant_time_eq, CryptoConfig};
+    use crate::common::utils::CryptoConfig;
+
+    fn setup_keys(k: usize) -> (KyberPublicKeyWrapper, KyberPrivateKeyWrapper) {
+        let config = CryptoConfig { kyber_parameter_k: k, ..Default::default() };
+        KyberCryptoSystem::generate_keypair(&config).unwrap()
+    }
 
     #[test]
-    fn kyber_encryption_roundtrip() {
-        let config = CryptoConfig::default(); // Kyber768
-        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
-        
-        let plaintext = b"Hello, Kyber post-quantum world!";
-        let ciphertext = KyberCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        
-        let decrypted = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), None).unwrap();
-        assert_eq!(decrypted, plaintext);
-        
-        // Use constant_time_eq for secure comparison
-        assert!(constant_time_eq(&decrypted, plaintext));
+    fn test_kyber_roundtrip_all_levels() {
+        for &k in &[512, 768, 1024] {
+            let (public_key, private_key) = setup_keys(k);
+            let plaintext = format!("secret data for kyber-{}", k).into_bytes();
+
+            let ciphertext = KyberCryptoSystem::encrypt(&public_key, &plaintext, None).unwrap();
+            let decrypted = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), None).unwrap();
+
+            assert_eq!(plaintext, decrypted);
+        }
     }
     
     #[test]
-    fn kyber_key_export_import() {
-        let config = CryptoConfig::default();
-        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
+    fn test_kyber_with_aad_roundtrip() {
+        let (public_key, private_key) = setup_keys(768);
+        let plaintext = b"some secret data with aad";
+        let aad = b"additional authenticated data";
+
+        let ciphertext = KyberCryptoSystem::encrypt(&public_key, plaintext, Some(aad)).unwrap();
+        let decrypted = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), Some(aad)).unwrap();
+
+        assert_eq!(plaintext, decrypted.as_slice());
+    }
+    
+    #[test]
+    fn test_kyber_wrong_aad_fails() {
+        let (public_key, private_key) = setup_keys(768);
+        let plaintext = b"secret data for aad test";
+        let correct_aad = b"this is the correct aad";
+        let wrong_aad = b"this is the wrong aad";
         
-        let public_base64 = KyberCryptoSystem::export_public_key(&public_key).unwrap();
-        let private_base64 = KyberCryptoSystem::export_private_key(&private_key).unwrap();
+        let ciphertext = KyberCryptoSystem::encrypt(&public_key, plaintext, Some(correct_aad)).unwrap();
+        let result = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), Some(wrong_aad));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kyber_tampered_ciphertext_fails() {
+        let (public_key, private_key) = setup_keys(1024);
+        let plaintext = b"some data that should not be tampered with";
         
-        let imported_public = KyberCryptoSystem::import_public_key(&public_base64).unwrap();
-        let imported_private = KyberCryptoSystem::import_private_key(&private_base64).unwrap();
-        
-        // 测试导入的密钥是否可用
-        let plaintext = b"Test exported/imported Kyber keys";
-        let ciphertext = KyberCryptoSystem::encrypt(&imported_public, plaintext, None).unwrap();
-        
-        let decrypted = KyberCryptoSystem::decrypt(&imported_private, &ciphertext.to_string(), None).unwrap();
-        
-        // Use constant_time_eq for secure comparison
-        assert!(constant_time_eq(&decrypted, plaintext));
+        // Test tampering with KEM part
+        let ciphertext_b64 = KyberCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let mut combined_bytes = from_base64(&ciphertext_b64.to_string()).unwrap();
+        combined_bytes[10] ^= 0xff; // Tamper somewhere in the Kyber ciphertext
+        let tampered_b64 = Base64String::from(combined_bytes);
+        let result_kem_tamper = KyberCryptoSystem::decrypt(&private_key, &tampered_b64.to_string(), None);
+        assert!(result_kem_tamper.is_err());
+
+        // Test tampering with DEM part
+        let ciphertext_b64_2 = KyberCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let mut combined_bytes_2 = from_base64(&ciphertext_b64_2.to_string()).unwrap();
+        let dem_part_index = combined_bytes_2.len() - 10;
+        combined_bytes_2[dem_part_index] ^= 0xff; // Tamper somewhere in the AEAD ciphertext
+        let tampered_b64_2 = Base64String::from(combined_bytes_2);
+        let result_dem_tamper = KyberCryptoSystem::decrypt(&private_key, &tampered_b64_2.to_string(), None);
+        assert!(result_dem_tamper.is_err());
+    }
+    
+    #[test]
+    fn test_kyber_decrypt_wrong_key_fails() {
+        let (public_key_512, _) = setup_keys(512);
+        let (_, private_key_768) = setup_keys(768);
+        let plaintext = b"secret data";
+
+        let ciphertext = KyberCryptoSystem::encrypt(&public_key_512, plaintext, None).unwrap();
+        // Decrypt with a key of a different security level
+        let result = KyberCryptoSystem::decrypt(&private_key_768, &ciphertext.to_string(), None);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "密钥错误: 私钥与密文的Kyber级别不匹配"
+        );
+    }
+    
+    #[test]
+    fn test_kyber_key_export_import() {
+        let (public_key, private_key) = setup_keys(1024);
+        let exported_pub = KyberCryptoSystem::export_public_key(&public_key).unwrap();
+        let exported_priv = KyberCryptoSystem::export_private_key(&private_key).unwrap();
+
+        let imported_pub = KyberCryptoSystem::import_public_key(&exported_pub).unwrap();
+        let imported_priv = KyberCryptoSystem::import_private_key(&exported_priv).unwrap();
+
+        assert_eq!(public_key, imported_pub);
+        assert_eq!(private_key, imported_priv);
+    }
+
+    #[test]
+    fn test_kyber_import_invalid_key_fails() {
+        let invalid_b64_key = "not_a_valid_base64_string";
+        assert!(KyberCryptoSystem::import_public_key(invalid_b64_key).is_err());
+        assert!(KyberCryptoSystem::import_private_key(invalid_b64_key).is_err());
+
+        let wrong_size_key = to_base64(&[0u8; 100]);
+        assert!(KyberCryptoSystem::import_public_key(&wrong_size_key).is_err());
+        assert!(KyberCryptoSystem::import_private_key(&wrong_size_key).is_err());
     }
 }
 

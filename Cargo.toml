@@ -55,6 +55,7 @@ notify = { version = "8.0.0", features = ["serde"], optional = true }
 
 [dev-dependencies]
 criterion = "0.6"
+tempfile = "3.8.0"
 
 [[bench]]
 name = "base"

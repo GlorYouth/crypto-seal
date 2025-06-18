@@ -19,7 +19,7 @@ where
     Error: From<T::Error>,
 {
     config: Arc<ConfigManager>,
-    key_manager: SymmetricKeyRotationManager<T>,
+    pub(crate) key_manager: SymmetricKeyRotationManager<T>,
 }
 
 impl<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem> SymmetricQSealEngine<T>
@@ -66,7 +66,6 @@ where
     /// 加密一段明文。
     pub fn encrypt(&mut self, plaintext: &[u8], additional_data: Option<&[u8]>) -> Result<String, Error> {
         let manager = &mut self.key_manager;
-        manager.complete_rotation()?;
         if manager.needs_rotation() {
             manager.start_rotation(&self.config.get_crypto_config())?;
         }
@@ -86,7 +85,6 @@ where
     /// 解密一段密文。
     pub fn decrypt(&mut self, ciphertext: &str, additional_data: Option<&[u8]>) -> Result<Vec<u8>, Error> {
         let manager = &mut self.key_manager;
-        manager.complete_rotation()?;
         
         let keys = manager.get_all_keys();
         if keys.is_empty() {
@@ -111,7 +109,6 @@ where
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         let manager = &mut self.key_manager;
-        manager.complete_rotation()?;
         if manager.needs_rotation() {
             manager.start_rotation(&self.config.get_crypto_config())?;
         }
@@ -133,7 +130,6 @@ where
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         let manager = &mut self.key_manager;
-        manager.complete_rotation()?;
 
         let key = manager.get_primary_key()
             .map(|k| k.clone())
@@ -197,5 +193,115 @@ where
         let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
         let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
         SymmetricQSealEngine::new(cm, &prefix)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::config::{ConfigFile, StorageConfig};
+    use crate::rotation::RotationPolicy;
+    use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+    use std::io::Cursor;
+    use tempfile::tempdir;
+
+    type TestEngine = SymmetricQSealEngine<AesGcmSystem>;
+
+    fn setup_test_engine(dir: &Path, key_prefix: &str) -> TestEngine {
+        let storage_config = StorageConfig {
+            key_storage_dir: dir.to_path_buf().to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let rotation_policy = RotationPolicy {
+            max_usage_count: Some(10), // Rotate after 10 operations
+            ..Default::default()
+        };
+        let config = ConfigFile {
+            storage: storage_config,
+            rotation: rotation_policy,
+            crypto: Default::default(),
+        };
+        let config_manager = Arc::new(ConfigManager::from_config_file(config));
+        TestEngine::new(config_manager, key_prefix).unwrap()
+    }
+
+    #[test]
+    fn test_engine_encrypt_decrypt_roundtrip() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "test_roundtrip");
+        let plaintext = b"top secret data";
+        
+        let ciphertext = engine.encrypt(plaintext, None).unwrap();
+        let decrypted = engine.decrypt(&ciphertext, None).unwrap();
+        
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
+    }
+
+    #[test]
+    fn test_engine_streaming_roundtrip() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "test_streaming");
+        let original_data = b"some streaming data to be encrypted";
+
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        let streaming_config = StreamingConfig::default();
+
+        engine.encrypt_stream(&mut source, &mut encrypted_dest, &streaming_config).unwrap();
+
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+
+        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &streaming_config).unwrap();
+
+        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+    }
+
+    #[test]
+    fn test_decrypt_with_rotated_key() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "test_rotation");
+        let plaintext1 = b"data encrypted with key v1";
+
+        // Encrypt with the first key
+        let ciphertext1 = engine.encrypt(plaintext1, None).unwrap();
+
+        // Force key rotation by exceeding usage count
+        engine.key_manager.set_usage_count(11);
+        
+        // This encryption will trigger rotation, creating key v2
+        let plaintext2 = b"data encrypted with key v2";
+        let ciphertext2 = engine.encrypt(plaintext2, None).unwrap();
+        
+        // Now, the primary key is v2. Decrypting data encrypted with v1 should still work.
+        let decrypted1 = engine.decrypt(&ciphertext1, None).unwrap();
+        assert_eq!(plaintext1.as_ref(), decrypted1.as_slice());
+
+        // And data with v2 should also work.
+        let decrypted2 = engine.decrypt(&ciphertext2, None).unwrap();
+        assert_eq!(plaintext2.as_ref(), decrypted2.as_slice());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_streaming_decrypt_with_rotated_key_fails() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "test_streaming_rotation_fail");
+        let streaming_config = StreamingConfig::default();
+
+        // Encrypt a stream with key v1
+        let original_data = b"this stream was encrypted with key v1";
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        engine.encrypt_stream(&mut source, &mut encrypted_dest, &streaming_config).unwrap();
+
+        // Force rotation to key v2
+        engine.key_manager.set_usage_count(11); // Exceed max_operations
+        engine.encrypt(b"trigger rotation", None).unwrap(); // This will create v2 and set it as primary
+
+        // Try to decrypt the stream. This should fail because decrypt_stream only uses the primary key (v2).
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &streaming_config).unwrap();
     }
 } 

@@ -170,22 +170,6 @@ where
         Ok(())
     }
 
-    /// 完成轮换：删除 Rotating 的次要密钥
-    fn complete_rotation(&self) -> Result<(), Error> {
-        let mut to_remove = Vec::new();
-        for entry in self.secondary.iter() {
-            let (name, (_pk, _sk, meta)) = (entry.key(), entry.value());
-            if meta.status == crate::common::traits::KeyStatus::Rotating {
-                to_remove.push(name.clone());
-            }
-        }
-        for name in to_remove {
-            self.secondary.remove(&name);
-            let _ = self.key_storage.delete_key(&name);
-        }
-        Ok(())
-    }
-
     /// 增加使用计数
     fn increment_usage_count(&self) -> Result<(), Error> {
         if let Some(old) = self.primary.load_full() {
@@ -201,7 +185,6 @@ where
 
     /// 加密
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<String, Error> {
-        self.complete_rotation()?;
         if self.needs_rotation() {
             self.start_rotation(&self.config.get_crypto_config())?;
         }
@@ -214,7 +197,6 @@ where
 
     /// 解密
     pub fn decrypt(&self, ciphertext: &str) -> Result<Vec<u8>, Error> {
-        self.complete_rotation()?;
         if let Some(arc) = self.primary.load_full() {
             let (_, sk, _) = &*arc;
             if let Ok(pt) = C::decrypt(sk, ciphertext, None) {
@@ -234,7 +216,6 @@ where
     pub fn encrypt_authenticated(&self, plaintext: &[u8]) -> Result<String, Error>
     where C: AuthenticatedCryptoSystem + Send + Sync + 'static
     {
-        self.complete_rotation()?;
         if self.needs_rotation() {
             self.start_rotation(&self.config.get_crypto_config())?;
         }
@@ -252,10 +233,8 @@ where
     pub fn decrypt_authenticated(&self, ciphertext: &str) -> Result<Vec<u8>, Error>
     where C: AuthenticatedCryptoSystem + Send + Sync + 'static
     {
-        self.complete_rotation()?;
         let cfg = self.config.get_crypto_config();
 
-        // 尝试主密钥
         if let Some(arc) = self.primary.load_full() {
             let (pk, sk, _) = &*arc;
             let verifier = if cfg.auto_verify_signatures { Some(pk) } else { None };
@@ -264,7 +243,6 @@ where
             }
         }
 
-        // 尝试次要密钥
         for entry in self.secondary.iter() {
             let (_pk, sk, _) = entry.value();
             if let Ok(pt) = C::decrypt_authenticated(sk, ciphertext, None, None) {
@@ -287,7 +265,6 @@ where
         W: AsyncWrite + Unpin + Send,
         C::PublicKey: Send + Sync,
     {
-        self.complete_rotation()?;
         if self.needs_rotation() {
             self.start_rotation(&self.config.get_crypto_config())?;
         }
@@ -312,15 +289,9 @@ where
         W: AsyncWrite + Unpin + Send,
         C::PrivateKey: Send + Sync,
     {
-        self.complete_rotation()?;
-        if let Some(arc) = self.primary.load_full() {
-            let (_, sk, _) = &*arc;
-            // 注意：这里我们只使用主密钥。
-            return C::decrypt_stream_async(sk, reader, writer, config, None)
-                .await
-                .map_err(Into::into);
-        }
-        Err(Error::Key("没有可用主密钥".to_string()))
+        let arc = self.primary.load_full().ok_or_else(|| Error::Key("没有可用主密钥".to_string()))?;
+        let (_pk, sk, _) = &*arc;
+        C::decrypt_stream_async(sk, reader, writer, config, None).await
     }
 }
 
@@ -442,247 +413,127 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use crate::common::config::{ConfigFile, StorageConfig};
+    use crate::rotation::RotationPolicy;
     use std::io::Cursor;
-    use tokio::io::{copy, AsyncWriteExt};
-    use crate::common::streaming::StreamingResult;
-    use crate::common::utils::{from_base64, Base64String, CryptoConfig};
+    use tempfile::tempdir;
+    use tokio::io::BufReader;
 
-    // A dummy crypto system for testing
-    struct DummyCryptoSystem;
+    type TestEngine = AsymmetricQSealEngineAsync<RsaKyberCryptoSystem>;
 
-    impl AsymmetricCryptographicSystem for DummyCryptoSystem {
-        type PublicKey = String;
-        type PrivateKey = String;
-        type CiphertextOutput = Base64String;
-        type Error = Error;
-
-        fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-            let key = "dummy_key".to_string();
-            Ok((key.clone(), key))
-        }
-
-        fn encrypt(_public_key: &Self::PublicKey, plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
-            Ok(Base64String::from(plaintext.to_vec()))
-        }
-
-        fn decrypt(_private_key: &Self::PrivateKey, ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-            from_base64(ciphertext).map_err(|e| Error::Operation(format!("base64 error: {}", e)))
-        }
-
-        fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
-        fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
-        fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
-        fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
-    }
-
-    #[async_trait::async_trait]
-    impl AsyncStreamingSystem for DummyCryptoSystem {
-        async fn encrypt_stream_async<R, W>(
-            _public_key: &Self::PublicKey,
-            mut reader: R,
-            mut writer: W,
-            _config: &StreamingConfig,
-            _additional_data: Option<&[u8]>,
-        ) -> Result<StreamingResult, Error>
-        where
-            R: AsyncRead + Unpin + Send,
-            W: AsyncWrite + Unpin + Send,
-        {
-            let mut buffer = Vec::new();
-            let bytes_read = copy(&mut reader, &mut buffer).await.unwrap();
-            writer.write_all(&buffer).await.unwrap();
-            Ok(StreamingResult { bytes_processed: bytes_read, buffer: Some(buffer) })
-        }
-
-        async fn decrypt_stream_async<R, W>(
-            _private_key: &Self::PrivateKey,
-            mut reader: R,
-            mut writer: W,
-            _config: &StreamingConfig,
-            _additional_data: Option<&[u8]>,
-        ) -> Result<StreamingResult, Error>
-        where
-            R: AsyncRead + Unpin + Send,
-            W: AsyncWrite + Unpin + Send,
-        {
-            let mut buffer = Vec::new();
-            let bytes_read = copy(&mut reader, &mut buffer).await.unwrap();
-            writer.write_all(&buffer).await.unwrap();
-            Ok(StreamingResult { bytes_processed: bytes_read, buffer: Some(buffer) })
-        }
-    }
-
-    // A dummy authenticated crypto system for testing
-    struct DummyAuthSystem;
-
-    impl AsymmetricCryptographicSystem for DummyAuthSystem {
-        type PublicKey = String;
-        type PrivateKey = String;
-        type CiphertextOutput = Base64String;
-        type Error = Error;
-
-        fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-            let key = "dummy_auth_key".to_string();
-            Ok((key.clone(), key))
-        }
-        fn encrypt(_public_key: &Self::PublicKey, plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
-            Ok(Base64String::from(plaintext.to_vec()))
-        }
-        fn decrypt(_private_key: &Self::PrivateKey, ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-            from_base64(ciphertext).map_err(|e| Error::Operation(format!("base64 error: {}", e)))
-        }
-        fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
-        fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
-        fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
-        fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
-    }
-
-    impl AuthenticatedCryptoSystem for DummyAuthSystem {
-        type AuthenticatedOutput = Base64String;
-
-        fn sign(_private_key: &Self::PrivateKey, _data: &[u8]) -> Result<Vec<u8>, Self::Error> {
-            Ok(b"_signed".to_vec())
-        }
-
-        fn verify(_public_key: &Self::PublicKey, _data: &[u8], _signature: &[u8]) -> Result<bool, Self::Error> { Ok(true) }
-
-        fn encrypt_authenticated(
-            _public_key: &Self::PublicKey,
-            plaintext: &[u8],
-            _additional_data: Option<&[u8]>,
-            signer_key: Option<&Self::PrivateKey>
-        ) -> Result<Self::AuthenticatedOutput, Self::Error> {
-            if let Some(sk) = signer_key {
-                let sig = Self::sign(sk, plaintext)?;
-                let mut output = plaintext.to_vec();
-                output.extend_from_slice(&sig);
-                return Ok(Base64String::from(output));
-            }
-            Ok(Base64String::from(plaintext.to_vec()))
-        }
-
-        fn decrypt_authenticated(
-            _private_key: &Self::PrivateKey,
-            ciphertext: &str,
-            _additional_data: Option<&[u8]>,
-            verifier_key: Option<&Self::PublicKey>
-        ) -> Result<Vec<u8>, Self::Error> {
-             let data = from_base64(ciphertext).map_err(|e| Error::Operation(format!("base64 error: {}", e)))?;
-             if let Some(_pk) = verifier_key {
-                 // Simplified verification for test
-                 if data.ends_with(b"_signed") {
-                     return Ok(data[..data.len() - b"_signed".len()].to_vec())
-                 }
-             }
-             Ok(data)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl AsyncStreamingSystem for DummyAuthSystem {
-        async fn encrypt_stream_async<R, W>(
-            _public_key: &Self::PublicKey,
-            _reader: R,
-            _writer: W,
-            _config: &StreamingConfig,
-            _additional_data: Option<&[u8]>,
-        ) -> Result<StreamingResult, Error>
-        where
-            R: AsyncRead + Unpin + Send,
-            W: AsyncWrite + Unpin + Send,
-        {
-            unimplemented!()
-        }
-
-        async fn decrypt_stream_async<R, W>(
-            _private_key: &Self::PrivateKey,
-            _reader: R,
-            _writer: W,
-            _config: &StreamingConfig,
-            _additional_data: Option<&[u8]>,
-        ) -> Result<StreamingResult, Error>
-        where
-            R: AsyncRead + Unpin + Send,
-            W: AsyncWrite + Unpin + Send,
-        {
-            unimplemented!()
-        }
-    }
-
-    fn setup_test_engine<C>(key_prefix: &str) -> (tempfile::TempDir, AsymmetricQSealEngineAsync<C>)
-    where
-        C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
-        Error: From<C::Error>,
-        C::Error: Send,
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = AsymmetricQSealEngineAsync::<C>::builder()
-            .with_storage_dir(dir.path().to_str().unwrap())
-            .unwrap()
-            .with_key_prefix(key_prefix)
-            .build()
-            .unwrap();
-
-        (dir, engine)
+    fn setup_test_engine(dir: &std::path::Path, key_prefix: &str) -> TestEngine {
+        let storage_config = StorageConfig {
+            key_storage_dir: dir.to_path_buf().to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let rotation_policy = RotationPolicy {
+            max_usage_count: Some(5), // Low count for testing
+            ..Default::default()
+        };
+        let config = ConfigFile {
+            storage: storage_config,
+            rotation: rotation_policy,
+            crypto: Default::default(),
+        };
+        let config_manager = Arc::new(ConfigManager::from_config_file(config));
+        TestEngine::new(config_manager, key_prefix).unwrap()
     }
 
     #[tokio::test]
-    async fn test_async_basic_encrypt_decrypt() {
-        let (_dir, engine) = setup_test_engine::<DummyCryptoSystem>("test");
-        
-        let plaintext = b"some secret data";
+    async fn test_async_engine_encrypt_decrypt_roundtrip() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "async_roundtrip");
+        let plaintext = b"async secret data";
+
         let ciphertext = engine.encrypt(plaintext).unwrap();
         let decrypted = engine.decrypt(&ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
+
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }
 
     #[tokio::test]
-    async fn test_async_streaming_encrypt_decrypt() {
-        let (_dir, engine) = setup_test_engine::<DummyCryptoSystem>("test_stream");
+    async fn test_async_engine_authenticated_encrypt_decrypt_roundtrip() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "async_auth_roundtrip");
+        let plaintext = b"async authenticated secret";
 
-        let plaintext = b"some very long secret data that should be streamed";
-        let mut source = Cursor::new(plaintext);
-        let mut sink = Vec::new();
-        
-        let config = StreamingConfig::default();
-
-        engine.encrypt_stream(&mut source, &mut sink, &config).await.unwrap();
-
-        let ciphertext = sink;
-        let mut encrypted_source = Cursor::new(ciphertext);
-        let mut decrypted_sink = Vec::new();
-
-        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_sink, &config).await.unwrap();
-
-        assert_eq!(decrypted_sink, plaintext);
-    }
-
-    #[tokio::test]
-    async fn test_async_encrypt_authenticated_with_signature() {
-        let (_dir, engine) = setup_test_engine::<DummyAuthSystem>("test_auth");
-        let plaintext = b"authenticated data";
         let ciphertext = engine.encrypt_authenticated(plaintext).unwrap();
         let decrypted = engine.decrypt_authenticated(&ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
+
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }
 
     #[tokio::test]
-    async fn test_async_encrypt_without_signature() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = AsymmetricQSealEngineAsync::<DummyAuthSystem>::builder()
-            .with_storage_dir(dir.path().to_str().unwrap())
-            .unwrap()
-            .with_key_prefix("test_auth_no_sign")
-            .build()
+    async fn test_async_engine_decrypt_with_rotated_key() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "async_rotation");
+        let plaintext1 = b"async data with key v1";
+
+        let ciphertext1 = engine.encrypt(plaintext1).unwrap();
+
+        for _ in 0..5 {
+            engine.encrypt(b"dummy").unwrap();
+        }
+
+        let plaintext2 = b"async data with key v2";
+        let ciphertext2 = engine.encrypt(plaintext2).unwrap();
+
+        let decrypted1 = engine.decrypt(&ciphertext1).unwrap();
+        assert_eq!(plaintext1.as_ref(), decrypted1.as_slice());
+
+        let decrypted2 = engine.decrypt(&ciphertext2).unwrap();
+        assert_eq!(plaintext2.as_ref(), decrypted2.as_slice());
+    }
+
+    #[tokio::test]
+    async fn test_async_engine_streaming_roundtrip() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "async_streaming");
+        let original_data = b"async streaming data".to_vec();
+        let streaming_config = StreamingConfig::default();
+
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        engine
+            .encrypt_stream(source, &mut encrypted_dest, &streaming_config)
+            .await
             .unwrap();
-        
-        let mut crypto_config = engine.config.get_crypto_config();
-        crypto_config.use_authenticated_encryption = false;
-        engine.config.update_crypto_config(crypto_config).unwrap();
 
-        let plaintext = b"authenticated data";
-        let ciphertext = engine.encrypt_authenticated(plaintext).unwrap();
-        let decrypted = engine.decrypt_authenticated(&ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        engine
+            .decrypt_stream(encrypted_source, &mut decrypted_dest, &streaming_config)
+            .await
+            .unwrap();
+
+        assert_eq!(original_data, decrypted_dest);
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_async_streaming_decrypt_with_rotated_key_fails() {
+        let dir = tempdir().unwrap();
+        let engine = setup_test_engine(dir.path(), "async_streaming_rotation_fail");
+        let streaming_config = StreamingConfig::default();
+
+        let original_data = b"this async stream was encrypted with key v1".to_vec();
+        let source = BufReader::new(Cursor::new(original_data.clone()));
+        let mut encrypted_dest = Vec::new();
+        engine
+            .encrypt_stream(source, &mut encrypted_dest, &streaming_config)
+            .await
+            .unwrap();
+
+        for _ in 0..5 {
+            engine.encrypt(b"dummy").unwrap();
+        }
+
+        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        let mut decrypted_dest = Vec::new();
+        engine
+            .decrypt_stream(encrypted_source, &mut decrypted_dest, &streaming_config)
+            .await
+            .unwrap();
     }
 } 

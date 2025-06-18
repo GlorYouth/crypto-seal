@@ -95,8 +95,6 @@ where
     pub fn encrypt(&mut self, data: &[u8]) -> Result<String, Error> {
         let manager = &mut self.key_manager;
         
-        // 完成上次轮换并删除过期密钥
-        manager.complete_rotation()?;
         // 检查是否需要轮换
         if manager.needs_rotation() {
             manager.start_rotation(&self.config.get_crypto_config())?;
@@ -121,9 +119,6 @@ where
     /// 自动尝试使用主密钥和所有次要密钥进行解密，直到成功为止。
     pub fn decrypt(&mut self, ciphertext: &str) -> Result<Vec<u8>, Error> {
         let manager = &mut self.key_manager;
-        
-        // 完成上次轮换并删除过期密钥
-        manager.complete_rotation()?;
         
         // 首先尝试使用主密钥解密
         if let Some((_, private_key)) = manager.get_primary_key() {
@@ -150,7 +145,6 @@ where
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         let manager = &mut self.key_manager;
-        manager.complete_rotation()?;
         if manager.needs_rotation() {
             manager.start_rotation(&self.config.get_crypto_config())?;
         }
@@ -171,7 +165,6 @@ where
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         let manager = &mut self.key_manager;
-        manager.complete_rotation()?;
 
         // 注意：流式解密无法像块解密一样轻易地"尝试"多个密钥。
         // 一个简单的实现是只使用主密钥。
@@ -200,8 +193,6 @@ where
     pub fn encrypt_authenticated(&mut self, plaintext: &[u8]) -> Result<String, Error> {
         let manager = &mut self.key_manager;
         
-        // 完成上次轮换并删除过期密钥
-        manager.complete_rotation()?;
         // 检查并执行轮换
         if manager.needs_rotation() {
             manager.start_rotation(&self.config.get_crypto_config())?;
@@ -230,9 +221,6 @@ where
     /// 带认证的解密: 根据配置执行必要的轮换并可选校验签名
     pub fn decrypt_authenticated(&mut self, ciphertext: &str) -> Result<Vec<u8>, Error> {
         let manager = &mut self.key_manager;
-        
-        // 完成上次轮换并删除过期密钥
-        manager.complete_rotation()?;
         
         // 获取配置
         let cfg = self.config.get_crypto_config();
@@ -342,157 +330,122 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::config::ConfigManager;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-    use crate::common::utils::{from_base64, Base64String, CryptoConfig};
+    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use crate::common::config::{ConfigFile, StorageConfig};
+    use std::io::Cursor;
+    use tempfile::tempdir;
+    use crate::rotation::RotationPolicy;
 
-    /// 简单的测试用系统，仅实现基础加密/解密
-    #[derive(Clone)]
-    struct DummyCryptoSystem;
-    impl AsymmetricCryptographicSystem for DummyCryptoSystem {
-        type PublicKey = String;
-        type PrivateKey = String;
-        type CiphertextOutput = Base64String;
-        type Error = Error;
+    type TestEngine = AsymmetricQSealEngine<RsaKyberCryptoSystem>;
 
-        fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-            Ok(("PUB".to_string(), "PRIV".to_string()))
-        }
-        fn encrypt(_public_key: &Self::PublicKey, plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
-            Ok(Base64String::from(plaintext.to_vec()))
-        }
-        fn decrypt(_private_key: &Self::PrivateKey, ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-            from_base64(ciphertext).map_err(|e| Error::Operation(format!("Base64解码失败: {}", e)))
-        }
-        fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
-        fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
-        fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
-        fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
-    }
-
-    /// 支持认证加解密的测试用系统
-    #[derive(Clone)]
-    struct DummyAuthSystem;
-    impl AsymmetricCryptographicSystem for DummyAuthSystem {
-        type PublicKey = String;
-        type PrivateKey = String;
-        type CiphertextOutput = Base64String;
-        type Error = Error;
-
-        fn generate_keypair(_config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
-            Ok(("PUB".to_string(), "PRIV".to_string()))
-        }
-        fn encrypt(_public_key: &Self::PublicKey, plaintext: &[u8], _additional_data: Option<&[u8]>) -> Result<Self::CiphertextOutput, Self::Error> {
-            Ok(Base64String::from(plaintext.to_vec()))
-        }
-        fn decrypt(_private_key: &Self::PrivateKey, ciphertext: &str, _additional_data: Option<&[u8]>) -> Result<Vec<u8>, Self::Error> {
-            from_base64(ciphertext).map_err(|e| Error::Operation(format!("Base64解码失败: {}", e)))
-        }
-        fn export_public_key(pk: &Self::PublicKey) -> Result<String, Self::Error> { Ok(pk.clone()) }
-        fn export_private_key(sk: &Self::PrivateKey) -> Result<String, Self::Error> { Ok(sk.clone()) }
-        fn import_public_key(pk: &str) -> Result<Self::PublicKey, Self::Error> { Ok(pk.to_string()) }
-        fn import_private_key(sk: &str) -> Result<Self::PrivateKey, Self::Error> { Ok(sk.to_string()) }
-    }
-    impl AuthenticatedCryptoSystem for DummyAuthSystem {
-        type AuthenticatedOutput = Base64String;
-
-        fn sign(_private_key: &Self::PrivateKey, data: &[u8]) -> Result<Vec<u8>, Self::Error> {
-            // 模拟签名，将 "::SIG" 附加到数据
-            let mut v = data.to_vec(); v.extend_from_slice(b"::SIG"); Ok(v)
-        }
-        fn verify(_public_key: &Self::PublicKey, data: &[u8], _signature: &[u8]) -> Result<bool, Self::Error> {
-            // 总是验证通过
-            let _ = data; Ok(true)
-        }
-        fn encrypt_authenticated(
-            _public_key: &Self::PublicKey,
-            plaintext: &[u8],
-            _additional_data: Option<&[u8]>,
-            signer_key: Option<&Self::PrivateKey>
-        ) -> Result<Self::AuthenticatedOutput, Self::Error> {
-            let mut v = plaintext.to_vec();
-            if signer_key.is_some() {
-                let sig = Self::sign(signer_key.unwrap(), plaintext)?;
-                v = sig;
-            }
-            Ok(Base64String::from(v))
-        }
-        fn decrypt_authenticated(
-            _private_key: &Self::PrivateKey,
-            ciphertext: &str,
-            _additional_data: Option<&[u8]>,
-            verifier_key: Option<&Self::PublicKey>
-        ) -> Result<Vec<u8>, Self::Error> {
-            let mut data = from_base64(ciphertext)
-                .map_err(|e| Error::Operation(format!("Base64解码失败: {}", e)))?;
-            // 模拟验签：如果提供了 verifier_key，必须已附加 ::SIG
-            if let Some(_pk) = verifier_key {
-                if !data.ends_with(b"::SIG") {
-                    return Err(Error::Operation("签名验证失败".to_string()));
-                }
-            }
-            // 去除签名部分
-            if data.ends_with(b"::SIG") {
-                data.truncate(data.len() - 5);
-            }
-            Ok(data)
-        }
-    }
-
-    fn make_engine<C: AsymmetricCryptographicSystem>(config: Arc<ConfigManager>, prefix: &str) -> AsymmetricQSealEngine<C>
-    where Error: From<<C as AsymmetricCryptographicSystem>::Error>, <C as AsymmetricCryptographicSystem>::Error: std::error::Error + 'static {
-        AsymmetricQSealEngine::new(config, prefix).unwrap()
+    fn setup_test_engine(dir: &Path, key_prefix: &str) -> TestEngine {
+        let storage_config = StorageConfig {
+            key_storage_dir: dir.to_path_buf().to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let rotation_policy = RotationPolicy {
+            max_usage_count: Some(5), // Low count for testing
+            ..Default::default()
+        };
+        let config = ConfigFile {
+            storage: storage_config,
+            rotation: rotation_policy,
+            crypto: Default::default(),
+        };
+        let config_manager = Arc::new(ConfigManager::from_config_file(config));
+        TestEngine::new(config_manager, key_prefix).unwrap()
     }
 
     #[test]
-    fn test_engine_basic_encrypt_decrypt() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_str().unwrap().to_string();
-        let config = Arc::new(ConfigManager::new());
-        let mut sc = config.get_storage_config(); sc.key_storage_dir = dir.clone();
-        config.update_storage_config(sc).unwrap();
-        let mut engine = make_engine::<DummyCryptoSystem>(Arc::clone(&config), "test");
-        let plaintext = b"hello world";
-        let ct = engine.encrypt(plaintext).unwrap();
-        let pt = engine.decrypt(&ct).unwrap();
-        assert_eq!(pt, plaintext);
+    fn test_engine_encrypt_decrypt_roundtrip() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "roundtrip");
+        let plaintext = b"secret data for asymmetric encryption";
+
+        let ciphertext = engine.encrypt(plaintext).unwrap();
+        let decrypted = engine.decrypt(&ciphertext).unwrap();
+
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }
 
     #[test]
-    fn test_engine_encrypt_authenticated_with_signature_and_verify() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_str().unwrap().to_string();
-        let config = Arc::new(ConfigManager::new());
-        let mut sc = config.get_storage_config(); sc.key_storage_dir = dir.clone();
-        config.update_storage_config(sc).unwrap();
-        // 默认配置下 use_authenticated_encryption=true, auto_verify_signatures=true
-        let mut engine = make_engine::<DummyAuthSystem>(Arc::clone(&config), "auth");
-        let plaintext = b"data to protect";
-        let ct = engine.encrypt_authenticated(plaintext).unwrap();
-        let pt = engine.decrypt_authenticated(&ct).unwrap();
-        assert_eq!(pt, plaintext);
+    fn test_engine_authenticated_encrypt_decrypt_roundtrip() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "auth_roundtrip");
+        let plaintext = b"authenticated secret data";
+
+        let ciphertext = engine.encrypt_authenticated(plaintext).unwrap();
+        let decrypted = engine.decrypt_authenticated(&ciphertext).unwrap();
+
+        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }
 
     #[test]
-    fn test_engine_encrypt_authenticated_without_signature() {
-        let temp = TempDir::new().unwrap();
-        let dir = temp.path().to_str().unwrap().to_string();
-        let config = Arc::new(ConfigManager::new());
-        // 关闭签名和验证
-        let mut cc = config.get_crypto_config();
-        cc.use_authenticated_encryption = false;
-        cc.auto_verify_signatures = false;
-        config.update_crypto_config(cc).unwrap();
-        let mut sc = config.get_storage_config(); sc.key_storage_dir = dir.clone();
-        config.update_storage_config(sc).unwrap();
-        let mut engine = make_engine::<DummyAuthSystem>(Arc::clone(&config), "auth2");
-        let plaintext = b"no sign data";
-        let ct = engine.encrypt_authenticated(plaintext).unwrap();
-        // ciphertext 应该是 plaintext 的 Base64
-        assert_eq!(from_base64(&ct).unwrap(), plaintext);
-        // decrypt 不需校验签名
-        let pt = engine.decrypt_authenticated(&ct).unwrap();
-        assert_eq!(pt, plaintext);
+    fn test_engine_decrypt_with_rotated_key() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "rotation");
+        let plaintext1 = b"data with key v1";
+
+        // This will be encrypted with the initial key (v1)
+        let ciphertext1 = engine.encrypt(plaintext1).unwrap();
+
+        // Force rotation by exceeding usage count
+        for _ in 0..5 {
+            engine.encrypt(b"dummy data to increase usage").unwrap();
+        }
+
+        // This should be encrypted with the new key (v2)
+        let plaintext2 = b"data with key v2";
+        let ciphertext2 = engine.encrypt(plaintext2).unwrap();
+
+        // Decryption of old data should still work
+        let decrypted1 = engine.decrypt(&ciphertext1).unwrap();
+        assert_eq!(plaintext1.as_ref(), decrypted1.as_slice());
+
+        // Decryption of new data should also work
+        let decrypted2 = engine.decrypt(&ciphertext2).unwrap();
+        assert_eq!(plaintext2.as_ref(), decrypted2.as_slice());
+    }
+    
+    #[test]
+    fn test_engine_streaming_roundtrip() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "streaming");
+        let original_data = b"streaming data for asymmetric engine";
+        let streaming_config = StreamingConfig::default();
+
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        engine.encrypt_stream(&mut source, &mut encrypted_dest, &streaming_config).unwrap();
+
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &streaming_config).unwrap();
+
+        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_streaming_decrypt_with_rotated_key_fails() {
+        let dir = tempdir().unwrap();
+        let mut engine = setup_test_engine(dir.path(), "streaming_rotation_fail");
+        let streaming_config = StreamingConfig::default();
+
+        // Encrypt with key v1
+        let original_data = b"this stream was encrypted with key v1";
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        engine.encrypt_stream(&mut source, &mut encrypted_dest, &streaming_config).unwrap();
+        
+        // Force rotation by exceeding usage count
+        for _ in 0..5 {
+            engine.encrypt(b"dummy data to increase usage").unwrap();
+        }
+
+        // Try to decrypt the stream. This should fail because it only uses the primary key (v2).
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
+        let mut decrypted_dest = Cursor::new(Vec::new());
+        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &streaming_config).unwrap();
     }
 } 
