@@ -2,16 +2,16 @@
 //!
 //! 该模块封装了密钥管理、轮换、加解密等复杂性，为用户提供一个简洁的入口。
 
-use std::path::Path;
-use std::sync::Arc;
-use std::io::{Read, Write};
+use crate::asymmetric::rotation::KeyRotationManager;
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
 use crate::common::config::ConfigManager;
 use crate::common::errors::Error;
-use crate::asymmetric::rotation::KeyRotationManager;
-use crate::storage::KeyFileStorage;
-use crate::common::traits::AuthenticatedCryptoSystem;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::traits::AuthenticatedCryptoSystem;
+use crate::storage::KeyFileStorage;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::Arc;
 
 /// Q-Seal核心引擎
 ///
@@ -321,20 +321,21 @@ where
 
     /// 构建 `QSealEngine`
     pub fn build(self) -> Result<AsymmetricQSealEngine<C>, Error> {
-        let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
-        let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
-        AsymmetricQSealEngine::new(cm, &prefix)
+        let prefix = self.key_prefix.unwrap_or_else(|| "default_keys".to_string());
+        let config = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        AsymmetricQSealEngine::new(config, &prefix)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
 mod tests {
     use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use crate::common::config::{ConfigFile, StorageConfig};
-    use std::io::Cursor;
-    use tempfile::tempdir;
     use crate::rotation::RotationPolicy;
+    use std::io::Cursor;
+    use std::path::Path;
+    use tempfile::tempdir;
 
     type TestEngine = AsymmetricQSealEngine<RsaKyberCryptoSystem>;
 

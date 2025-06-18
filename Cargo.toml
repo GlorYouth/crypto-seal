@@ -10,47 +10,59 @@ keywords = ["cryptography", "post-quantum", "rsa", "kyber"]
 categories = ["cryptography"]
 
 [features]
-default = ["traditional", "post-quantum", "secure-storage", "async-engine", "parallel", "chacha"]
+default = ["asymmetric", "symmetric", "secure-storage", "async-engine", "parallel"]
+
+# 非对称加密
+asymmetric = ["traditional", "post-quantum"]
 traditional = ["rsa"]
-post-quantum = ["pqcrypto-kyber", "pqcrypto-traits"]
-secure-storage = ["argon2", "secrecy"]
-async-engine = ["async"]
+post-quantum = ["pqcrypto-kyber", "pqcrypto-traits", "aes-gcm-feature"]
+
+# 对称加密
+symmetric = ["aes-gcm-feature", "chacha"]
+aes-gcm-feature = ["aes-gcm", "rand_core"]
 chacha = ["chacha20poly1305"]
+
+# 其他功能
+secure-storage = ["argon2", "secrecy", "aes-gcm-feature", "rand_core"]
+async-engine = ["async"]
 parallel = ["rayon"]
 async = ["notify", "tokio", "async-trait"]
 
 [dependencies]
-# 基础依赖
-base64 = "0.22.1"
+# 核心与序列化
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
-secrecy = { version = "0.10.3", optional = true }
-chrono = "0.4"
-zeroize = { version = "1.8.1", features = ["derive"] }
+base64 = "0.22.1"
+arc-swap = "1"
+dashmap = "6.1.0"
 
-# 传统加密相关
+
+# 非对称加密
 rsa = { version = "0.9.8", optional = true }
-rand_core = "0.9.3"
-sha2 = "0.10.9"
-
-# 后量子加密相关
 pqcrypto-kyber = { version = "0.8.1", optional = true }
 pqcrypto-traits = { version = "0.3.5", optional = true }
 
-# 安全存储相关
-aes-gcm = "0.10.3"
+# 对称加密
+aes-gcm = { version = "0.10.3", optional = true }
 chacha20poly1305 = { version = "0.10", optional = true }
-argon2 = { version = "0.5.3", optional = true }
-tempfile = "3.20.0"
-uuid = { version = "1.17.0", features = ["v4"] }
 
-# 可选依赖
-dashmap = "6.1.0"
-arc-swap = "1"
-rayon = { version = "1.10.0", optional = true }
-async-trait = { version = "0.1", optional = true }
+# 密码学原语与安全
+sha2 = "0.10.9"
+rand_core = { version = "0.9.3", optional = true, features = ["os_rng"] }
+argon2 = { version = "0.5.3", optional = true }
+secrecy = { version = "0.10.3", optional = true }
+zeroize = { version = "1.8.1", features = ["derive"] }
+
+# 异步与并发
 tokio = { version = "1", features = ["full"], optional = true }
+async-trait = { version = "0.1", optional = true }
+rayon = { version = "1.10.0", optional = true }
+
+# 工具库
+chrono = "0.4"
+uuid = { version = "1.17.0", features = ["v4"] }
+tempfile = "3.20.0"
 notify = { version = "8.0.0", features = ["serde"], optional = true }
 
 [dev-dependencies]
@@ -114,3 +126,15 @@ required-features = ["async-engine", "traditional", "post-quantum"]
 [[example]]
 name = "symmetric_streaming"
 path = "examples/symmetric_streaming.rs"
+required-features = ["aes-gcm-feature"]
+
+# Integration tests
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+required-features = ["asymmetric"]
+
+[[test]]
+name = "key_rotation_integration"
+path = "tests/key_rotation_integration.rs"
+required-features = ["asymmetric"]

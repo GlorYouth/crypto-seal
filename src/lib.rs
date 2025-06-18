@@ -8,21 +8,28 @@
 pub mod storage;
 pub mod common;
 pub mod rotation;
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub mod asymmetric;
+#[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
 pub mod symmetric;
 
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::traits::AsymmetricCryptographicSystem;
 #[cfg(feature = "secure-storage")]
 pub use common::traits::SecureKeyStorage;
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use common::traits::AuthenticatedCryptoSystem;
 pub use common::errors::Error;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::rotation::KeyRotationManager;
 pub use common::config::ConfigManager;
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::engines::AsymmetricQSealEngine;
-#[cfg(feature = "async-engine")]
+#[cfg(all(feature = "async-engine", any(feature = "traditional", feature = "post-quantum")))]
 pub use asymmetric::engines::AsymmetricQSealEngineAsync;
+#[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
 pub use symmetric::engines::SymmetricQSealEngine;
 
 // 条件编译特性
@@ -45,7 +52,7 @@ pub use storage::container::EncryptedKeyContainer;
 /// 库版本信息
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[cfg(test)]
+#[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
 mod tests {
     use super::*;
     use crate::common::utils::{constant_time_eq, CryptoConfig};

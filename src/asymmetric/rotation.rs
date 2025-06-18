@@ -3,7 +3,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use crate::{AsymmetricCryptographicSystem, Error};
 use crate::common::utils::CryptoConfig;
-use crate::rotation::{KeyMetadata, KeyPairData, KeyStatus, KeyStorage, RotationPolicy};
+use crate::common::traits::KeyStatus;
+use crate::rotation::{KeyMetadata, KeyPairData, KeyStorage, RotationPolicy};
 
 /// 密钥轮换管理器
 pub struct KeyRotationManager<T: AsymmetricCryptographicSystem> {

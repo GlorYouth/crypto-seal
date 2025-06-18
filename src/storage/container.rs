@@ -5,16 +5,16 @@ use secrecy::{ExposeSecret, SecretString};
 use chrono::Utc;
 use argon2::{
     password_hash::{
-        rand_core::{OsRng, RngCore},
         PasswordHasher, SaltString
     },
     Argon2, ParamsBuilder
 };
+
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce
 };
-
+use argon2::password_hash::rand_core::{OsRng, RngCore};
 use crate::common::traits::SecureKeyStorage;
 use crate::common::errors::Error;
 use crate::common::utils::{from_base64, to_base64, CryptoConfig};

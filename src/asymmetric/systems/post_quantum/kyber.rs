@@ -22,8 +22,9 @@ use rsa::rand_core::OsRng;
 #[cfg(feature = "async-engine")]
 use crate::common::streaming::StreamingConfig;
 #[cfg(feature = "async-engine")]
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::common::streaming::StreamingResult;
+#[cfg(feature = "async-engine")]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::common::utils::{from_base64, to_base64, Base64String, CryptoConfig, ZeroizingVec};
 
 /// Kyber公钥包装器

@@ -1,5 +1,5 @@
 //! AES-GCM 对称加密实现
-use rsa::rand_core::RngCore;
+use rand_core::{OsRng, TryRngCore};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use aes_gcm::aead::{Aead, Payload};
 use base64::{engine::general_purpose, Engine as _};
@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::common::errors::Error;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::fmt::Debug;
-use rsa::rand_core::OsRng;
 use crate::common::utils::{Base64String, CryptoConfig};
 
 const KEY_SIZE: usize = 32; // AES-256 需要 32 字节的密钥
@@ -34,8 +33,10 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     /// 生成一个随机的 AES-256 密钥
     fn generate_key(_config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
         let mut key_bytes = vec![0u8; KEY_SIZE];
-        OsRng.fill_bytes(&mut key_bytes);
+        OsRng.try_fill_bytes(&mut key_bytes)
+            .map_err(|e| Error::Operation(e.to_string()))?;
         Ok(AesGcmKey(key_bytes))
+
     }
 
     /// 使用 AES-256-GCM 加密数据
@@ -49,7 +50,8 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let cipher = Aes256Gcm::new(key);
 
         let mut nonce_bytes = vec![0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        OsRng.try_fill_bytes(&mut nonce_bytes)
+            .map_err(|e| Error::Operation(e.to_string()))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
         
         let aad = additional_data.unwrap_or_default();

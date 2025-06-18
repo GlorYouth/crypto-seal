@@ -3,7 +3,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use crate::Error;
 use crate::common::utils::CryptoConfig;
-use crate::rotation::{KeyMetadata, KeyStatus, KeyStorage, RotationPolicy};
+use crate::common::traits::KeyStatus;
+use crate::rotation::{KeyMetadata, KeyStorage, RotationPolicy};
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 
 /// 对称密钥轮换管理器

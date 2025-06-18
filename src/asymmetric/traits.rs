@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+#[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::io::{Read, Write};
 use crate::Error;

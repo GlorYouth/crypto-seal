@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 
 /// 密钥状态
@@ -33,6 +34,7 @@ pub struct KeyMetadata {
 }
 
 /// 认证加密系统扩展特征
+#[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub trait AuthenticatedCryptoSystem: AsymmetricCryptographicSystem {
     /// 认证加密输出类型
     type AuthenticatedOutput: AsRef<[u8]> + From<Vec<u8>> + ToString;

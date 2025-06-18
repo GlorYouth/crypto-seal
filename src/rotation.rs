@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-pub(crate) use crate::common::traits::{KeyMetadata, KeyStatus};
+pub(crate) use crate::common::traits::KeyMetadata;
 use crate::common::errors::Error;
 
 
@@ -49,14 +49,14 @@ pub(crate) struct KeyPairData {
     pub(crate) private_key: String,
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "traditional", feature = "post-quantum")))]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use crate::asymmetric::rotation::KeyRotationManager;
     use crate::asymmetric::traits::AsymmetricCryptographicSystem;
-    use crate::common::traits::{KeyMetadata, KeyStatus};
+    use crate::common::traits::KeyStatus;
     use crate::common::errors::Error;
     use crate::common::utils::Base64String;
     use crate::common::utils::CryptoConfig;

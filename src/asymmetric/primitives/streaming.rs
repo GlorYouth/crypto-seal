@@ -391,7 +391,7 @@ where
     Ok(StreamingResult { bytes_processed: total, buffer: mem_buf })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
 mod tests {
     use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
