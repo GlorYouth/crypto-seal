@@ -1,5 +1,6 @@
 use crate::common::errors::Error;
 use crate::common::traits::{KeyMetadata, KeyStatus};
+use crate::rotation::RotationPolicy;
 use crate::seal::Seal;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use chrono::{DateTime, Duration, Utc};
@@ -7,7 +8,6 @@ use secrecy::SecretString;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::rotation::RotationPolicy;
 
 /// 对称密钥轮换管理器。
 ///
@@ -76,7 +76,8 @@ impl SymmetricKeyRotationManager {
             if let Some(expires_at) = &metadata.expires_at {
                 if let Ok(expiry_time) = DateTime::parse_from_rfc3339(expires_at) {
                     let now = Utc::now();
-                    let warning_period = Duration::days(self.rotation_policy.rotation_start_days as i64);
+                    let warning_period =
+                        Duration::days(self.rotation_policy.rotation_start_days as i64);
                     if (now + warning_period) >= expiry_time {
                         return true;
                     }
@@ -96,7 +97,11 @@ impl SymmetricKeyRotationManager {
     }
 
     /// 开始密钥轮换过程：创建一个新的主密钥，并将旧的降级。
-    pub fn start_rotation(&mut self, password: &SecretString, algorithm_name: &str) -> Result<(), Error> {
+    pub fn start_rotation(
+        &mut self,
+        password: &SecretString,
+        algorithm_name: &str,
+    ) -> Result<(), Error> {
         let new_version = self.get_next_version();
         let new_id = format!("{}-{}", self.key_prefix, Uuid::new_v4());
 
@@ -140,7 +145,11 @@ impl SymmetricKeyRotationManager {
     }
 
     /// (Async) 开始密钥轮换过程。
-    pub async fn start_rotation_async(&mut self, password: &SecretString, algorithm_name: &str) -> Result<(), Error> {
+    pub async fn start_rotation_async(
+        &mut self,
+        password: &SecretString,
+        algorithm_name: &str,
+    ) -> Result<(), Error> {
         let new_version = self.get_next_version();
         let new_id = format!("{}-{}", self.key_prefix, Uuid::new_v4());
 
@@ -162,13 +171,15 @@ impl SymmetricKeyRotationManager {
 
         let old_primary_metadata = self.primary_key_metadata.clone();
 
-        self.seal.commit_payload_async(password, |payload| {
-            if let Some(mut old_meta) = old_primary_metadata {
-                old_meta.status = KeyStatus::Rotating;
-                payload.key_registry.insert(old_meta.id.clone(), old_meta);
-            }
-            payload.key_registry.insert(new_id, new_metadata.clone());
-        }).await?;
+        self.seal
+            .commit_payload_async(password, |payload| {
+                if let Some(mut old_meta) = old_primary_metadata {
+                    old_meta.status = KeyStatus::Rotating;
+                    payload.key_registry.insert(old_meta.id.clone(), old_meta);
+                }
+                payload.key_registry.insert(new_id, new_metadata.clone());
+            })
+            .await?;
 
         if let Some(old_meta) = self.primary_key_metadata.take() {
             let mut rotating_meta = old_meta.clone();
@@ -199,23 +210,28 @@ impl SymmetricKeyRotationManager {
     }
 
     /// (Async) 增加主密钥的使用计数。
-    pub async fn increment_usage_count_async(&mut self, password: &SecretString) -> Result<(), Error> {
+    pub async fn increment_usage_count_async(
+        &mut self,
+        password: &SecretString,
+    ) -> Result<(), Error> {
         if let Some(meta) = &mut self.primary_key_metadata {
             let key_id = meta.id.clone();
             let new_count = meta.usage_count + 1;
 
-            self.seal.commit_payload_async(password, |payload| {
-                if let Some(m) = payload.key_registry.get_mut(&key_id) {
-                    m.usage_count = new_count;
-                }
-            }).await?;
+            self.seal
+                .commit_payload_async(password, |payload| {
+                    if let Some(m) = payload.key_registry.get_mut(&key_id) {
+                        m.usage_count = new_count;
+                    }
+                })
+                .await?;
 
             // 更新内存状态
             meta.usage_count = new_count;
         }
         Ok(())
     }
-    
+
     /// 按需派生并返回主密钥。
     pub fn get_primary_key<T>(&self) -> Result<Option<T::Key>, Error>
     where
@@ -234,7 +250,7 @@ impl SymmetricKeyRotationManager {
     pub fn get_primary_key_metadata(&self) -> Option<&KeyMetadata> {
         self.primary_key_metadata.as_ref()
     }
-    
+
     /// 根据给定的密钥 ID 派生密钥。
     pub fn derive_key_by_id<T>(&self, key_id: &str) -> Result<Option<T::Key>, Error>
     where
@@ -257,15 +273,19 @@ impl SymmetricKeyRotationManager {
         Error: From<T::Error>,
     {
         let payload = self.seal.payload();
-        let derived_material = self
-            .seal
-            .derive_key(&payload.master_seed, metadata.id.as_bytes(), T::KEY_SIZE)?;
+        let derived_material =
+            self.seal
+                .derive_key(&payload.master_seed, metadata.id.as_bytes(), T::KEY_SIZE)?;
         T::import_key(&crate::common::to_base64(&derived_material)).map_err(Error::from)
     }
 
     /// 获取下一个可用的密钥版本号。
     fn get_next_version(&self) -> u32 {
-        let primary_version = self.primary_key_metadata.as_ref().map(|m| m.version).unwrap_or(0);
+        let primary_version = self
+            .primary_key_metadata
+            .as_ref()
+            .map(|m| m.version)
+            .unwrap_or(0);
         let max_secondary_version = self
             .secondary_keys_metadata
             .iter()

@@ -19,7 +19,7 @@ post-quantum = ["pqcrypto-kyber", "pqcrypto-traits", "aes-gcm-feature"]
 
 # 对称加密
 symmetric = ["aes-gcm-feature", "chacha", "secure-storage"]
-aes-gcm-feature = ["aes-gcm", "rand_core"]
+aes-gcm-feature = [ "rand_core"]
 chacha = ["chacha20poly1305"]
 
 # 其他功能
@@ -35,7 +35,6 @@ serde_json = "1.0"
 serde_bytes = "0.11"
 base64 = "0.22.1"
 arc-swap = "1"
-dashmap = "6.1.0"
 
 
 # 非对称加密
@@ -44,8 +43,8 @@ pqcrypto-kyber = { version = "0.8.1", optional = true }
 pqcrypto-traits = { version = "0.3.5", optional = true }
 
 # 对称加密
-aes-gcm = { version = "0.10.3", optional = true }
-chacha20poly1305 = { version = "0.10", optional = true }
+aes-gcm = "0.10.3"
+chacha20poly1305 = { version = "0.10.1", optional = true }
 
 # 密码学原语与安全
 sha2 = "0.10.9"
@@ -65,6 +64,7 @@ chrono = "0.4"
 uuid = { version = "1.17.0", features = ["v4"] }
 tempfile = "3.20.0"
 notify = { version = "8.0.0", features = ["serde"], optional = true }
+memchr = "2.7.2"
 
 [dev-dependencies]
 criterion = "0.6"

@@ -3,10 +3,10 @@ use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
+use memchr::memchr;
 use secrecy::SecretString;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use tempfile::{tempdir, TempDir};
 
 /// `SymmetricQSealEngine`：一个支持密钥轮换的用户友好对称加密引擎。
 ///
@@ -30,10 +30,7 @@ where
 {
     /// 使用密钥管理器创建一个新的引擎实例。
     /// 这个方法是 crate-internal 的，只能通过 `Seal` 结构调用。
-    pub(crate) fn new(
-        key_manager: SymmetricKeyRotationManager,
-        password: SecretString,
-    ) -> Self {
+    pub(crate) fn new(key_manager: SymmetricKeyRotationManager, password: SecretString) -> Self {
         Self {
             key_manager,
             password,
@@ -43,19 +40,30 @@ where
 
     /// 加密一段明文。
     ///
-    /// 密文将包含用于加密的密钥ID，格式为 `key_id:ciphertext`。
-    pub fn encrypt(&mut self, plaintext: &[u8], additional_data: Option<&[u8]>) -> Result<String, Error> {
+    /// 密文格式为 `key_id:ciphertext_bytes`。
+    pub fn encrypt(
+        &mut self,
+        plaintext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
         // 1. 获取主密钥进行加密
-        let primary_key = self.key_manager.get_primary_key::<T>()?
-            .ok_or_else(|| Error::KeyManagement("No primary key available for encryption.".to_string()))?;
-        let key_metadata = self.key_manager.get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
 
         // 2. 加密数据
-        let ciphertext_b64 = T::encrypt(&primary_key, plaintext, additional_data).map_err(Error::from)?;
-        let output = format!("{}:{}", key_metadata.id, ciphertext_b64);
+        let ciphertext_bytes =
+            T::encrypt(&primary_key, plaintext, additional_data).map_err(Error::from)?;
 
-        // 3. 增加使用计数（这是一个原子操作）
+        // 3. 构造输出: key_id:ciphertext
+        let mut output = key_metadata.id.as_bytes().to_vec();
+        output.push(b':');
+        output.extend_from_slice(&ciphertext_bytes);
+
+        // 4. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
 
         Ok(output)
@@ -63,19 +71,30 @@ where
 
     /// 解密一段密文。
     ///
-    /// 期望的密文格式为 `key_id:ciphertext`。
-    pub fn decrypt(&self, ciphertext: &str, additional_data: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    /// 期望的密文格式为 `key_id:ciphertext_bytes`。
+    pub fn decrypt(
+        &self,
+        ciphertext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
         // 1. 从密文中解析出 key_id
-        let parts: Vec<&str> = ciphertext.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(Error::Format("Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string()));
-        }
-        let key_id = parts[0];
-        let actual_ciphertext = parts[1];
+        let separator_pos = memchr(b':', ciphertext).ok_or_else(|| {
+            Error::Format("Invalid ciphertext format. Missing ':' separator.".to_string())
+        })?;
+
+        let key_id_bytes = &ciphertext[..separator_pos];
+        let actual_ciphertext = &ciphertext[separator_pos + 1..];
+
+        let key_id = std::str::from_utf8(key_id_bytes)
+            .map_err(|_| Error::Format("Key ID is not valid UTF-8.".to_string()))?;
 
         // 2. 根据 key_id 派生解密密钥
-        let key = self.key_manager.derive_key_by_id::<T>(key_id)?
-            .ok_or_else(|| Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id)))?;
+        let key = self
+            .key_manager
+            .derive_key_by_id::<T>(key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
 
         // 3. 解密数据
         T::decrypt(&key, actual_ciphertext, additional_data).map_err(Error::from)
@@ -89,10 +108,12 @@ where
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         // 1. 获取主密钥
-        let primary_key = self.key_manager.get_primary_key::<T>()?
-            .ok_or_else(|| Error::KeyManagement("No primary key available for encryption.".to_string()))?;
-        let key_metadata = self.key_manager.get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
 
         // 2. 将 key_id 写入流的开头
         writer.write_all(key_metadata.id.as_bytes())?;
@@ -128,8 +149,12 @@ where
             .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
 
         // 2. 根据 key_id 派生密钥
-        let key = self.key_manager.derive_key_by_id::<T>(&key_id)?
-            .ok_or_else(|| Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id)))?;
+        let key = self
+            .key_manager
+            .derive_key_by_id::<T>(&key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
 
         // 3. 解密剩余的流数据
         T::decrypt_stream(&key, &mut reader, &mut writer, config, None)
@@ -144,7 +169,7 @@ mod tests {
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     // 辅助函数：设置一个全新的 Seal 和密码
     fn setup() -> (Arc<Seal>, SecretString, TempDir) {
@@ -158,7 +183,9 @@ mod tests {
     #[test]
     fn test_engine_encrypt_decrypt_roundtrip() {
         let (seal, password, _dir) = setup();
-        let mut engine = seal.symmetric_sync_engine::<AesGcmSystem>(password).unwrap();
+        let mut engine = seal
+            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .unwrap();
 
         let plaintext = b"some secret data";
         let encrypted = engine.encrypt(plaintext, None).unwrap();
@@ -183,7 +210,9 @@ mod tests {
 
         // 2. 重新打开同一个 Seal，获取新引擎
         let seal2 = Seal::open(&seal_path, &password).unwrap();
-        let engine2 = seal2.symmetric_sync_engine::<AesGcmSystem>(password).unwrap();
+        let engine2 = seal2
+            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .unwrap();
 
         // 3. 用新引擎解密旧数据，应该成功
         let decrypted = engine2.decrypt(&encrypted, None).unwrap();
@@ -211,7 +240,7 @@ mod tests {
         // 3. 使用新的主密钥加密数据
         let plaintext2 = b"data after rotation";
         let encrypted2 = engine.encrypt(plaintext2, None).unwrap();
-        
+
         // 确保两个密文不同 (因为密钥不同)
         assert_ne!(encrypted1, encrypted2);
 
@@ -226,7 +255,9 @@ mod tests {
     #[test]
     fn test_engine_streaming_roundtrip() {
         let (seal, password, _dir) = setup();
-        let mut engine = seal.symmetric_sync_engine::<AesGcmSystem>(password).unwrap();
+        let mut engine = seal
+            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .unwrap();
 
         let plaintext = b"some very long secret data that should be streamed";
         let mut reader = Cursor::new(plaintext);
@@ -248,4 +279,4 @@ mod tests {
 
         assert_eq!(decrypted_writer.into_inner(), plaintext);
     }
-} 
+}

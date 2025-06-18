@@ -2,10 +2,10 @@
 //!
 //! 运行: `cargo run --example symmetric_streaming --features="aes-gcm-feature"`
 
-use secrecy::SecretString;
+use seal_kit::Seal;
 use seal_kit::common::streaming::StreamingConfig;
 use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
-use seal_kit::Seal;
+use secrecy::SecretString;
 use std::io::Cursor;
 use tempfile::tempdir;
 
@@ -16,8 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. 使用 Seal API 初始化引擎
     let dir = tempdir()?;
     let seal_path = dir.path().join("symmetric_streaming.seal");
-    let password =
-        SecretString::new("symmetric-streaming-password".to_string().into_boxed_str());
+    let password = SecretString::new("symmetric-streaming-password".to_string().into_boxed_str());
     let seal = Seal::create(&seal_path, &password)?;
     let mut engine = seal.symmetric_sync_engine::<AesGcmSystem>(password)?;
 
@@ -42,7 +41,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. 流式解密回内存缓冲区
     let mut decrypted_buf = Vec::new();
-    let decrypt_result = engine.decrypt_stream(Cursor::new(&encrypted_buf), &mut decrypted_buf, &sc)?;
+    let decrypt_result =
+        engine.decrypt_stream(Cursor::new(&encrypted_buf), &mut decrypted_buf, &sc)?;
     println!(
         "\nDecryption complete. Processed {} encrypted bytes.",
         decrypt_result.bytes_processed
@@ -53,4 +53,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nSymmetric streaming example success: Original data and decrypted data match.");
 
     Ok(())
-} 
+}

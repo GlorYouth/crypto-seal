@@ -8,8 +8,8 @@ pub mod utils;
 
 pub use self::config::ConfigFile;
 pub use self::errors::Error;
-pub use self::traits::{SecureKeyStorage, KeyStatus, KeyMetadata};
-pub use self::utils::{CryptoConfig, to_base64, from_base64, constant_time_eq};
+pub use self::traits::{KeyMetadata, KeyStatus, SecureKeyStorage};
+pub use self::utils::{CryptoConfig, constant_time_eq, from_base64, to_base64};
 
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use self::traits::AuthenticatedCryptoSystem;
@@ -19,4 +19,3 @@ pub use crate::asymmetric::primitives::streaming::*;
 
 #[cfg(feature = "async-engine")]
 pub use streaming::StreamingConfig;
-

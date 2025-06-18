@@ -1,30 +1,30 @@
-use std::fmt;
 use std::error::Error as StdError;
+use std::fmt;
 
 /// 加密操作可能遇到的错误类型
 #[derive(Debug)]
 pub enum Error {
     /// RSA/传统加密相关错误
     Traditional(String),
-    
+
     /// Kyber/后量子加密相关错误
     PostQuantum(String),
-    
+
     /// 密钥存储和管理相关错误
     KeyStorage(String),
-    
+
     /// 序列化/反序列化错误
     Serialization(String),
-    
+
     /// 输入/输出错误
     Io(std::io::Error),
-    
+
     /// 数据格式错误
     Format(String),
-    
+
     /// 密钥错误 (例如无效的密码或损坏的密钥)
     Key(String),
-    
+
     /// 算法操作失败
     Operation(String),
     /// 加密失败
@@ -91,4 +91,4 @@ impl From<std::string::FromUtf8Error> for Error {
     fn from(err: std::string::FromUtf8Error) -> Self {
         Error::Format(format!("UTF-8转换错误: {}", err))
     }
-} 
+}

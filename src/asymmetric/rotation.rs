@@ -1,15 +1,15 @@
-use crate::common::errors::Error;
-use crate::common::traits::{KeyMetadata, KeyStatus, SecureKeyStorage};
-use crate::seal::Seal;
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use crate::common::errors::Error;
+use crate::common::to_base64;
+use crate::common::traits::SecString;
+use crate::common::traits::{KeyMetadata, KeyStatus, SecureKeyStorage};
+use crate::rotation::RotationPolicy;
+use crate::seal::Seal;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::rotation::RotationPolicy;
-use crate::common::to_base64;
-use crate::common::traits::SecString;
 
 /// 非对称密钥轮换管理器。
 ///
@@ -63,7 +63,8 @@ impl AsymmetricKeyRotationManager {
             if let Some(expires_at) = &metadata.expires_at {
                 if let Ok(expiry_time) = DateTime::parse_from_rfc3339(expires_at) {
                     let now = Utc::now();
-                    let warning_period = Duration::days(self.rotation_policy.rotation_start_days as i64);
+                    let warning_period =
+                        Duration::days(self.rotation_policy.rotation_start_days as i64);
                     if (now + warning_period) >= expiry_time {
                         return true;
                     }
@@ -81,10 +82,7 @@ impl AsymmetricKeyRotationManager {
     }
 
     /// 开始密钥轮换：创建一个新的主密钥，并将旧的降级。
-    pub fn start_rotation<T>(
-        &mut self,
-        password: &SecretString,
-    ) -> Result<(), Error>
+    pub fn start_rotation<T>(&mut self, password: &SecretString) -> Result<(), Error>
     where
         T: AsymmetricCryptographicSystem,
         Error: From<T::Error>,
@@ -97,11 +95,9 @@ impl AsymmetricKeyRotationManager {
 
         let encrypted_private_key = {
             let payload = self.seal.payload();
-            let key_derivation_key = self.seal.derive_key(
-                &payload.master_seed,
-                b"private-key-encryption",
-                32,
-            )?;
+            let key_derivation_key =
+                self.seal
+                    .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
             let container = crate::storage::EncryptedKeyContainer::encrypt_key(
                 &SecretString::new(to_base64(&key_derivation_key).into_boxed_str()),
                 private_key_b64.as_bytes(),
@@ -148,10 +144,7 @@ impl AsymmetricKeyRotationManager {
     }
 
     /// (Async) 开始密钥轮换
-    pub async fn start_rotation_async<T>(
-        &mut self,
-        password: &SecretString,
-    ) -> Result<(), Error>
+    pub async fn start_rotation_async<T>(&mut self, password: &SecretString) -> Result<(), Error>
     where
         T: AsymmetricCryptographicSystem,
         Error: From<T::Error>,
@@ -164,11 +157,9 @@ impl AsymmetricKeyRotationManager {
 
         let encrypted_private_key = {
             let payload = self.seal.payload();
-            let key_derivation_key = self.seal.derive_key(
-                &payload.master_seed,
-                b"private-key-encryption",
-                32,
-            )?;
+            let key_derivation_key =
+                self.seal
+                    .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
             let container = crate::storage::EncryptedKeyContainer::encrypt_key(
                 &SecretString::new(to_base64(&key_derivation_key).into_boxed_str()),
                 private_key_b64.as_bytes(),
@@ -196,13 +187,15 @@ impl AsymmetricKeyRotationManager {
 
         let old_primary_metadata = self.primary_key_metadata.clone();
 
-        self.seal.commit_payload_async(password, |payload| {
-            if let Some(mut old_meta) = old_primary_metadata {
-                old_meta.status = KeyStatus::Rotating;
-                payload.key_registry.insert(old_meta.id.clone(), old_meta);
-            }
-            payload.key_registry.insert(new_id, new_metadata.clone());
-        }).await?;
+        self.seal
+            .commit_payload_async(password, |payload| {
+                if let Some(mut old_meta) = old_primary_metadata {
+                    old_meta.status = KeyStatus::Rotating;
+                    payload.key_registry.insert(old_meta.id.clone(), old_meta);
+                }
+                payload.key_registry.insert(new_id, new_metadata.clone());
+            })
+            .await?;
 
         if let Some(old_meta) = self.primary_key_metadata.take() {
             let mut rotating_meta = old_meta;
@@ -231,16 +224,21 @@ impl AsymmetricKeyRotationManager {
     }
 
     /// (Async) 增加主密钥的使用计数。
-    pub async fn increment_usage_count_async(&mut self, password: &SecretString) -> Result<(), Error> {
+    pub async fn increment_usage_count_async(
+        &mut self,
+        password: &SecretString,
+    ) -> Result<(), Error> {
         if let Some(meta) = &mut self.primary_key_metadata {
             let key_id = meta.id.clone();
             let new_count = meta.usage_count + 1;
 
-            self.seal.commit_payload_async(password, |payload| {
-                if let Some(m) = payload.key_registry.get_mut(&key_id) {
-                    m.usage_count = new_count;
-                }
-            }).await?;
+            self.seal
+                .commit_payload_async(password, |payload| {
+                    if let Some(m) = payload.key_registry.get_mut(&key_id) {
+                        m.usage_count = new_count;
+                    }
+                })
+                .await?;
             meta.usage_count = new_count;
         }
         Ok(())
@@ -268,29 +266,38 @@ impl AsymmetricKeyRotationManager {
     }
 
     /// 按需解密并返回给定ID的密钥对。
-    pub fn get_keypair_by_id<T>(&self, key_id: &str) -> Result<Option<(T::PublicKey, T::PrivateKey)>, Error>
+    pub fn get_keypair_by_id<T>(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<(T::PublicKey, T::PrivateKey)>, Error>
     where
         T: AsymmetricCryptographicSystem,
         Error: From<T::Error>,
     {
         let payload = self.seal.payload();
         if let Some(metadata) = payload.key_registry.get(key_id) {
-            let public_key_b64 = metadata.public_key.as_ref()
-                .ok_or_else(|| Error::KeyManagement("Public key not found in metadata".to_string()))?;
-            
-            let encrypted_private_key = metadata.encrypted_private_key.as_ref()
-                .ok_or_else(|| Error::KeyManagement("Encrypted private key not found in metadata".to_string()))?;
+            let public_key_b64 = metadata.public_key.as_ref().ok_or_else(|| {
+                Error::KeyManagement("Public key not found in metadata".to_string())
+            })?;
 
-            let key_derivation_key = self.seal.derive_key(
-                &payload.master_seed,
-                b"private-key-encryption",
-                32,
+            let encrypted_private_key =
+                metadata.encrypted_private_key.as_ref().ok_or_else(|| {
+                    Error::KeyManagement("Encrypted private key not found in metadata".to_string())
+                })?;
+
+            let key_derivation_key =
+                self.seal
+                    .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
+
+            let container = crate::storage::EncryptedKeyContainer::from_json(
+                encrypted_private_key.expose_secret().0.as_str(),
             )?;
-            
-            let container = crate::storage::EncryptedKeyContainer::from_json(encrypted_private_key.expose_secret().0.as_str())?;
-            let private_key_b64_bytes = container.decrypt_key(&SecretString::new(to_base64(&key_derivation_key).into_boxed_str()))?;
-            let private_key_b64 = String::from_utf8(private_key_b64_bytes)
-                .map_err(|_| Error::Format("Decrypted private key is not valid UTF-8".to_string()))?;
+            let private_key_b64_bytes = container.decrypt_key(&SecretString::new(
+                to_base64(&key_derivation_key).into_boxed_str(),
+            ))?;
+            let private_key_b64 = String::from_utf8(private_key_b64_bytes).map_err(|_| {
+                Error::Format("Decrypted private key is not valid UTF-8".to_string())
+            })?;
 
             let pk = T::import_public_key(public_key_b64)?;
             let sk = T::import_private_key(&private_key_b64)?;
@@ -302,7 +309,11 @@ impl AsymmetricKeyRotationManager {
 
     /// 获取下一个可用的密钥版本号。
     fn get_next_version(&self) -> u32 {
-        let primary_version = self.primary_key_metadata.as_ref().map(|m| m.version).unwrap_or(0);
+        let primary_version = self
+            .primary_key_metadata
+            .as_ref()
+            .map(|m| m.version)
+            .unwrap_or(0);
         let max_secondary_version = self
             .secondary_keys_metadata
             .iter()

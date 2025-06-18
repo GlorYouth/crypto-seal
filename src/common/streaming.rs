@@ -66,7 +66,10 @@ impl StreamingConfig {
         self
     }
     /// 设置进度回调
-    pub fn with_progress_callback(mut self, callback: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>) -> Self {
+    pub fn with_progress_callback(
+        mut self,
+        callback: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>,
+    ) -> Self {
         self.progress_callback = Some(callback);
         self
     }

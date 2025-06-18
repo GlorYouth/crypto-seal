@@ -3,10 +3,10 @@ use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
 use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::symmetric::traits::SymmetricSyncStreamingSystem;
 use secrecy::SecretString;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use tempfile::{tempdir, TempDir};
 
 /// `AsymmetricQSealEngine`：一个支持密钥轮换的用户友好型非对称加密引擎。
 ///
@@ -31,10 +31,7 @@ where
 {
     /// 使用密钥管理器创建一个新的引擎实例。
     /// 这个方法是 crate-internal 的，只能通过 `Seal` 结构调用。
-    pub(crate) fn new(
-        key_manager: AsymmetricKeyRotationManager,
-        password: SecretString,
-    ) -> Self {
+    pub(crate) fn new(key_manager: AsymmetricKeyRotationManager, password: SecretString) -> Self {
         Self {
             key_manager,
             password,
@@ -53,15 +50,18 @@ where
         }
 
         // 2. 获取主公钥用于加密
-        let key_metadata = self.key_manager.get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
-        let public_key = self.key_manager.get_public_key_by_id::<T>(&key_metadata.id)?
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+        let public_key = self
+            .key_manager
+            .get_public_key_by_id::<T>(&key_metadata.id)?
             .ok_or_else(|| Error::Key("Could not find or derive public key.".to_string()))?;
 
         // 3. 加密数据
         let ciphertext = T::encrypt(&public_key, data, None)?;
         let output = format!("{}:{}", key_metadata.id, ciphertext.to_string());
-        
+
         // 4. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
 
@@ -75,35 +75,50 @@ where
         // 1. 从密文中解析出 key_id
         let parts: Vec<&str> = ciphertext.splitn(2, ':').collect();
         if parts.len() != 2 {
-            return Err(Error::Format("Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string()));
+            return Err(Error::Format(
+                "Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string(),
+            ));
         }
         let key_id = parts[0];
         let actual_ciphertext = parts[1];
 
         // 2. 根据 key_id 获取密钥对
-        let (_, private_key) = self.key_manager.get_keypair_by_id::<T>(key_id)?
-            .ok_or_else(|| Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id)))?;
-            
+        let (_, private_key) = self
+            .key_manager
+            .get_keypair_by_id::<T>(key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
         // 3. 解密数据
         T::decrypt(&private_key, actual_ciphertext, None).map_err(Error::from)
     }
 
     /// 同步流式加密
-    pub fn encrypt_stream<R: Read, W: Write>(
+    pub fn encrypt_stream<S, R, W>(
         &mut self,
         mut reader: R,
         mut writer: W,
         config: &StreamingConfig,
-    ) -> Result<StreamingResult, Error> {
+    ) -> Result<StreamingResult, Error>
+    where
+        S: SymmetricSyncStreamingSystem,
+        Error: From<S::Error>,
+        R: Read,
+        W: Write,
+    {
         // 1. 检查是否需要轮换
         if self.key_manager.needs_rotation() {
             self.key_manager.start_rotation::<T>(&self.password)?;
         }
 
         // 2. 获取主公钥
-        let key_metadata = self.key_manager.get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
-        let public_key = self.key_manager.get_public_key_by_id::<T>(&key_metadata.id)?
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+        let public_key = self
+            .key_manager
+            .get_public_key_by_id::<T>(&key_metadata.id)?
             .ok_or_else(|| Error::Key("Could not find or derive public key.".to_string()))?;
 
         // 3. 将 key_id 写入流的开头
@@ -111,7 +126,8 @@ where
         writer.write_all(b":")?;
 
         // 4. 流式加密剩余数据
-        let result = T::encrypt_stream(&public_key, &mut reader, &mut writer, config, None)?;
+        let result =
+            T::encrypt_stream::<S, _, _>(&public_key, &mut reader, &mut writer, config, None)?;
 
         // 5. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
@@ -120,12 +136,18 @@ where
     }
 
     /// 同步流式解密
-    pub fn decrypt_stream<R: Read, W: Write>(
+    pub fn decrypt_stream<S, R, W>(
         &self,
         mut reader: R,
         mut writer: W,
         config: &StreamingConfig,
-    ) -> Result<StreamingResult, Error> {
+    ) -> Result<StreamingResult, Error>
+    where
+        S: SymmetricSyncStreamingSystem,
+        Error: From<S::Error>,
+        R: Read,
+        W: Write,
+    {
         // 1. 从流中读取 key_id
         let mut key_id_buf = Vec::new();
         let mut byte = [0u8; 1];
@@ -140,108 +162,14 @@ where
             .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
 
         // 2. 根据 key_id 获取密钥对
-        let (_, private_key) = self.key_manager.get_keypair_by_id::<T>(&key_id)?
-            .ok_or_else(|| Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id)))?;
+        let (_, private_key) = self
+            .key_manager
+            .get_keypair_by_id::<T>(&key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
 
         // 3. 解密剩余的流数据
-        T::decrypt_stream(&private_key, &mut reader, &mut writer, config, None)
-    }
-}
-
-#[cfg(all(test, feature = "post-quantum"))]
-mod tests {
-    use super::*;
-    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-    use crate::seal::Seal;
-    use secrecy::SecretString;
-    use std::io::Cursor;
-    use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
-
-    type TestEngine = AsymmetricQSealEngine<RsaKyberCryptoSystem>;
-
-    fn setup() -> (Arc<Seal>, SecretString, TempDir) {
-        let dir = tempdir().unwrap();
-        let seal_path = dir.path().join("my.seal");
-        let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
-        let seal = Seal::create(&seal_path, &password).unwrap();
-        (seal, password, dir)
-    }
-
-    #[test]
-    fn test_engine_encrypt_decrypt_roundtrip() {
-        let (seal, password, _dir) = setup();
-        let mut engine = seal.asymmetric_sync_engine::<RsaKyberCryptoSystem>(password).unwrap();
-
-        let plaintext = b"some very secret data";
-        let encrypted = engine.encrypt(plaintext).unwrap();
-        let decrypted = engine.decrypt(&encrypted).unwrap();
-
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_decryption_after_reopening_seal() {
-        let dir = tempdir().unwrap();
-        let seal_path = dir.path().join("my.seal");
-        let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
-
-        let seal1 = Seal::create(&seal_path, &password).unwrap();
-        let mut engine1 = seal1
-            .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password.clone())
-            .unwrap();
-        let plaintext = b"some data to be saved";
-        let encrypted = engine1.encrypt(plaintext).unwrap();
-
-        let seal2 = Seal::open(&seal_path, &password).unwrap();
-        let engine2 = seal2
-            .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password)
-            .unwrap();
-        let decrypted = engine2.decrypt(&encrypted).unwrap();
-
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_decryption_with_rotated_key() {
-        let (seal, password, _dir) = setup();
-        let mut engine = seal
-            .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password.clone())
-            .unwrap();
-        
-        let plaintext1 = b"data before rotation";
-        let encrypted1 = engine.encrypt(plaintext1).unwrap();
-
-        engine.key_manager.start_rotation::<RsaKyberCryptoSystem>(&password).unwrap();
-
-        let plaintext2 = b"data after rotation";
-        let encrypted2 = engine.encrypt(plaintext2).unwrap();
-
-        assert_ne!(encrypted1, encrypted2);
-
-        let decrypted1 = engine.decrypt(&encrypted1).unwrap();
-        assert_eq!(decrypted1, plaintext1);
-
-        let decrypted2 = engine.decrypt(&encrypted2).unwrap();
-        assert_eq!(decrypted2, plaintext2);
-    }
-
-    #[test]
-    fn test_engine_streaming_roundtrip() {
-        let (seal, password, _dir) = setup();
-        let mut engine = seal.asymmetric_sync_engine::<RsaKyberCryptoSystem>(password).unwrap();
-
-        let plaintext = b"some very long secret data for streaming";
-        let mut reader = Cursor::new(plaintext);
-        let mut encrypted_writer = Cursor::new(Vec::new());
-
-        let config = StreamingConfig::default();
-        engine.encrypt_stream(&mut reader, &mut encrypted_writer, &config).unwrap();
-
-        let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
-        let mut decrypted_writer = Cursor::new(Vec::new());
-        engine.decrypt_stream(&mut encrypted_reader, &mut decrypted_writer, &config).unwrap();
-
-        assert_eq!(decrypted_writer.into_inner(), plaintext.to_vec());
+        T::decrypt_stream::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
     }
 }

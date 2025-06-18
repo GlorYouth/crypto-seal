@@ -1,8 +1,8 @@
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
-use base64::Engine;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// 将字节数组转换为Base64字符串
 pub fn to_base64(data: &[u8]) -> String {
@@ -54,12 +54,12 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     for (byte_a, byte_b) in a.iter().zip(b.iter()) {
         result |= byte_a ^ byte_b;
     }
-    
+
     result == 0
 }
 
 /// 安全字节容器，提供自动内存擦除
-/// 
+///
 /// 当对象离开作用域时，自动清除内存中的敏感数据
 #[derive(Clone, Debug)]
 pub struct SecureBytes {
@@ -69,22 +69,20 @@ pub struct SecureBytes {
 impl SecureBytes {
     /// 创建新的安全字节容器
     pub fn new(data: impl Into<Vec<u8>>) -> Self {
-        Self {
-            bytes: data.into(),
-        }
+        Self { bytes: data.into() }
     }
-    
+
     /// 将内容转换为Base64编码的字符串
     pub fn to_base64(&self) -> String {
         to_base64(&self.bytes)
     }
-    
+
     /// 从Base64字符串创建SecureBytes
     pub fn from_base64(encoded: &str) -> Result<Self, base64::DecodeError> {
         let bytes = from_base64(encoded)?;
         Ok(Self::new(bytes))
     }
-    
+
     /// 安全地比较两个SecureBytes实例
     pub fn constant_time_eq(&self, other: &Self) -> bool {
         constant_time_eq(&self.bytes, &other.bytes)
@@ -93,7 +91,7 @@ impl SecureBytes {
 
 impl Deref for SecureBytes {
     type Target = [u8];
-    
+
     fn deref(&self) -> &Self::Target {
         &self.bytes
     }
@@ -153,7 +151,7 @@ impl Default for CryptoConfig {
         Self {
             use_traditional: true,
             use_post_quantum: true,
-            rsa_key_bits: 3072,  // NIST建议的安全位数
+            rsa_key_bits: 3072,     // NIST建议的安全位数
             kyber_parameter_k: 768, // NIST竞赛中的推荐级别
             use_authenticated_encryption: true,
             auto_verify_signatures: true,
@@ -183,7 +181,9 @@ impl AsRef<[u8]> for ZeroizingVec {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::utils::{constant_time_eq, from_base64, to_base64, Base64String, CryptoConfig, SecureBytes};
+    use crate::common::utils::{
+        Base64String, CryptoConfig, SecureBytes, constant_time_eq, from_base64, to_base64,
+    };
 
     #[test]
     fn test_base64_roundtrip() {
@@ -192,53 +192,53 @@ mod tests {
         let decoded = from_base64(&encoded).unwrap();
         assert_eq!(decoded, original);
     }
-    
+
     #[test]
     fn test_base64string_traits() {
         let data = vec![1, 2, 3, 4, 5];
         let b64_string = Base64String::from(data.clone());
-        
+
         // 测试From<Vec<u8>>
         assert_eq!(from_base64(&b64_string.to_string()).unwrap(), data);
-        
+
         // 测试AsRef<[u8]>
         assert_eq!(b64_string.as_ref(), b64_string.0.as_slice());
-        
+
         // 测试ToString
         assert_eq!(b64_string.to_string(), to_base64(&b64_string.0));
     }
-    
+
     #[test]
     fn test_constant_time_eq() {
         let a = b"sensitive data";
         let b = b"sensitive data";
         let c = b"different data";
-        
+
         assert!(constant_time_eq(a, b));
         assert!(!constant_time_eq(a, c));
         assert!(!constant_time_eq(a, &c[0..5]));
     }
-    
+
     #[test]
     fn test_secure_bytes() {
         let data = b"sensitive information";
         let secure = SecureBytes::new(data.to_vec());
-        
+
         // 测试内容是否正确
         assert_eq!(&*secure, data);
-        
+
         // 测试Base64转换
         let b64 = secure.to_base64();
         let recovered = SecureBytes::from_base64(&b64).unwrap();
         assert!(secure.constant_time_eq(&recovered));
-        
+
         // 注：内存擦除功能在离开作用域时自动触发，无法直接测试
     }
-    
+
     #[test]
     fn test_crypto_config_default() {
         let config = CryptoConfig::default();
-        
+
         assert!(config.use_post_quantum);
         assert!(config.use_traditional);
         assert_eq!(config.rsa_key_bits, 3072);

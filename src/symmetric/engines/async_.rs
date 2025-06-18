@@ -6,11 +6,11 @@ use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{SymmetricAsyncStreamingSystem, SymmetricCryptographicSystem};
+use memchr::memchr;
 use secrecy::SecretString;
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 // --- END Top-level imports ---
-
 
 /// `SymmetricQSealAsyncEngine`：一个支持密钥轮换的用户友好型异步对称加密引擎。
 ///
@@ -36,10 +36,7 @@ where
     Error: From<T::Error>,
 {
     // ... （这里的方法实现保持不变） ...
-    pub(crate) fn new(
-        key_manager: SymmetricKeyRotationManager,
-        password: SecretString,
-    ) -> Self {
+    pub(crate) fn new(key_manager: SymmetricKeyRotationManager, password: SecretString) -> Self {
         Self {
             key_manager,
             password,
@@ -51,17 +48,20 @@ where
         &mut self,
         plaintext: &[u8],
         additional_data: Option<&[u8]>,
-    ) -> Result<String, Error> {
-        let primary_key = self
-            .key_manager
-            .get_primary_key::<T>()?
-            .ok_or_else(|| Error::KeyManagement("No primary key available for encryption.".to_string()))?;
-        let key_metadata = self
-            .key_manager
-            .get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
-        let ciphertext_b64 = T::encrypt(&primary_key, plaintext, additional_data)?;
-        let output = format!("{}:{}", key_metadata.id, ciphertext_b64);
+    ) -> Result<Vec<u8>, Error> {
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+
+        let ciphertext_bytes = T::encrypt(&primary_key, plaintext, additional_data)?;
+
+        let mut output = key_metadata.id.as_bytes().to_vec();
+        output.push(b':');
+        output.extend_from_slice(&ciphertext_bytes);
+
         self.key_manager
             .increment_usage_count_async(&self.password)
             .await?;
@@ -70,17 +70,19 @@ where
 
     pub async fn decrypt(
         &self,
-        ciphertext: &str,
+        ciphertext: &[u8],
         additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Error> {
-        let parts: Vec<&str> = ciphertext.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(Error::Format(
-                "Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string(),
-            ));
-        }
-        let key_id = parts[0];
-        let actual_ciphertext = parts[1];
+        let separator_pos = memchr(b':', ciphertext).ok_or_else(|| {
+            Error::Format("Invalid ciphertext format. Missing ':' separator.".to_string())
+        })?;
+
+        let key_id_bytes = &ciphertext[..separator_pos];
+        let actual_ciphertext = &ciphertext[separator_pos + 1..];
+
+        let key_id = std::str::from_utf8(key_id_bytes)
+            .map_err(|_| Error::Format("Key ID is not valid UTF-8.".to_string()))?;
+
         let key = self
             .key_manager
             .derive_key_by_id::<T>(key_id)?
@@ -100,17 +102,16 @@ where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
-        let primary_key = self
-            .key_manager
-            .get_primary_key::<T>()?
-            .ok_or_else(|| Error::KeyManagement("No primary key available for encryption.".to_string()))?;
-        let key_metadata = self
-            .key_manager
-            .get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
         writer.write_all(key_metadata.id.as_bytes()).await?;
         writer.write_all(b":").await?;
-        let result = T::encrypt_stream_async(&primary_key, &mut reader, &mut writer, config, None).await?;
+        let result =
+            T::encrypt_stream_async(&primary_key, &mut reader, &mut writer, config, None).await?;
         self.key_manager
             .increment_usage_count_async(&self.password)
             .await?;
@@ -157,16 +158,14 @@ mod tests {
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
     // --- END Test-specific imports ---
-
 
     // 辅助函数：设置一个全新的 Seal 和密码
     async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
         let dir = tempdir().unwrap();
         let seal_path = dir.path().join("my.seal");
-        // 注意这里修正了 SecretString 的创建方式
-        let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
+        let password = SecretString::new("a-very-secret-password".into());
         let seal = Seal::create(&seal_path, &password).unwrap();
         (seal, password, dir)
     }
@@ -190,8 +189,7 @@ mod tests {
     async fn test_decryption_after_reopening_seal() {
         let dir = tempdir().unwrap();
         let seal_path = dir.path().join("my.seal");
-        // 注意这里修正了 SecretString 的创建方式
-        let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
+        let password = SecretString::new("a-very-secret-password".into());
 
         // 1. 创建 Seal，获取引擎，加密数据
         let seal1 = Seal::create(&seal_path, &password).unwrap();
@@ -213,7 +211,7 @@ mod tests {
         let decrypted = engine2.decrypt(&encrypted, None).await.unwrap();
         assert_eq!(decrypted, plaintext);
     }
-    
+
     // ... （其他测试保持不变） ...
     #[tokio::test]
     async fn test_engine_streaming_roundtrip() {

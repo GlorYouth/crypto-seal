@@ -4,10 +4,9 @@
 //! 包含 Seal 保险库所使用的核心配置结构。
 //! 这些结构定义了加密参数、存储行为和密钥轮换策略。
 //!
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use crate::rotation::RotationPolicy;
 use crate::common::utils::CryptoConfig;
+use crate::rotation::RotationPolicy;
+use serde::{Deserialize, Serialize};
 
 // 注意：ConfigManager 相关的定义（如 ConfigListener, ConfigEvent, ConfigManager 本身）
 // 已被移除，因为它们的功能已被 Seal 的原子化状态管理所取代。
@@ -53,4 +52,4 @@ pub struct ConfigFile {
     /// 存储配置
     #[serde(default)]
     pub storage: StorageConfig,
-} 
+}

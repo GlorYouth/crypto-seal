@@ -1,8 +1,8 @@
-use std::io::{Read, Write};
-use std::fmt::Debug;
-use crate::common::utils::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::utils::CryptoConfig;
+use std::fmt::Debug;
+use std::io::{Read, Write};
 
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -11,31 +11,28 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub trait SymmetricCryptographicSystem: Sized {
     /// 密钥的期望长度（以字节为单位）。
     const KEY_SIZE: usize;
-    
+
     /// 用于加密和解密的单一密钥。
-    type Key: Clone + Debug; 
-    
-    /// 密文的输出格式。
-    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + ToString + Send + Sync;
-    
+    type Key: Clone + Debug;
+
     /// 该系统的错误类型。
     type Error: std::error::Error;
-    
+
     /// 生成一个新的密钥。
     fn generate_key(config: &CryptoConfig) -> Result<Self::Key, Self::Error>;
-    
+
     /// 使用密钥加密数据。
     fn encrypt(
         key: &Self::Key,
         plaintext: &[u8],
-        additional_data: Option<&[u8]>
-    ) -> Result<String, Self::Error>;
-    
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error>;
+
     /// 使用密钥解密数据。
     fn decrypt(
         key: &Self::Key,
-        ciphertext: &str,
-        additional_data: Option<&[u8]>
+        ciphertext: &[u8],
+        additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error>;
 
     /// 导出密钥为字符串

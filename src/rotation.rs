@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-pub(crate) use crate::common::traits::KeyMetadata;
 use crate::common::errors::Error;
+pub(crate) use crate::common::traits::KeyMetadata;
+use serde::{Deserialize, Serialize};
 
 /// 密钥轮换策略，定义了密钥的生命周期和使用限制。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -27,16 +27,16 @@ impl Default for RotationPolicy {
 pub trait KeyStorage: Send + Sync {
     /// 保存密钥
     fn save_key(&self, name: &str, metadata: &KeyMetadata, key_data: &[u8]) -> Result<(), Error>;
-    
+
     /// 加载密钥
     fn load_key(&self, name: &str) -> Result<(KeyMetadata, Vec<u8>), Error>;
-    
+
     /// 检查密钥是否存在
     fn key_exists(&self, name: &str) -> bool;
-    
+
     /// 列出所有密钥
     fn list_keys(&self) -> Result<Vec<String>, Error>;
-    
+
     /// 删除密钥
     fn delete_key(&self, name: &str) -> Result<(), Error>;
 }
@@ -46,4 +46,4 @@ pub trait KeyStorage: Send + Sync {
 pub(crate) struct KeyPairData {
     pub(crate) public_key: String,
     pub(crate) private_key: String,
-} 
+}

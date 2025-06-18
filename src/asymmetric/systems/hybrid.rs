@@ -6,4 +6,4 @@
 pub mod rsa_kyber;
 
 // 重新导出RSA-Kyber混合系统
-pub use rsa_kyber::{RsaKyberCryptoSystem, RsaKyberPublicKey, RsaKyberPrivateKey};
+pub use rsa_kyber::{RsaKyberCryptoSystem, RsaKyberPrivateKey, RsaKyberPublicKey};

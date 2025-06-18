@@ -1,18 +1,22 @@
 #![cfg(feature = "async-engine")]
 
+use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsyncStreamingSystem};
 use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
-use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use crate::symmetric::primitives::async_streaming::{
+    AsyncStreamingDecryptor as SymmetricAsyncDecryptor,
+    AsyncStreamingEncryptor as SymmetricAsyncEncryptor,
+};
+use crate::symmetric::traits::SymmetricAsyncStreamingSystem;
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// 异步流式加密器
+/// 异步混合流式加密器
 pub struct AsyncStreamingEncryptor<'a, C, R, W>
 where
     C: AsymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
 {
     reader: R,
     writer: W,
@@ -25,97 +29,67 @@ where
 impl<'a, C, R, W> AsyncStreamingEncryptor<'a, C, R, W>
 where
     C: AsymmetricCryptographicSystem,
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
+    C::Error: Send + Sync,
+    C::PublicKey: Send + Sync,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
 {
     pub fn new(
         reader: R,
         writer: W,
         public_key: &'a C::PublicKey,
         config: StreamingConfig,
+        additional_data: Option<&[u8]>,
     ) -> Self {
         Self {
             reader,
             writer,
             public_key,
             config,
-            additional_data: None,
+            additional_data: additional_data.map(|d| d.to_vec()),
             _phantom: PhantomData,
         }
     }
 
-    pub fn with_additional_data(mut self, data: &[u8]) -> Self {
-        self.additional_data = Some(data.to_vec());
-        self
-    }
+    pub async fn process<S>(mut self) -> Result<StreamingResult, Error>
+    where
+        S: SymmetricAsyncStreamingSystem,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<C::Error> + From<S::Error>,
+    {
+        // 1. 生成一次性对称密钥
+        let symmetric_key = S::generate_key(&Default::default())?;
 
-    pub async fn process(mut self) -> Result<StreamingResult, Error> {
-        let mut buffer = vec![0u8; self.config.buffer_size];
-        let mut bytes_processed = 0;
-        let mut output_buffer = if self.config.keep_in_memory {
-            Some(Vec::new())
-        } else {
-            None
-        };
+        // 2. 封装对称密钥
+        let exported_key = S::export_key(&symmetric_key)?;
+        let encrypted_symmetric_key = C::encrypt(self.public_key, exported_key.as_bytes(), None)?;
 
-        loop {
-            let read_bytes = self.reader.read(&mut buffer).await.map_err(Error::Io)?;
-            if read_bytes == 0 {
-                break;
-            }
+        // 3. 写入头部
+        let encrypted_key_bytes = encrypted_symmetric_key.to_string().into_bytes();
+        let key_len = encrypted_key_bytes.len() as u32;
+        self.writer.write_all(&key_len.to_le_bytes()).await?;
+        self.writer.write_all(&encrypted_key_bytes).await?;
 
-            let plaintext = &buffer[..read_bytes];
-            let ciphertext =
-                C::encrypt(self.public_key, plaintext, self.additional_data.as_deref())?;
+        // 4. 委托给对称异步流加密器
+        let symmetric_encryptor = SymmetricAsyncEncryptor::<S, _, _>::new(
+            self.reader,
+            self.writer,
+            &symmetric_key,
+            self.config,
+            self.additional_data.as_deref(),
+        );
 
-            let ciphertext_bytes = ciphertext.to_string();
-            let ciphertext_slice = ciphertext_bytes.as_bytes();
-            let length = ciphertext_slice.len() as u32;
-
-            self.writer
-                .write_all(&length.to_le_bytes())
-                .await
-                .map_err(Error::Io)?;
-            self.writer
-                .write_all(ciphertext_slice)
-                .await
-                .map_err(Error::Io)?;
-
-            if let Some(buf) = output_buffer.as_mut() {
-                buf.extend_from_slice(ciphertext_slice);
-            }
-
-            bytes_processed += read_bytes as u64;
-
-            if let Some(cb) = &self.config.progress_callback {
-                cb(bytes_processed, self.config.total_bytes);
-            }
-            if self.config.show_progress {
-                if let Some(total) = self.config.total_bytes {
-                    println!("Encrypted {}/{} bytes", bytes_processed, total);
-                } else {
-                    println!("Encrypted {} bytes", bytes_processed);
-                }
-            }
-        }
-
-        self.writer.flush().await.map_err(Error::Io)?;
-
-        Ok(StreamingResult {
-            bytes_processed,
-            buffer: output_buffer,
-        })
+        symmetric_encryptor.process().await
     }
 }
 
-/// 异步流式解密器
+/// 异步混合流式解密器
 pub struct AsyncStreamingDecryptor<'a, C, R, W>
 where
     C: AsymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
 {
     reader: R,
     writer: W,
@@ -128,123 +102,162 @@ where
 impl<'a, C, R, W> AsyncStreamingDecryptor<'a, C, R, W>
 where
     C: AsymmetricCryptographicSystem,
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
+    C::Error: Send + Sync,
+    C::PrivateKey: Send + Sync,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
 {
     pub fn new(
         reader: R,
         writer: W,
         private_key: &'a C::PrivateKey,
         config: StreamingConfig,
+        additional_data: Option<&[u8]>,
     ) -> Self {
         Self {
             reader,
             writer,
             private_key,
             config,
-            additional_data: None,
+            additional_data: additional_data.map(|d| d.to_vec()),
             _phantom: PhantomData,
         }
     }
 
-    pub fn with_additional_data(mut self, data: &[u8]) -> Self {
-        self.additional_data = Some(data.to_vec());
-        self
+    pub async fn process<S>(mut self) -> Result<StreamingResult, Error>
+    where
+        S: SymmetricAsyncStreamingSystem,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<C::Error> + From<S::Error>,
+    {
+        // 1. 读取头部
+        let key_len = self.reader.read_u32_le().await? as usize;
+        let mut encrypted_key_buf = vec![0u8; key_len];
+        self.reader.read_exact(&mut encrypted_key_buf).await?;
+
+        let encrypted_key_str = String::from_utf8(encrypted_key_buf)
+            .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;
+
+        // 2. 恢复对称密钥
+        let decrypted_key_bytes = C::decrypt(self.private_key, &encrypted_key_str, None)?;
+
+        let key_str = String::from_utf8(decrypted_key_bytes)
+            .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;
+
+        let symmetric_key = S::import_key(&key_str)?;
+
+        // 3. 委托给对称异步流解密器
+        let symmetric_decryptor = SymmetricAsyncDecryptor::<S, _, _>::new(
+            self.reader,
+            self.writer,
+            &symmetric_key,
+            self.config,
+            self.additional_data.as_deref(),
+        );
+
+        symmetric_decryptor.process().await
+    }
+}
+
+#[async_trait::async_trait]
+impl<T> AsyncStreamingSystem for T
+where
+    T: AsymmetricCryptographicSystem + Send + Sync,
+    T::Error: Send + Sync,
+    T::PublicKey: Send + Sync,
+    T::PrivateKey: Send + Sync,
+    Error: From<T::Error>,
+{
+    async fn encrypt_stream_async<S, R, W>(
+        public_key: &Self::PublicKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        S: SymmetricAsyncStreamingSystem,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        AsyncStreamingEncryptor::<Self, R, W>::new(
+            reader,
+            writer,
+            public_key,
+            config.clone(),
+            additional_data,
+        )
+        .process::<S>()
+        .await
     }
 
-    pub async fn process(mut self) -> Result<StreamingResult, Error> {
-        let mut length_buffer = [0u8; 4];
-        let mut bytes_processed = 0;
-        let mut output_buffer = if self.config.keep_in_memory {
-            Some(Vec::new())
-        } else {
-            None
-        };
-
-        while self.reader.read_exact(&mut length_buffer).await.is_ok() {
-            let length = u32::from_le_bytes(length_buffer) as usize;
-            let mut ciphertext_buffer = vec![0u8; length];
-            self.reader
-                .read_exact(&mut ciphertext_buffer)
-                .await
-                .map_err(Error::Io)?;
-
-            let ciphertext = String::from_utf8(ciphertext_buffer)
-                .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext: {}", e)))?;
-
-            let plaintext =
-                C::decrypt(self.private_key, &ciphertext, self.additional_data.as_deref())?;
-
-            self.writer.write_all(&plaintext).await.map_err(Error::Io)?;
-
-            if let Some(buf) = output_buffer.as_mut() {
-                buf.extend_from_slice(&plaintext);
-            }
-
-            bytes_processed += length as u64;
-
-            if let Some(cb) = &self.config.progress_callback {
-                cb(bytes_processed, self.config.total_bytes);
-            }
-            if self.config.show_progress {
-                 if let Some(total) = self.config.total_bytes {
-                    println!("Decrypted chunk. Total processed approx {}/{} bytes", bytes_processed, total);
-                } else {
-                    println!("Decrypted chunk. Total processed approx {} bytes", bytes_processed);
-                }
-            }
-        }
-
-        self.writer.flush().await.map_err(Error::Io)?;
-
-        Ok(StreamingResult {
-            bytes_processed,
-            buffer: output_buffer,
-        })
+    async fn decrypt_stream_async<S, R, W>(
+        private_key: &Self::PrivateKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        S: SymmetricAsyncStreamingSystem,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        AsyncStreamingDecryptor::<Self, R, W>::new(
+            reader,
+            writer,
+            private_key,
+            config.clone(),
+            additional_data,
+        )
+        .process::<S>()
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-    use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsyncStreamingSystem};
-    use crate::common::errors::Error;
-    use crate::common::streaming::{StreamingConfig, StreamingResult};
     use crate::common::utils::CryptoConfig;
+    use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
     use tokio::io::BufReader;
 
-    // Helper function to get keys and config
-    fn get_test_keys_and_config() -> (
-        <RsaKyberCryptoSystem as AsymmetricCryptographicSystem>::PublicKey,
-        <RsaKyberCryptoSystem as AsymmetricCryptographicSystem>::PrivateKey,
-        StreamingConfig,
-    ) {
+    #[tokio::test]
+    async fn test_async_hybrid_streaming_roundtrip() {
         let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap();
         let config = StreamingConfig {
-            buffer_size: 128,
+            buffer_size: 256,
             ..Default::default()
         };
-        (pk, sk, config)
-    }
-
-    #[tokio::test]
-    async fn test_async_streaming_roundtrip() {
-        let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"Test async streaming roundtrip.".to_vec();
+        let original_data =
+            b"This is a long test string for async hybrid streaming encryption.".to_vec();
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(&pk, source, &mut encrypted_dest, &config, None)
-            .await
-            .unwrap();
+        RsaKyberCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
+            &pk,
+            source,
+            &mut encrypted_dest,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::decrypt_stream_async(
+        RsaKyberCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
             &sk,
             encrypted_source,
             &mut decrypted_dest,
@@ -258,15 +271,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_streaming_with_aad() {
-        let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"Test async streaming with AAD.".to_vec();
-        let aad = b"additional_authenticated_data";
+    async fn test_async_hybrid_streaming_with_aad() {
+        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap();
+        let config = StreamingConfig {
+            buffer_size: 256,
+            ..Default::default()
+        };
+        let original_data = b"Some data to be protected by async streaming with AAD.".to_vec();
+        let aad = b"additional authenticated data for the async stream";
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(
+        RsaKyberCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
             &pk,
             source,
             &mut encrypted_dest,
@@ -279,7 +296,7 @@ mod tests {
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::decrypt_stream_async(
+        RsaKyberCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
             &sk,
             encrypted_source,
             &mut decrypted_dest,
@@ -293,89 +310,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_streaming_tampered_data_fails() {
-        let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"This data should not be decryptable if tampered.".to_vec();
-        let aad = b"authentication_tag";
+    async fn test_async_hybrid_streaming_tampered_header_fails() {
+        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap();
+        let config = StreamingConfig {
+            buffer_size: 256,
+            ..Default::default()
+        };
+        let original_data = b"Tampering the header must lead to failure.".to_vec();
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(
+        RsaKyberCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
             &pk,
             source,
             &mut encrypted_dest,
             &config,
-            Some(aad),
+            None,
         )
         .await
         .unwrap();
 
-        // Tamper with the ciphertext
-        if !encrypted_dest.is_empty() {
-            let last_byte_index = encrypted_dest.len() - 1;
-            encrypted_dest[last_byte_index] ^= 0x01;
+        // Tamper with the header (encrypted symmetric key)
+        let mut tampered_data = encrypted_dest;
+        if tampered_data.len() > 10 {
+            tampered_data[10] ^= 0xff; // Flip a bit in the encrypted key part
         }
 
-        // Decrypt
-        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        // Decrypt should fail
+        let tampered_source = BufReader::new(Cursor::new(tampered_data));
         let mut decrypted_dest = Vec::new();
-        let result = RsaKyberCryptoSystem::decrypt_stream_async(
+        let result = RsaKyberCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
             &sk,
-            encrypted_source,
+            tampered_source,
             &mut decrypted_dest,
             &config,
-            Some(aad),
+            None,
         )
         .await;
 
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "Decryption with tampered header should have failed"
+        );
     }
 
     #[tokio::test]
-    async fn test_async_streaming_wrong_aad_fails() {
-        let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"This data is protected by AAD.".to_vec();
-        let correct_aad = b"correct_aad";
-        let wrong_aad = b"wrong_aad";
+    async fn test_async_hybrid_streaming_tampered_body_fails() {
+        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap();
+        let config = StreamingConfig {
+            buffer_size: 256,
+            ..Default::default()
+        };
+        let original_data = b"Tampering the body must lead to failure.".to_vec();
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(
-            &pk,
-            source,
-            &mut encrypted_dest,
-            &config,
-            Some(correct_aad),
-        )
-        .await
-        .unwrap();
-
-        // Decrypt with wrong AAD
-        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
-        let mut decrypted_dest = Vec::new();
-        let result = RsaKyberCryptoSystem::decrypt_stream_async(
-            &sk,
-            encrypted_source,
-            &mut decrypted_dest,
-            &config,
-            Some(wrong_aad),
-        )
-        .await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_async_streaming_empty_input() {
-        let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"".to_vec();
-
-        // Encrypt
-        let source = BufReader::new(Cursor::new(original_data.clone()));
-        let mut encrypted_dest = Vec::new();
-        let enc_result = RsaKyberCryptoSystem::encrypt_stream_async(
+        RsaKyberCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
             &pk,
             source,
             &mut encrypted_dest,
@@ -385,22 +377,28 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(enc_result.bytes_processed, 0);
+        // Tamper with the body
+        let mut tampered_data = encrypted_dest;
+        let data_len = tampered_data.len();
+        if data_len > 0 {
+            tampered_data[data_len - 10] ^= 0xff; // Flip a bit towards the end of the stream
+        }
 
-        // Decrypt
-        let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
+        // Decrypt should fail
+        let tampered_source = BufReader::new(Cursor::new(tampered_data));
         let mut decrypted_dest = Vec::new();
-        let dec_result = RsaKyberCryptoSystem::decrypt_stream_async(
+        let result = RsaKyberCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
             &sk,
-            encrypted_source,
+            tampered_source,
             &mut decrypted_dest,
             &config,
             None,
         )
-        .await
-        .unwrap();
+        .await;
 
-        assert_eq!(dec_result.bytes_processed, 0);
-        assert_eq!(original_data, decrypted_dest);
+        assert!(
+            result.is_err(),
+            "Decryption with tampered body should have failed"
+        );
     }
-} 
+}

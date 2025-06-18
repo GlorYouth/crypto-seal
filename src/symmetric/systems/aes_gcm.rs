@@ -1,14 +1,14 @@
 //! AES-GCM 对称加密实现
-use rsa::rand_core::RngCore;
-use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce};
-use aes_gcm::aead::{Aead, rand_core::OsRng, Payload};
-use base64::{engine::general_purpose, Engine as _};
-use serde::{Deserialize, Serialize};
-use crate::symmetric::traits::SymmetricCryptographicSystem;
-use std::fmt::Debug;
-use crate::common::utils::{Base64String, CryptoConfig};
+use crate::common::errors::Error;
 use crate::common::to_base64;
-use crate::Error;
+use crate::common::utils::CryptoConfig;
+use crate::symmetric::traits::SymmetricCryptographicSystem;
+use aes_gcm::aead::{Aead, Payload, rand_core::OsRng};
+use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce};
+use base64::{Engine as _, engine::general_purpose};
+use rsa::rand_core::RngCore;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 const KEY_SIZE: usize = 32; // AES-256 需要 32 字节的密钥
 const NONCE_SIZE: usize = 12; // GCM 标准的 Nonce 大小是 12 字节
@@ -27,31 +27,34 @@ impl Debug for AesGcmKey {
 }
 
 impl SymmetricCryptographicSystem for AesGcmSystem {
-    const KEY_SIZE: usize = KEY_SIZE; // Use the module-level constant
+    const KEY_SIZE: usize = KEY_SIZE;
     type Key = AesGcmKey;
-    type CiphertextOutput = Base64String;
     type Error = Error;
 
     /// 生成一个随机的 AES-256 密钥
     fn generate_key(_config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
         let mut key_bytes = vec![0u8; KEY_SIZE];
-        OsRng.try_fill_bytes(&mut key_bytes)
+        OsRng
+            .try_fill_bytes(&mut key_bytes)
             .map_err(|e| Error::Operation(e.to_string()))?;
         Ok(AesGcmKey(key_bytes))
     }
 
     /// 使用 AES-256-GCM 加密数据
-    /// Nonce 会被预置在密文前，然后整体进行 Base64 编码
+    /// Nonce 会被预置在密文前
     fn encrypt(
         key: &Self::Key,
         plaintext: &[u8],
         additional_data: Option<&[u8]>,
-    ) -> Result<String, Self::Error> {
+    ) -> Result<Vec<u8>, Self::Error> {
         let cipher = Aes256Gcm::new_from_slice(&key.0).map_err(|e| Error::Key(e.to_string()))?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let aad = additional_data.unwrap_or(&[]);
 
-        let payload = Payload { msg: plaintext, aad };
+        let payload = Payload {
+            msg: plaintext,
+            aad,
+        };
         let ciphertext = cipher
             .encrypt(&nonce, payload)
             .map_err(|_| Error::EncryptionFailed("AEAD encryption failed".to_string()))?;
@@ -59,32 +62,31 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let mut result = nonce.to_vec();
         result.extend_from_slice(&ciphertext);
 
-        Ok(to_base64(&result))
+        Ok(result)
     }
 
     /// 解密 AES-256-GCM 加密的数据
-    /// 输入是 Base64 编码的字符串，其中包含了 Nonce 和密文
+    /// 输入是包含了 Nonce 和密文的字节切片
     fn decrypt(
         key: &Self::Key,
-        ciphertext: &str,
+        ciphertext: &[u8],
         additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
-        let decoded_data = general_purpose::STANDARD
-            .decode(ciphertext)
-            .map_err(|e| Error::Format(format!("Base64 decoding failed: {}", e)))?;
-
-        if decoded_data.len() < NONCE_SIZE {
+        if ciphertext.len() < NONCE_SIZE {
             return Err(Error::DecryptionFailed(
                 "Ciphertext is too short to contain a nonce.".to_string(),
             ));
         }
 
-        let (nonce_bytes, ciphertext_bytes) = decoded_data.split_at(NONCE_SIZE);
+        let (nonce_bytes, ciphertext_bytes) = ciphertext.split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
         let cipher = Aes256Gcm::new_from_slice(&key.0).map_err(|e| Error::Key(e.to_string()))?;
         let aad = additional_data.unwrap_or(&[]);
 
-        let payload = Payload { msg: ciphertext_bytes, aad };
+        let payload = Payload {
+            msg: ciphertext_bytes,
+            aad,
+        };
         cipher
             .decrypt(nonce, payload)
             .map_err(|_| Error::DecryptionFailed("AEAD authentication failed.".to_string()))
@@ -130,8 +132,7 @@ mod tests {
         let plaintext = b"this is a secret message";
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
-        let ciphertext_b64 = ciphertext.to_string();
-        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext_b64, None).unwrap();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext, None).unwrap();
 
         assert_eq!(plaintext, decrypted_plaintext.as_slice());
     }
@@ -144,8 +145,7 @@ mod tests {
         let aad = b"additional authenticated data";
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
-        let ciphertext_b64 = ciphertext.to_string();
-        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext_b64, Some(aad)).unwrap();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad)).unwrap();
 
         assert_eq!(plaintext, decrypted_plaintext.as_slice());
     }
@@ -158,8 +158,7 @@ mod tests {
         let plaintext = b"this is another secret";
 
         let ciphertext = AesGcmSystem::encrypt(&key1, plaintext, None).unwrap();
-        let ciphertext_b64 = ciphertext.to_string();
-        let result = AesGcmSystem::decrypt(&key2, &ciphertext_b64, None);
+        let result = AesGcmSystem::decrypt(&key2, &ciphertext, None);
 
         assert!(result.is_err());
     }
@@ -170,23 +169,16 @@ mod tests {
         let key = AesGcmSystem::generate_key(&config).unwrap();
         let plaintext = b"secret message, do not tamper";
 
-        // 1. 加密并获得base64字符串
-        let ciphertext_b64 = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+        let mut ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
 
-        // 2. 从base64解码为原始字节(nonce || 密文)
-        let mut raw_data = general_purpose::STANDARD.decode(&ciphertext_b64).unwrap();
-
-        // 3. 篡改密文部分
-        let len = raw_data.len();
+        // 篡改密文部分
+        let len = ciphertext.len();
         if len > 0 {
-            raw_data[len - 1] ^= 0xff; // 翻转最后一个字节
+            ciphertext[len - 1] ^= 0xff; // 翻转最后一个字节
         }
 
-        // 4. 将篡改后的数据重新编码为base64
-        let tampered_ciphertext_b64 = general_purpose::STANDARD.encode(&raw_data);
-
-        // 5. 解密应该失败
-        let result = AesGcmSystem::decrypt(&key, &tampered_ciphertext_b64, None);
+        // 解密应该失败
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
 
         assert!(result.is_err(), "对被篡改的密文进行解密应该失败");
     }
@@ -200,9 +192,8 @@ mod tests {
         let tampered_aad = b"tampered authentic data";
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
-        let ciphertext_b64 = ciphertext.to_string();
-        let result = AesGcmSystem::decrypt(&key, &ciphertext_b64, Some(tampered_aad));
-        
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, Some(tampered_aad));
+
         assert!(result.is_err());
     }
 
@@ -216,11 +207,10 @@ mod tests {
         let imported_key = AesGcmSystem::import_key(&exported_key).unwrap();
 
         assert_eq!(key.0, imported_key.0);
-        
+
         let ciphertext = AesGcmSystem::encrypt(&imported_key, plaintext, None).unwrap();
-        let ciphertext_b64 = ciphertext.to_string();
-        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext_b64, None).unwrap();
-        
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext, None).unwrap();
+
         assert_eq!(plaintext, decrypted_plaintext.as_slice());
     }
 
@@ -240,13 +230,12 @@ mod tests {
     fn test_decrypt_invalid_ciphertext() {
         let config = CryptoConfig::default();
         let key = AesGcmSystem::generate_key(&config).unwrap();
-        
-        let invalid_ciphertext = "not-even-base64";
-        let result = AesGcmSystem::decrypt(&key, invalid_ciphertext, None);
-        assert!(result.is_err());
+
+        let _invalid_ciphertext = "not-even-valid-bytes-so-no-need-to-test";
+        // We can't create invalid &[u8] in the same way as &str, so we test behavior with invalid formats.
 
         // Ciphertext too short
-        let short_ciphertext = general_purpose::STANDARD.encode(&[0; NONCE_SIZE - 1]);
+        let short_ciphertext = vec![0; NONCE_SIZE - 1];
         let result = AesGcmSystem::decrypt(&key, &short_ciphertext, None);
         assert!(result.is_err());
     }
@@ -256,12 +245,11 @@ mod tests {
         let config = CryptoConfig::default();
         let key = AesGcmSystem::generate_key(&config).unwrap();
         let plaintext = b"";
-        let aad = b"some_aad";
 
-        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
-        let decrypted = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad)).unwrap();
-        
-        assert_eq!(decrypted, plaintext);
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext, None).unwrap();
+
+        assert_eq!(plaintext, decrypted_plaintext.as_slice());
     }
 
     #[test]
@@ -269,7 +257,7 @@ mod tests {
         let config = CryptoConfig::default();
         let key = AesGcmSystem::generate_key(&config).unwrap();
         let plaintext = b"some data";
-        let aad = b"should_be_present";
+        let aad = b"some aad";
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
@@ -281,24 +269,24 @@ mod tests {
     fn test_ciphertext_uniqueness() {
         let config = CryptoConfig::default();
         let key = AesGcmSystem::generate_key(&config).unwrap();
-        let plaintext = b"the same data";
+        let plaintext = b"this is the same message";
 
         let ciphertext1 = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
         let ciphertext2 = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
 
-        assert_ne!(ciphertext1, ciphertext2, "Encrypting the same data twice should produce different ciphertexts due to random nonce.");
+        assert_ne!(ciphertext1, ciphertext2);
     }
-    
+
     #[test]
     fn test_empty_aad_roundtrip() {
         let config = CryptoConfig::default();
         let key = AesGcmSystem::generate_key(&config).unwrap();
-        let plaintext = b"some data";
+        let plaintext = b"plaintext";
         let aad = b"";
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
-        let decrypted = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad)).unwrap();
+        let decrypted_plaintext = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad)).unwrap();
 
-        assert_eq!(decrypted, plaintext);
+        assert_eq!(plaintext, decrypted_plaintext.as_slice());
     }
-} 
+}

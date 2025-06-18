@@ -2,7 +2,6 @@
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
-
 use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
@@ -17,10 +16,12 @@ where
     config: &'a StreamingConfig,
     additional_data: Option<&'a [u8]>,
     bytes_processed: u64,
+    chunk_index: u64,
     _phantom: PhantomData<C>,
 }
 
-impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write> SymmetricStreamingEncryptor<'a, C, R, W>
+impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
+    SymmetricStreamingEncryptor<'a, C, R, W>
 where
     Error: From<C::Error>,
 {
@@ -39,6 +40,7 @@ where
             config,
             additional_data,
             bytes_processed: 0,
+            chunk_index: 0,
             _phantom: PhantomData,
         }
     }
@@ -47,7 +49,11 @@ where
     pub fn process(mut self) -> Result<StreamingResult, Error> {
         let mut buffer = vec![0u8; self.config.buffer_size];
         let mut total_written = 0;
-        let mut mem_buffer = if self.config.keep_in_memory { Some(Vec::new()) } else { None };
+        let mut mem_buffer = if self.config.keep_in_memory {
+            Some(Vec::new())
+        } else {
+            None
+        };
 
         loop {
             let read_bytes = self.reader.read(&mut buffer)?;
@@ -57,19 +63,21 @@ where
             self.bytes_processed += read_bytes as u64;
 
             let plaintext = &buffer[..read_bytes];
-            let ciphertext_obj = C::encrypt(self.key, plaintext, self.additional_data)?;
-            let ciphertext_str = ciphertext_obj.to_string();
-            let ciphertext_bytes = ciphertext_str.as_bytes();
-            
-            // 写入长度前缀和密文
+
+            let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
+            aad.extend_from_slice(&self.chunk_index.to_le_bytes());
+
+            let ciphertext_bytes = C::encrypt(self.key, plaintext, Some(&aad))?;
+
             let len = ciphertext_bytes.len() as u32;
             self.writer.write_all(&len.to_le_bytes())?;
-            self.writer.write_all(ciphertext_bytes)?;
+            self.writer.write_all(&ciphertext_bytes)?;
 
-            total_written += read_bytes as u64; // We track original bytes processed
+            total_written += read_bytes as u64;
+            self.chunk_index += 1;
 
             if let Some(ref mut buf) = mem_buffer {
-                buf.extend_from_slice(ciphertext_bytes);
+                buf.extend_from_slice(&ciphertext_bytes);
             }
 
             if let Some(cb) = &self.config.progress_callback {
@@ -96,10 +104,12 @@ where
     config: &'a StreamingConfig,
     additional_data: Option<&'a [u8]>,
     bytes_processed: u64,
+    chunk_index: u64,
     _phantom: PhantomData<C>,
 }
 
-impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write> SymmetricStreamingDecryptor<'a, C, R, W>
+impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
+    SymmetricStreamingDecryptor<'a, C, R, W>
 where
     Error: From<C::Error>,
 {
@@ -118,6 +128,7 @@ where
             config,
             additional_data,
             bytes_processed: 0,
+            chunk_index: 0,
             _phantom: PhantomData,
         }
     }
@@ -125,7 +136,11 @@ where
     /// 执行流式解密
     pub fn process(mut self) -> Result<StreamingResult, Error> {
         let mut total_written = 0;
-        let mut mem_buffer = if self.config.keep_in_memory { Some(Vec::new()) } else { None };
+        let mut mem_buffer = if self.config.keep_in_memory {
+            Some(Vec::new())
+        } else {
+            None
+        };
         let mut len_buf = [0u8; 4];
 
         loop {
@@ -140,11 +155,12 @@ where
             self.reader.read_exact(&mut ciphertext_buffer)?;
             self.bytes_processed += (4 + block_size) as u64;
 
-            let ciphertext_str = String::from_utf8(ciphertext_buffer)
-                .map_err(|e| Error::Format(format!("无效的UTF-8密文: {}", e)))?;
+            let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
+            aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
-            let plaintext = C::decrypt(self.key, &ciphertext_str, self.additional_data)?;
-            
+            let plaintext = C::decrypt(self.key, &ciphertext_buffer, Some(&aad))?;
+            self.chunk_index += 1;
+
             self.writer.write_all(&plaintext)?;
             total_written += plaintext.len() as u64;
 
@@ -153,7 +169,6 @@ where
             }
 
             if let Some(cb) = &self.config.progress_callback {
-                // For decryption, progress is based on bytes read from source
                 cb(self.bytes_processed, self.config.total_bytes);
             }
         }
@@ -179,7 +194,8 @@ where
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error> {
-        SymmetricStreamingEncryptor::<Self, R, W>::new(reader, writer, key, config, additional_data).process()
+        SymmetricStreamingEncryptor::<Self, R, W>::new(reader, writer, key, config, additional_data)
+            .process()
     }
 
     fn decrypt_stream<R: Read, W: Write>(
@@ -189,7 +205,8 @@ where
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error> {
-        SymmetricStreamingDecryptor::<Self, R, W>::new(reader, writer, key, config, additional_data).process()
+        SymmetricStreamingDecryptor::<Self, R, W>::new(reader, writer, key, config, additional_data)
+            .process()
     }
 }
 
@@ -217,20 +234,31 @@ mod tests {
     #[test]
     fn test_streaming_encrypt_decrypt_roundtrip() {
         let (key, config) = get_test_key_and_config();
-        let original_data = b"This is a moderately long test string for streaming encryption and decryption.";
+        let original_data =
+            b"This is a moderately long test string for streaming encryption and decryption.";
 
         // Encrypt
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
+            .unwrap();
 
         // Decrypt
         let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
         let mut decrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None)
-            .unwrap();
+        AesGcmSystem::decrypt_stream(
+            &key,
+            &mut encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            None,
+        )
+        .unwrap();
 
-        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+        assert_eq!(
+            original_data.as_ref(),
+            decrypted_dest.into_inner().as_slice()
+        );
     }
 
     #[test]
@@ -257,54 +285,109 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+        assert_eq!(
+            original_data.as_ref(),
+            decrypted_dest.into_inner().as_slice()
+        );
     }
-    
+
     #[test]
     fn test_streaming_tampered_data_fails() {
         let (key, config) = get_test_key_and_config();
-        let original_data = b"This data should not be decryptable if tampered.";
-        let aad = b"some aad";
+        let original_data = b"Some data that should not be tampered with.";
 
         // Encrypt
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, Some(aad))
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
             .unwrap();
 
-        // Tamper data
+        // Tamper with the encrypted data
         let mut tampered_data = encrypted_dest.into_inner();
-        let len = tampered_data.len();
-        tampered_data[len / 2] ^= 0xff; // Flip a byte in the middle
+        tampered_data[10] ^= 0xff; // Flip a bit in the ciphertext
 
-        // Decrypt
-        let mut encrypted_source = Cursor::new(tampered_data);
+        // Decrypt should fail
+        let mut tampered_source = Cursor::new(tampered_data);
         let mut decrypted_dest = Cursor::new(Vec::new());
         let result = AesGcmSystem::decrypt_stream(
             &key,
-            &mut encrypted_source,
+            &mut tampered_source,
             &mut decrypted_dest,
             &config,
-            Some(aad),
+            None,
         );
 
-        assert!(result.is_err());
+        assert!(result.is_err(), "Decryption of tampered stream should fail");
+    }
+
+    #[test]
+    fn test_streaming_reordered_chunks_fail() {
+        let (key, mut config) = get_test_key_and_config();
+        config.buffer_size = 16; // Use small chunks to test reordering
+        let original_data = b"chunk one two three four five six seven eight"; // Must be multiple of 16
+
+        // Encrypt to get a stream of chunks
+        let mut source = Cursor::new(original_data);
+        let mut encrypted_dest = Cursor::new(Vec::new());
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
+            .unwrap();
+
+        let encrypted_bytes = encrypted_dest.into_inner();
+
+        // Manually parse and reorder chunks
+        let mut reader = Cursor::new(&encrypted_bytes);
+        let mut chunks = Vec::new();
+        let mut len_buf = [0u8; 4];
+        while reader.read_exact(&mut len_buf).is_ok() {
+            let len = u32::from_le_bytes(len_buf) as usize;
+            let mut chunk_data = vec![0u8; len];
+            reader.read_exact(&mut chunk_data).unwrap();
+            chunks.push((len_buf, chunk_data));
+        }
+
+        if chunks.len() >= 2 {
+            // Swap first two chunks
+            chunks.swap(0, 1);
+
+            // Reconstruct the tampered stream
+            let mut reordered_bytes = Vec::new();
+            for (len_buf, chunk_data) in chunks {
+                reordered_bytes.extend_from_slice(&len_buf);
+                reordered_bytes.extend_from_slice(&chunk_data);
+            }
+
+            // Decryption should fail because chunk indices in AAD won't match
+            let mut tampered_source = Cursor::new(reordered_bytes);
+            let mut decrypted_dest = Cursor::new(Vec::new());
+            let result = AesGcmSystem::decrypt_stream(
+                &key,
+                &mut tampered_source,
+                &mut decrypted_dest,
+                &config,
+                None,
+            );
+
+            assert!(
+                result.is_err(),
+                "Decryption of reordered chunks should fail"
+            );
+        }
     }
 
     #[test]
     fn test_streaming_wrong_aad_fails() {
         let (key, config) = get_test_key_and_config();
-        let original_data = b"This data should not be decryptable with wrong AAD.";
-        let aad = b"correct aad";
-        let wrong_aad = b"wrong aad";
+        let original_data = b"Some data to be protected by streaming with AAD.";
+        let aad1 = b"additional authenticated data";
+        let aad2 = b"wrong additional authenticated data";
 
-        // Encrypt
+        // Encrypt with aad1
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, Some(aad))
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, Some(aad1))
             .unwrap();
 
-        // Decrypt with wrong AAD
+        // Decrypt with aad2 should fail
         let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
         let mut decrypted_dest = Cursor::new(Vec::new());
         let result = AesGcmSystem::decrypt_stream(
@@ -312,10 +395,10 @@ mod tests {
             &mut encrypted_source,
             &mut decrypted_dest,
             &config,
-            Some(wrong_aad),
+            Some(aad2),
         );
 
-        assert!(result.is_err());
+        assert!(result.is_err(), "Decryption with wrong AAD should fail");
     }
 
     #[test]
@@ -325,14 +408,24 @@ mod tests {
 
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
+            .unwrap();
 
         let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
         let mut decrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None)
-            .unwrap();
+        AesGcmSystem::decrypt_stream(
+            &key,
+            &mut encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            None,
+        )
+        .unwrap();
 
-        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
+        assert_eq!(
+            original_data.as_ref(),
+            decrypted_dest.into_inner().as_slice()
+        );
     }
 
     #[test]
@@ -341,21 +434,29 @@ mod tests {
         config.buffer_size = 64; // smaller buffer size
 
         let data_cases = vec![
-            vec![1u8; 32],   // Less than one buffer
-            vec![2u8; 64],   // Exactly one buffer
-            vec![3u8; 150],  // More than one buffer
+            vec![1u8; 32],  // Less than one buffer
+            vec![2u8; 64],  // Exactly one buffer
+            vec![3u8; 150], // More than one buffer
         ];
 
         for original_data in data_cases {
             // Encrypt
             let mut source = Cursor::new(&original_data);
             let mut encrypted_dest = Cursor::new(Vec::new());
-            AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+            AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
+                .unwrap();
 
             // Decrypt
             let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
             let mut decrypted_dest = Cursor::new(Vec::new());
-            AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None).unwrap();
+            AesGcmSystem::decrypt_stream(
+                &key,
+                &mut encrypted_source,
+                &mut decrypted_dest,
+                &config,
+                None,
+            )
+            .unwrap();
 
             assert_eq!(original_data, decrypted_dest.into_inner());
         }
@@ -372,12 +473,16 @@ mod tests {
         let progress_calls_clone = progress_calls.clone();
 
         config.progress_callback = Some(Arc::new(move |processed, total| {
-            progress_calls_clone.lock().unwrap().push((processed, total));
+            progress_calls_clone
+                .lock()
+                .unwrap()
+                .push((processed, total));
         }));
 
         let mut source = Cursor::new(&original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None).unwrap();
+        AesGcmSystem::encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
+            .unwrap();
 
         let calls = progress_calls.lock().unwrap();
         assert_eq!(calls.len(), 4); // 1024 / 256 = 4
@@ -390,12 +495,18 @@ mod tests {
     #[test]
     fn test_streaming_incomplete_data_fails() {
         let (key, config) = get_test_key_and_config();
-        
+
         // Case 1: Only length prefix, no data
         let mut encrypted_data = (100u32).to_le_bytes().to_vec();
         let mut encrypted_source = Cursor::new(encrypted_data);
         let mut decrypted_dest = Cursor::new(Vec::new());
-        let result = AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None);
+        let result = AesGcmSystem::decrypt_stream(
+            &key,
+            &mut encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            None,
+        );
         assert!(result.is_err());
 
         // Case 2: Length prefix says 100, but only 50 bytes of data follow
@@ -403,7 +514,13 @@ mod tests {
         encrypted_data.extend_from_slice(&[0u8; 50]);
         encrypted_source = Cursor::new(encrypted_data);
         decrypted_dest = Cursor::new(Vec::new());
-        let result = AesGcmSystem::decrypt_stream(&key, &mut encrypted_source, &mut decrypted_dest, &config, None);
+        let result = AesGcmSystem::decrypt_stream(
+            &key,
+            &mut encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            None,
+        );
         assert!(result.is_err());
     }
-} 
+}

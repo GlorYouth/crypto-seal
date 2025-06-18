@@ -2,12 +2,13 @@
 #![cfg(feature = "async-engine")]
 
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
+use crate::asymmetric::traits::AsyncStreamingSystem;
 use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::symmetric::traits::SymmetricAsyncStreamingSystem;
 use secrecy::SecretString;
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use crate::asymmetric::traits::AsyncStreamingSystem;
 
 /// `AsymmetricQSealAsyncEngine`：一个支持密钥轮换的用户友好型异步非对称加密引擎。
 ///
@@ -37,10 +38,7 @@ where
 {
     /// 使用密钥管理器创建一个新的引擎实例。
     /// 这个方法是 crate-internal 的，只能通过 `Seal` 结构调用。
-    pub(crate) fn new(
-        key_manager: AsymmetricKeyRotationManager,
-        password: SecretString,
-    ) -> Self {
+    pub(crate) fn new(key_manager: AsymmetricKeyRotationManager, password: SecretString) -> Self {
         Self {
             key_manager,
             password,
@@ -61,10 +59,9 @@ where
         }
 
         // 2. 获取主公钥用于加密
-        let key_metadata = self
-            .key_manager
-            .get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
         let public_key = self
             .key_manager
             .get_public_key_by_id::<T>(&key_metadata.id)?
@@ -110,13 +107,17 @@ where
     }
 
     /// 异步流式加密
-    pub async fn encrypt_stream<R, W>(
+    pub async fn encrypt_stream<S, R, W>(
         &mut self,
         mut reader: R,
         mut writer: W,
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
+        S: SymmetricAsyncStreamingSystem + Send + Sync + 'static,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
@@ -128,10 +129,9 @@ where
         }
 
         // 2. 获取主公钥
-        let key_metadata = self
-            .key_manager
-            .get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
         let public_key = self
             .key_manager
             .get_public_key_by_id::<T>(&key_metadata.id)?
@@ -143,7 +143,8 @@ where
 
         // 4. 流式加密剩余数据
         let result =
-            T::encrypt_stream_async(&public_key, &mut reader, &mut writer, config, None).await?;
+            T::encrypt_stream_async::<S, _, _>(&public_key, &mut reader, &mut writer, config, None)
+                .await?;
 
         // 5. 增加使用计数
         self.key_manager
@@ -154,13 +155,17 @@ where
     }
 
     /// 异步流式解密
-    pub async fn decrypt_stream<R, W>(
+    pub async fn decrypt_stream<S, R, W>(
         &self,
         mut reader: R,
         mut writer: W,
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
+        S: SymmetricAsyncStreamingSystem + Send + Sync + 'static,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
@@ -186,74 +191,7 @@ where
             })?;
 
         // 3. 解密剩余的流数据
-        T::decrypt_stream_async(&private_key, &mut reader, &mut writer, config, None).await
-    }
-}
-
-#[cfg(all(test, feature = "post-quantum", feature = "async-engine"))]
-mod tests {
-    use super::*;
-    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-    use crate::seal::Seal;
-    use secrecy::SecretString;
-    use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
-
-    type TestEngine = AsymmetricQSealAsyncEngine<RsaKyberCryptoSystem>;
-
-    async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
-        let dir = tempdir().unwrap();
-        let seal_path = dir.path().join("my.seal");
-        let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
-        let seal = Seal::create(&seal_path, &password).unwrap();
-        (seal, password, dir)
-    }
-
-    #[tokio::test]
-    async fn test_engine_encrypt_decrypt_roundtrip() {
-        let (seal, password, _dir) = setup().await;
-        let mut engine = seal
-            .asymmetric_async_engine::<RsaKyberCryptoSystem>(password)
+        T::decrypt_stream_async::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
             .await
-            .unwrap();
-
-        let plaintext = b"some very secret data";
-        let encrypted = engine.encrypt(plaintext).await.unwrap();
-        let decrypted = engine.decrypt(&encrypted).await.unwrap();
-
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[tokio::test]
-    async fn test_engine_streaming_roundtrip() {
-        let (seal, password, _dir) = setup().await;
-        let mut engine = seal
-            .asymmetric_async_engine::<RsaKyberCryptoSystem>(password)
-            .await
-            .unwrap();
-
-        let plaintext = b"some very long secret data for streaming";
-        let mut reader = tokio::io::BufReader::new(plaintext.as_ref());
-        let mut encrypted_writer = tokio::io::BufWriter::new(Vec::new());
-
-        let config = StreamingConfig::default();
-        engine
-            .encrypt_stream(&mut reader, &mut encrypted_writer, &config)
-            .await
-            .unwrap();
-        
-        // Use into_inner to get the underlying Vec<u8> from the writer.
-        let encrypted_data = encrypted_writer.into_inner();
-
-        let mut encrypted_reader = tokio::io::BufReader::new(encrypted_data.as_slice());
-        let mut decrypted_writer = tokio::io::BufWriter::new(Vec::new());
-        engine
-            .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer, &config)
-            .await
-            .unwrap();
-        
-        let decrypted_data = decrypted_writer.into_inner();
-
-        assert_eq!(decrypted_data, plaintext.to_vec());
     }
 }

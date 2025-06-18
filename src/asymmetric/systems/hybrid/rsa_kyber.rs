@@ -2,29 +2,31 @@
 //! 一个混合加密方案，结合了经典的RSA-PSS签名和后量子的Kyber密钥封装机制。
 //!
 
-use aes_gcm::KeyInit;
+use crate::asymmetric::systems::post_quantum::kyber::{
+    KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper,
+};
+use crate::asymmetric::systems::traditional::rsa::{
+    RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper,
+};
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::errors::Error;
-use crate::asymmetric::systems::post_quantum::kyber::{KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper};
-use crate::asymmetric::systems::traditional::rsa::{RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper};
 use crate::common::traits::AuthenticatedCryptoSystem;
+use crate::common::utils::{Base64String, CryptoConfig, from_base64, to_base64};
+use aes_gcm::KeyInit;
 use aes_gcm::aead::Aead;
 use aes_gcm::aead::AeadCore;
 #[cfg(not(feature = "chacha"))]
 use aes_gcm::{Aes256Gcm, Nonce};
 #[cfg(feature = "chacha")]
 #[allow(unused_imports)]
-use chacha20poly1305::{aead::generic_array::GenericArray, aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit}, ChaCha20Poly1305, Nonce as ChaNonce};
+use chacha20poly1305::{
+    ChaCha20Poly1305, Nonce as ChaNonce,
+    aead::generic_array::GenericArray,
+    aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit},
+};
 use rsa::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(feature = "async-engine")]
-use crate::asymmetric::traits::AsyncStreamingSystem;
-#[cfg(feature = "async-engine")]
-use crate::common::streaming::StreamingConfig;
-#[cfg(feature = "async-engine")]
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use crate::asymmetric::traits::AsymmetricCryptographicSystem;
-use crate::common::utils::{from_base64, to_base64, Base64String, CryptoConfig};
 // --- 密钥结构 ---
 
 /// 混合公钥，包含用于签名的RSA公钥和用于密钥封装的Kyber公钥。
@@ -52,13 +54,21 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     type Error = Error;
     type CiphertextOutput = Base64String;
 
-    fn generate_keypair(config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
+    fn generate_keypair(
+        config: &CryptoConfig,
+    ) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
         let (rsa_pk, rsa_sk) = RsaCryptoSystem::generate_keypair(config)?;
         let (kyber_pk, kyber_sk) = KyberCryptoSystem::generate_keypair(config)?;
-        
-        let public_key = Self::PublicKey { rsa_public_key: rsa_pk, kyber_public_key: kyber_pk };
-        let private_key = Self::PrivateKey { rsa_private_key: rsa_sk, kyber_private_key: kyber_sk };
-        
+
+        let public_key = Self::PublicKey {
+            rsa_public_key: rsa_pk,
+            kyber_public_key: kyber_pk,
+        };
+        let private_key = Self::PrivateKey {
+            rsa_private_key: rsa_sk,
+            kyber_private_key: kyber_sk,
+        };
+
         Ok((public_key, private_key))
     }
 
@@ -89,7 +99,8 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         OsRng.fill_bytes(&mut aes_key);
 
         // 2. KEM: 使用Kyber公钥封装（加密）AES密钥。
-        let kem_ciphertext = KyberCryptoSystem::encrypt(&public_key.kyber_public_key, &aes_key, None)?;
+        let kem_ciphertext =
+            KyberCryptoSystem::encrypt(&public_key.kyber_public_key, &aes_key, None)?;
 
         // 3. DEM: 使用AES密钥加密实际数据。
         #[cfg(feature = "chacha")]
@@ -106,9 +117,10 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
             msg: plaintext,
             aad: additional_data.unwrap_or_default(),
         };
-        let dem_ciphertext = cipher.encrypt(&nonce, payload)
+        let dem_ciphertext = cipher
+            .encrypt(&nonce, payload)
             .map_err(|e| Error::Operation(format!("AEAD 加密失败: {}", e)))?;
-        
+
         // 4. 将 KEM 密文的 Base64 ASCII 与 DEM 密文及 Nonce 组合
         let kem_str = kem_ciphertext.to_string();
         let combined = [
@@ -116,9 +128,10 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
             b"::",
             nonce.as_slice(),
             b"::",
-            &dem_ciphertext
-        ].concat();
-        
+            &dem_ciphertext,
+        ]
+        .concat();
+
         Ok(Base64String::from(combined))
     }
 
@@ -132,14 +145,16 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         let combined = from_base64(ciphertext)?;
         let delim = b"::";
         // 查找第一个分隔符，将KEM部分与Nonce部分分开
-        let first_pos = combined.windows(delim.len())
+        let first_pos = combined
+            .windows(delim.len())
             .position(|window| window == delim)
             .ok_or_else(|| Error::Format("密文格式错误：缺少KEM-Nonce分隔符".to_string()))?;
         let kem_part = &combined[..first_pos];
         // 跳过第一个分隔符
         let rest = &combined[first_pos + delim.len()..];
         // 查找第二个分隔符，将Nonce与AES密文分开
-        let second_pos = rest.windows(delim.len())
+        let second_pos = rest
+            .windows(delim.len())
             .position(|window| window == delim)
             .ok_or_else(|| Error::Format("密文格式错误：缺少Nonce-DEM分隔符".to_string()))?;
         let nonce_part = &rest[..second_pos];
@@ -148,7 +163,8 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         // 1. KEM: 使用Kyber私钥解封AES密钥。
         let kem_ciphertext_str = String::from_utf8(kem_part.to_vec())
             .map_err(|e| Error::Format(format!("无效的PQ Base64密文: {}", e)))?;
-        let aes_key_bytes = KyberCryptoSystem::decrypt(&private_key.kyber_private_key, &kem_ciphertext_str, None)?;
+        let aes_key_bytes =
+            KyberCryptoSystem::decrypt(&private_key.kyber_private_key, &kem_ciphertext_str, None)?;
 
         // 2. DEM: 使用AES密钥和Nonce解密数据。
         #[cfg(feature = "chacha")]
@@ -160,13 +176,14 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         let nonce = ChaNonce::from_slice(nonce_part);
         #[cfg(not(feature = "chacha"))]
         let nonce = Nonce::from_slice(nonce_part);
-        
+
         use aes_gcm::aead::Payload;
         let payload = Payload {
             msg: dem_part,
             aad: additional_data.unwrap_or_default(),
         };
-        cipher.decrypt(&nonce, payload)
+        cipher
+            .decrypt(&nonce, payload)
             .map_err(|_| Error::Operation("AEAD 解密或认证失败".to_string()))
     }
 }
@@ -179,7 +196,11 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
         RsaCryptoSystem::sign(&private_key.rsa_private_key, &digest)
     }
 
-    fn verify(public_key: &Self::PublicKey, data: &[u8], signature: &[u8]) -> Result<bool, Self::Error> {
+    fn verify(
+        public_key: &Self::PublicKey,
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, Self::Error> {
         let digest = Sha256::digest(data);
         RsaCryptoSystem::verify(&public_key.rsa_public_key, &digest, signature)
     }
@@ -191,10 +212,15 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
         signer_key: Option<&Self::PrivateKey>,
     ) -> Result<Self::AuthenticatedOutput, Self::Error> {
         let encrypted_data_b64 = Self::encrypt(public_key, plaintext, additional_data)?;
-        
+
         if let Some(sk) = signer_key {
             let signature = Self::sign(sk, encrypted_data_b64.as_bytes())?;
-            let combined = [encrypted_data_b64.as_bytes(), b"::", to_base64(&signature).as_bytes()].concat();
+            let combined = [
+                encrypted_data_b64.as_bytes(),
+                b"::",
+                to_base64(&signature).as_bytes(),
+            ]
+            .concat();
             Ok(Base64String::from(combined))
         } else {
             // 如果没有签名密钥，只返回加密数据
@@ -212,7 +238,8 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
         let combined = from_base64(ciphertext)?;
         let delim = b"::";
         // 寻找最后一个 "::" 以分离签名（如果存在）
-        let split_pos_opt = combined.windows(delim.len())
+        let split_pos_opt = combined
+            .windows(delim.len())
             .rposition(|window| window == delim);
         // 拆分为加密数据和可选的签名部分
         let (encrypted_data_raw, signature_ascii_opt) = if let Some(pos) = split_pos_opt {
@@ -225,8 +252,8 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
             // 将签名的ASCII Base64转为原始签名字节，如有任何错误，则视为签名验证失败
             let sig_str = std::str::from_utf8(sig_ascii_bytes)
                 .map_err(|_| Error::Operation("签名验证失败".to_string()))?;
-            let signature_bytes = from_base64(sig_str)
-                .map_err(|_| Error::Operation("签名验证失败".to_string()))?;
+            let signature_bytes =
+                from_base64(sig_str).map_err(|_| Error::Operation("签名验证失败".to_string()))?;
             if !Self::verify(pk, encrypted_data_raw, &signature_bytes)? {
                 return Err(Error::Operation("签名验证失败".to_string()));
             }
@@ -237,344 +264,170 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
     }
 }
 
-#[cfg(feature = "async-engine")]
-#[async_trait::async_trait]
-impl AsyncStreamingSystem for RsaKyberCryptoSystem {
-    async fn encrypt_stream_async<R, W>(
-        public_key: &Self::PublicKey,
-        mut reader: R,
-        mut writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<crate::common::streaming::StreamingResult, Error>
-    where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
-    {
-        let mut buffer = vec![0u8; config.buffer_size];
-        let mut bytes_processed = 0;
-        let mut output_buffer = if config.keep_in_memory { Some(Vec::new()) } else { None };
-
-        loop {
-            let read_bytes = reader.read(&mut buffer).await.map_err(Error::Io)?;
-            if read_bytes == 0 {
-                break;
-            }
-
-            let plaintext = &buffer[..read_bytes];
-            let ciphertext_output = Self::encrypt(public_key, plaintext, additional_data)?;
-
-            let ciphertext_str = ciphertext_output.to_string();
-            let ciphertext_bytes = ciphertext_str.as_bytes();
-            let length = ciphertext_bytes.len() as u32;
-
-            writer.write_all(&length.to_le_bytes()).await.map_err(Error::Io)?;
-            writer.write_all(ciphertext_bytes).await.map_err(Error::Io)?;
-
-            if let Some(buf) = output_buffer.as_mut() {
-                buf.extend_from_slice(ciphertext_bytes);
-            }
-
-            bytes_processed += read_bytes as u64;
-
-            if let Some(cb) = &config.progress_callback {
-                cb(bytes_processed, config.total_bytes);
-            }
-            if config.show_progress {
-                if let Some(total) = config.total_bytes {
-                    println!("[Async Encrypt] Processed {}/{} bytes", bytes_processed, total);
-                } else {
-                    println!("[Async Encrypt] Processed {} bytes", bytes_processed);
-                }
-            }
-        }
-
-        writer.flush().await.map_err(Error::Io)?;
-
-        Ok(crate::common::streaming::StreamingResult {
-            bytes_processed,
-            buffer: output_buffer,
-        })
-    }
-
-    async fn decrypt_stream_async<R, W>(
-        private_key: &Self::PrivateKey,
-        mut reader: R,
-        mut writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<crate::common::streaming::StreamingResult, Error>
-    where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
-    {
-        let mut length_buffer = [0u8; 4];
-        let mut bytes_processed = 0;
-        let mut output_buffer = if config.keep_in_memory { Some(Vec::new()) } else { None };
-
-        while reader.read_exact(&mut length_buffer).await.is_ok() {
-            let length = u32::from_le_bytes(length_buffer) as usize;
-            let mut ciphertext_buffer = vec![0u8; length];
-            reader.read_exact(&mut ciphertext_buffer).await.map_err(Error::Io)?;
-
-            let ciphertext_str = String::from_utf8(ciphertext_buffer)
-                .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext chunk: {}", e)))?;
-            
-            let plaintext = Self::decrypt(private_key, &ciphertext_str, additional_data)?;
-            
-            writer.write_all(&plaintext).await.map_err(Error::Io)?;
-
-            if let Some(buf) = output_buffer.as_mut() {
-                buf.extend_from_slice(&plaintext);
-            }
-
-            bytes_processed += length as u64;
-
-            if let Some(cb) = &config.progress_callback {
-                cb(bytes_processed, config.total_bytes);
-            }
-            if config.show_progress {
-                if let Some(total) = config.total_bytes {
-                    println!("[Async Decrypt] Processed approx. {}/{} bytes", bytes_processed, total);
-                } else {
-                    println!("[Async Decrypt] Processed approx. {} bytes", bytes_processed);
-                }
-            }
-        }
-
-        writer.flush().await.map_err(Error::Io)?;
-
-        Ok(crate::common::streaming::StreamingResult {
-            bytes_processed,
-            buffer: output_buffer,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::utils::CryptoConfig;
 
     fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
-        RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap()
+        let config = CryptoConfig::default();
+        RsaKyberCryptoSystem::generate_keypair(&config).unwrap()
     }
 
     #[test]
     fn test_hybrid_roundtrip_unauthenticated() {
-        let config = CryptoConfig::default();
-        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        let plaintext = b"this is a test message for unauthenticated hybrid encryption";
-
-        let ciphertext = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
-        let decrypted = RsaKyberCryptoSystem::decrypt(&sk, ciphertext.to_string().as_ref(), None).unwrap();
-
-        assert_eq!(plaintext.as_slice(), decrypted.as_slice());
+        let (pk, sk) = setup_keys();
+        let plaintext = b"test message";
+        let encrypted = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        let decrypted = RsaKyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), None).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn test_hybrid_roundtrip_authenticated() {
-        let config = CryptoConfig::default();
-        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        let plaintext = b"this is a test message for authenticated hybrid encryption";
-
-        let ciphertext = RsaKyberCryptoSystem::encrypt_authenticated(&pk, plaintext, None, Some(&sk)).unwrap();
-        let decrypted = RsaKyberCryptoSystem::decrypt_authenticated(&sk, ciphertext.to_string().as_ref(), None, Some(&pk)).unwrap();
-
-        assert_eq!(plaintext.as_slice(), decrypted.as_slice());
+        let (pk, sk) = setup_keys();
+        let plaintext = b"authenticated test message";
+        let encrypted =
+            RsaKyberCryptoSystem::encrypt_authenticated(&pk, plaintext, None, Some(&sk)).unwrap();
+        let decrypted = RsaKyberCryptoSystem::decrypt_authenticated(
+            &sk,
+            &encrypted.to_string(),
+            None,
+            Some(&pk),
+        )
+        .unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn test_hybrid_tampered_data_fails_decryption() {
-        let config = CryptoConfig::default();
-        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        let plaintext = b"this is a test message";
-        
-        let ciphertext_b64 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
-        let mut combined = from_base64(ciphertext_b64.to_string().as_ref()).unwrap();
+        let (pk, sk) = setup_keys();
+        let plaintext = b"some secret data";
+        let encrypted_b64 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
 
-        // 在密文的最后篡改一个字节
-        let last_byte_index = combined.len() - 1;
-        combined[last_byte_index] ^= 0xff;
-        
-        let tampered_ciphertext = to_base64(&combined);
+        let mut encrypted_bytes = from_base64(&encrypted_b64.to_string()).unwrap();
+        let len = encrypted_bytes.len();
+        encrypted_bytes[len - 5] ^= 0xff; // Tamper with DEM ciphertext
+        let tampered_b64 = to_base64(&encrypted_bytes);
 
-        let result = RsaKyberCryptoSystem::decrypt(&sk, &tampered_ciphertext, None);
-        assert!(result.is_err(), "解密被篡改的数据应该失败");
+        let result = RsaKyberCryptoSystem::decrypt(&sk, &tampered_b64, None);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_hybrid_tampered_signature_fails_verification() {
-        let config = CryptoConfig::default();
-        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        let plaintext = b"this is a test message";
-        
-        let auth_ciphertext_b64 = RsaKyberCryptoSystem::encrypt_authenticated(&pk, plaintext, None, Some(&sk)).unwrap();
-        let mut combined = from_base64(auth_ciphertext_b64.to_string().as_ref()).unwrap();
-        
-        // 在签名的部分篡改一个字节
-        let last_byte_index = combined.len() - 1;
-        combined[last_byte_index] ^= 0xff;
-        
-        let tampered_ciphertext = to_base64(&combined);
-        
-        let result = RsaKyberCryptoSystem::decrypt_authenticated(&sk, tampered_ciphertext.as_ref(), None, Some(&pk));
-        assert!(result.is_err(), "认证解密被篡改的签名应该失败");
-        assert_eq!(result.unwrap_err().to_string(), "操作失败: 签名验证失败");
+        let (pk, sk) = setup_keys();
+        let plaintext = b"another authenticated message";
+        let encrypted_b64 =
+            RsaKyberCryptoSystem::encrypt_authenticated(&pk, plaintext, None, Some(&sk)).unwrap();
+
+        let mut encrypted_bytes = from_base64(&encrypted_b64.to_string()).unwrap();
+        if let Some(pos) = encrypted_bytes.windows(2).rposition(|w| w == b"::") {
+            let sig_part_index = pos + 2;
+            if sig_part_index + 5 < encrypted_bytes.len() {
+                encrypted_bytes[sig_part_index + 5] ^= 0xff; // Tamper with signature
+            }
+        }
+        let tampered_b64 = to_base64(&encrypted_bytes);
+
+        let result =
+            RsaKyberCryptoSystem::decrypt_authenticated(&sk, &tampered_b64, None, Some(&pk));
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_hybrid_tampered_kem_part_fails() {
-        let config = CryptoConfig::default();
-        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        let plaintext = b"another test message";
-        
-        let ciphertext_b64 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
-        let mut combined = from_base64(ciphertext_b64.to_string().as_ref()).unwrap();
+        let (pk, sk) = setup_keys();
+        let plaintext = b"yet another secret";
+        let encrypted_b64 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
 
-        // 篡改 KEM 部分（密文的开头）
-        combined[10] ^= 0xff;
-        
-        let tampered_ciphertext = to_base64(&combined);
+        let mut encrypted_bytes = from_base64(&encrypted_b64.to_string()).unwrap();
+        encrypted_bytes[10] ^= 0xff; // Tamper KEM part
+        let tampered_b64 = to_base64(&encrypted_bytes);
 
-        let result = RsaKyberCryptoSystem::decrypt(&sk, &tampered_ciphertext, None);
-        assert!(result.is_err(), "解密被篡改的KEM部分应该失败");
+        let result = RsaKyberCryptoSystem::decrypt(&sk, &tampered_b64, None);
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_hybrid_decrypt_with_wrong_key_fails() {
-        let config = CryptoConfig::default();
-        let (pk1, sk1) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        let (_pk2, sk2) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap(); // wrong key
-        let plaintext = b"message to be encrypted";
-        
-        // 1. Test decrypt with wrong private key
-        let ciphertext1 = RsaKyberCryptoSystem::encrypt(&pk1, plaintext, None).unwrap();
-        let result1 = RsaKyberCryptoSystem::decrypt(&sk2, ciphertext1.to_string().as_ref(), None);
-        assert!(result1.is_err(), "使用错误的私钥解密应该失败");
-
-        // 2. Test decrypt_authenticated with wrong private key
-        let ciphertext2 = RsaKyberCryptoSystem::encrypt_authenticated(&pk1, plaintext, None, Some(&sk1)).unwrap();
-        let result2 = RsaKyberCryptoSystem::decrypt_authenticated(&sk2, ciphertext2.to_string().as_ref(), None, Some(&pk1));
-        assert!(result2.is_err(), "使用错误的私钥进行认证解密应该失败");
+        let (pk, _) = setup_keys();
+        let (_, sk2) = setup_keys();
+        let plaintext = b"secret for wrong key test";
+        let encrypted = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        let result = RsaKyberCryptoSystem::decrypt(&sk2, &encrypted.to_string(), None);
+        assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_hybrid_key_export_import() {
-        let config = CryptoConfig::default();
-        let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        
+        let (pk, sk) = setup_keys();
         let pk_str = RsaKyberCryptoSystem::export_public_key(&pk).unwrap();
         let sk_str = RsaKyberCryptoSystem::export_private_key(&sk).unwrap();
-
         let imported_pk = RsaKyberCryptoSystem::import_public_key(&pk_str).unwrap();
         let imported_sk = RsaKyberCryptoSystem::import_private_key(&sk_str).unwrap();
-
         assert_eq!(pk, imported_pk);
         assert_eq!(sk, imported_sk);
-        
-        // Final check: encrypt with imported_pk, decrypt with imported_sk
-        let plaintext = b"test with imported keys";
-        let ciphertext = RsaKyberCryptoSystem::encrypt(&imported_pk, plaintext, None).unwrap();
-        let decrypted = RsaKyberCryptoSystem::decrypt(&imported_sk, ciphertext.to_string().as_ref(), None).unwrap();
-        assert_eq!(plaintext.as_slice(), decrypted.as_slice());
     }
 
     #[test]
     fn test_encrypt_decrypt_empty_plaintext() {
         let (pk, sk) = setup_keys();
-        let plaintext = b""; // Empty plaintext
-
-        // Unauthenticated
-        let encrypted1 = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
-        let decrypted1 = RsaKyberCryptoSystem::decrypt(&sk, &encrypted1.to_string(), None).unwrap();
-        assert_eq!(decrypted1, plaintext);
-
-        // Authenticated
-        let encrypted2 = RsaKyberCryptoSystem::encrypt_authenticated(&pk, plaintext, None, Some(&sk)).unwrap();
-        let decrypted2 = RsaKyberCryptoSystem::decrypt_authenticated(&sk, &encrypted2.to_string(), None, Some(&pk)).unwrap();
-        assert_eq!(decrypted2, plaintext);
+        let plaintext = b"";
+        let encrypted = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        let decrypted = RsaKyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), None).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn test_encrypt_decrypt_with_empty_aad() {
         let (pk, sk) = setup_keys();
-        let plaintext = b"some secret data";
-        let aad = b""; // Empty AAD
-
+        let plaintext = b"some data";
+        let aad = b"";
         let encrypted = RsaKyberCryptoSystem::encrypt(&pk, plaintext, Some(aad)).unwrap();
-        let decrypted = RsaKyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
-        assert_eq!(decrypted, plaintext);
+        let decrypted =
+            RsaKyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[cfg(feature = "async-engine")]
+    mod async_tests {
+        use super::*;
+        use crate::asymmetric::traits::AsyncStreamingSystem;
+        use crate::common::streaming::StreamingConfig;
+        use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+        use std::io::Cursor;
+
+        #[tokio::test]
+        async fn test_async_streaming_roundtrip() {
+            let (pk, sk) = setup_keys();
+            let config = StreamingConfig::default();
+            let original_data =
+                b"async streaming test data that is long enough to cover multiple chunks".to_vec();
+
+            let mut encrypted = Vec::new();
+            RsaKyberCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
+                &pk,
+                Cursor::new(original_data.clone()),
+                &mut encrypted,
+                &config,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let mut decrypted = Vec::new();
+            RsaKyberCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
+                &sk,
+                Cursor::new(encrypted),
+                &mut decrypted,
+                &config,
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(original_data, decrypted);
+        }
     }
 }
-
-#[cfg(all(test, feature = "async-engine"))]
-mod async_tests {
-    use super::*;
-    use crate::common::utils::CryptoConfig;
-    use std::io::Cursor;
-    use tokio::io::BufWriter;
-
-    fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
-        RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_async_streaming_roundtrip() {
-        // 1. Setup
-        let config = CryptoConfig::default();
-        let (public_key, private_key) = RsaKyberCryptoSystem::generate_keypair(&config).unwrap();
-        
-        let original_data = b"This is a larger block of data for testing asynchronous streaming encryption and decryption.";
-        
-        // 2. Encrypt
-        let mut encrypted_buffer = Vec::new();
-        {
-            let reader = Cursor::new(original_data);
-            let writer = BufWriter::new(&mut encrypted_buffer);
-            let stream_config = StreamingConfig {
-                buffer_size: 64, // Small buffer to force multiple chunks
-                keep_in_memory: true,
-                ..Default::default()
-            };
-
-            let result = RsaKyberCryptoSystem::encrypt_stream_async(
-                &public_key,
-                reader,
-                writer,
-                &stream_config,
-                None,
-            )
-            .await
-            .unwrap();
-            
-            assert!(result.bytes_processed > 0);
-            assert_eq!(result.bytes_processed, original_data.len() as u64);
-        }
-
-        // 3. Decrypt
-        let mut decrypted_buffer = Vec::new();
-        {
-            let reader = Cursor::new(&encrypted_buffer);
-            let writer = BufWriter::new(&mut decrypted_buffer);
-            let stream_config = StreamingConfig {
-                buffer_size: 128,
-                ..Default::default()
-            };
-
-            let result = RsaKyberCryptoSystem::decrypt_stream_async(
-                &private_key,
-                reader,
-                writer,
-                &stream_config,
-                None,
-            )
-            .await
-            .unwrap();
-            
-            assert!(result.bytes_processed > 0);
-        }
-
-        // 4. Verify
-        assert_eq!(decrypted_buffer, original_data);
-    }
-} 

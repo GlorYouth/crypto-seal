@@ -1,5 +1,5 @@
 use arc_swap::ArcSwap;
-use secrecy::{ExposeSecret, SecretBox, SecretString, SerializableSecret, CloneableSecret};
+use secrecy::{CloneableSecret, ExposeSecret, SecretBox, SecretString, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -7,22 +7,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs as tokio_fs;
 
-use crate::common::errors::Error;
-use crate::common::traits::{KeyMetadata, SecureKeyStorage};
-use crate::storage::EncryptedKeyContainer;
-use crate::symmetric::engines::SymmetricQSealEngine;
-use crate::symmetric::engines::SymmetricQSealAsyncEngine;
-use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem, SymmetricAsyncStreamingSystem};
+use crate::asymmetric::engines::AsymmetricQSealAsyncEngine;
 use crate::asymmetric::engines::AsymmetricQSealEngine;
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
+use crate::common::ConfigFile;
+use crate::common::errors::Error;
+use crate::common::traits::{KeyMetadata, SecureKeyStorage};
+use crate::storage::EncryptedKeyContainer;
+use crate::symmetric::engines::SymmetricQSealAsyncEngine;
+use crate::symmetric::engines::SymmetricQSealEngine;
+use crate::symmetric::rotation::SymmetricKeyRotationManager;
+use crate::symmetric::traits::{
+    SymmetricAsyncStreamingSystem, SymmetricCryptographicSystem, SymmetricSyncStreamingSystem,
+};
 use hkdf::Hkdf;
 use rand_core::{OsRng, TryRngCore};
 use sha2::Sha256;
 use zeroize::Zeroize;
-use crate::symmetric::rotation::SymmetricKeyRotationManager;
-use crate::asymmetric::engines::AsymmetricQSealAsyncEngine;
-use crate::common::ConfigFile;
 
 const MASTER_SEED_SIZE: usize = 32; // 256-bit master seed
 const SEAL_ALGORITHM_ID: &str = "seal-kit-v1-vault";
@@ -77,7 +79,9 @@ impl Seal {
 
         // 1. 生成一个新的、高熵的根种子。
         let mut seed_bytes = vec![0u8; MASTER_SEED_SIZE];
-        OsRng.try_fill_bytes(&mut seed_bytes).map_err(|e| Error::Key(e.to_string()))?;
+        OsRng
+            .try_fill_bytes(&mut seed_bytes)
+            .map_err(|e| Error::Key(e.to_string()))?;
         let master_seed = SecretBox::new(Box::from(MasterSeed(seed_bytes)));
 
         // 2. 创建一个默认的 VaultPayload。
@@ -103,8 +107,9 @@ impl Seal {
 
         // 1. 从文件读取并解密核心载荷。
         let payload_json = Self::read_and_decrypt_payload(path, password)?;
-        let payload: VaultPayload = serde_json::from_str(&payload_json)
-            .map_err(|e| Error::Serialization(format!("Failed to deserialize vault payload: {}", e)))?;
+        let payload: VaultPayload = serde_json::from_str(&payload_json).map_err(|e| {
+            Error::Serialization(format!("Failed to deserialize vault payload: {}", e))
+        })?;
 
         // 2. 返回一个新的 Seal 实例，包裹在 Arc 中。
         Ok(Arc::new(Self {
@@ -112,55 +117,61 @@ impl Seal {
             payload: Arc::new(ArcSwap::new(Arc::new(payload))),
         }))
     }
-    
+
     /// 将给定的载荷加密并原子地写入文件。
-    fn write_payload(path: &Path, payload: &VaultPayload, password: &SecretString) -> Result<(), Error> {
+    fn write_payload(
+        path: &Path,
+        payload: &VaultPayload,
+        password: &SecretString,
+    ) -> Result<(), Error> {
         let payload_json = serde_json::to_string(payload)?;
-        
+
         let container = EncryptedKeyContainer::encrypt_key(
             password,
             payload_json.as_bytes(),
             SEAL_ALGORITHM_ID,
         )?;
-        
+
         let container_json = container.to_json()?;
-        
+
         // 原子写入：先写入临时文件，成功后再重命名。
         let temp_path = path.with_extension("tmp");
-        fs::write(&temp_path, container_json)
-            .map_err(|e| Error::Io(e))?;
-        fs::rename(&temp_path, path)
-            .map_err(|e| Error::Io(e))?;
-            
+        fs::write(&temp_path, container_json).map_err(|e| Error::Io(e))?;
+        fs::rename(&temp_path, path).map_err(|e| Error::Io(e))?;
+
         Ok(())
     }
-    
+
     /// (Async) 将给定的载荷加密并原子地写入文件。
-    async fn write_payload_async(path: &Path, payload: &VaultPayload, password: &SecretString) -> Result<(), Error> {
+    async fn write_payload_async(
+        path: &Path,
+        payload: &VaultPayload,
+        password: &SecretString,
+    ) -> Result<(), Error> {
         let payload_json = serde_json::to_string(payload)?;
-        
+
         let container = EncryptedKeyContainer::encrypt_key(
             password,
             payload_json.as_bytes(),
             SEAL_ALGORITHM_ID,
         )?;
-        
+
         let container_json = container.to_json()?;
-        
+
         // 原子写入：先写入临时文件，成功后再重命名。
         let temp_path = path.with_extension("tmp");
         tokio_fs::write(&temp_path, container_json).await?;
         tokio_fs::rename(&temp_path, path).await?;
-            
+
         Ok(())
     }
-    
+
     /// 从文件读取保险库，解密并返回其JSON字符串形式的内容。
     fn read_and_decrypt_payload(path: &Path, password: &SecretString) -> Result<String, Error> {
         let container_json = fs::read_to_string(path)
             .map_err(|e| Error::KeyStorage(format!("Failed to read seal file: {}", e)))?;
         let container = EncryptedKeyContainer::from_json(&container_json)?;
-        
+
         let decrypted_bytes = container.decrypt_key(password)?;
         String::from_utf8(decrypted_bytes)
             .map_err(|e| Error::Format(format!("Vault payload is not valid UTF-8: {}", e)))
@@ -214,9 +225,11 @@ impl Seal {
         // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
         if key_manager.needs_rotation() {
             let algorithm_name = std::any::type_name::<T>().to_string();
-            key_manager.start_rotation_async(&password, &algorithm_name).await?;
+            key_manager
+                .start_rotation_async(&password, &algorithm_name)
+                .await?;
         }
-        
+
         // 3. 创建并返回引擎实例。
         Ok(SymmetricQSealAsyncEngine::new(key_manager, password))
     }
@@ -240,7 +253,7 @@ impl Seal {
         if key_manager.needs_rotation() {
             key_manager.start_rotation::<T>(&password)?;
         }
-        
+
         // 3. 创建并返回引擎实例。
         Ok(AsymmetricQSealEngine::new(key_manager, password))
     }
@@ -272,7 +285,12 @@ impl Seal {
     }
 
     /// 使用HKDF从主密钥派生出一个新的密钥。
-    pub(crate) fn derive_key(&self, master_seed: &SecretBox<MasterSeed>, context: &[u8], output_len: usize) -> Result<Vec<u8>, Error> {
+    pub(crate) fn derive_key(
+        &self,
+        master_seed: &SecretBox<MasterSeed>,
+        context: &[u8],
+        output_len: usize,
+    ) -> Result<Vec<u8>, Error> {
         let hk = Hkdf::<Sha256>::new(None, &master_seed.expose_secret().0);
         let mut okm = vec![0u8; output_len];
         hk.expand(context, &mut okm)
@@ -286,17 +304,14 @@ impl Seal {
     }
 
     /// (crate-internal) 获取对内部载荷的只读访问。
-    pub(crate) fn payload(&self) -> std::sync::Arc<VaultPayload> {
+    pub(crate) fn payload(&self) -> Arc<VaultPayload> {
         self.payload.load_full()
     }
 
     /// 使用新的密码重新加密保险库。
     ///
     /// 这个操作是原子的。它会读取当前的载荷，用新密码重新加密，并替换旧文件。
-    pub fn change_password(
-        &self,
-        new_password: &SecretString,
-    ) -> Result<(), Error> {
+    pub fn change_password(&self, new_password: &SecretString) -> Result<(), Error> {
         // "读取-克隆-保存" 模式
         // 在此场景下，我们无需修改载荷，只需用新密码重新加密即可。
         let current_payload = self.payload.load();
@@ -313,13 +328,17 @@ impl Seal {
     /// # Arguments
     /// * `password` - 用于加密新载荷的主密码。
     /// * `update_fn` - 一个接收 `&mut VaultPayload` 的闭包，用于执行修改。
-    pub(crate) fn commit_payload<F>(&self, password: &SecretString, update_fn: F) -> Result<(), Error>
+    pub(crate) fn commit_payload<F>(
+        &self,
+        password: &SecretString,
+        update_fn: F,
+    ) -> Result<(), Error>
     where
         F: FnOnce(&mut VaultPayload),
     {
         // 1. 加载当前载荷的 Arc 指针。
         let old_payload_arc = self.payload.load();
-        
+
         // 2. 克隆载荷以进行修改。
         //    我们克隆 Arc 内部的数据，而不是 Arc 本身。
         let mut new_payload = (**old_payload_arc).clone();
@@ -337,13 +356,17 @@ impl Seal {
     }
 
     /// (Async) 以原子方式提交对保险库载荷的修改。
-    pub(crate) async fn commit_payload_async<F>(&self, password: &SecretString, update_fn: F) -> Result<(), Error>
+    pub(crate) async fn commit_payload_async<F>(
+        &self,
+        password: &SecretString,
+        update_fn: F,
+    ) -> Result<(), Error>
     where
         F: FnOnce(&mut VaultPayload),
     {
         // 1. 加载当前载荷的 Arc 指针。
         let old_payload_arc = self.payload.load();
-        
+
         // 2. 克隆载荷以进行修改。
         let mut new_payload = (**old_payload_arc).clone();
 
@@ -358,4 +381,4 @@ impl Seal {
 
         Ok(())
     }
-} 
+}

@@ -1,31 +1,23 @@
-use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
-use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
-use serde::{Deserialize, Serialize};
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
-#[cfg(feature = "async-engine")]
-use crate::asymmetric::traits::AsyncStreamingSystem;
 use crate::common::errors::Error;
 use aes_gcm::aead::{AeadCore, KeyInit};
 #[cfg(not(feature = "chacha"))]
 use aes_gcm::{
-    aead::{Aead, OsRng}, Aes256Gcm, Nonce
+    Aes256Gcm, Nonce,
+    aead::{Aead, OsRng},
 };
 #[cfg(feature = "chacha")]
 use chacha20poly1305::{
-    aead::{generic_array::GenericArray, Aead as ChaAead},
-    ChaCha20Poly1305,
-    Nonce as ChaNonce
+    ChaCha20Poly1305, Nonce as ChaNonce,
+    aead::{Aead as ChaAead, generic_array::GenericArray},
 };
+use pqcrypto_kyber::{kyber512, kyber768, kyber1024};
+use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 #[cfg(feature = "chacha")]
 use rsa::rand_core::OsRng;
+use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "async-engine")]
-use crate::common::streaming::StreamingConfig;
-#[cfg(feature = "async-engine")]
-use crate::common::streaming::StreamingResult;
-#[cfg(feature = "async-engine")]
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use crate::common::utils::{from_base64, to_base64, Base64String, CryptoConfig, ZeroizingVec};
+use crate::common::utils::{Base64String, CryptoConfig, ZeroizingVec, from_base64, to_base64};
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +28,7 @@ pub struct KyberPublicKeyWrapper(pub Vec<u8>);
 pub struct KyberPrivateKeyWrapper(pub ZeroizingVec);
 
 /// Kyber后量子加密系统实现
-/// 
+///
 /// 使用Kyber进行密钥封装，然后用AES-GCM进行数据加密
 pub struct KyberCryptoSystem;
 
@@ -58,8 +50,10 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
     type PrivateKey = KyberPrivateKeyWrapper;
     type CiphertextOutput = Base64String;
     type Error = Error;
-    
-    fn generate_keypair(config: &CryptoConfig) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
+
+    fn generate_keypair(
+        config: &CryptoConfig,
+    ) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error> {
         let (public_key_vec, private_key_vec) = match config.kyber_parameter_k {
             512 => {
                 let (pk, sk) = kyber512::keypair();
@@ -76,14 +70,12 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             k => return Err(Error::PostQuantum(format!("不支持的Kyber安全级别: {}", k))),
         };
 
-        Ok(
-            (
-                KyberPublicKeyWrapper(public_key_vec),
-                KyberPrivateKeyWrapper(ZeroizingVec(private_key_vec)),
-            )
-        )
+        Ok((
+            KyberPublicKeyWrapper(public_key_vec),
+            KyberPrivateKeyWrapper(ZeroizingVec(private_key_vec)),
+        ))
     }
-    
+
     fn encrypt(
         public_key: &Self::PublicKey,
         plaintext: &[u8],
@@ -130,18 +122,19 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         };
 
         // 加密数据
-        let aes_ciphertext = cipher.encrypt(&nonce, payload)
+        let aes_ciphertext = cipher
+            .encrypt(&nonce, payload)
             .map_err(|e| Error::PostQuantum(format!("AEAD加密失败: {}", e)))?;
-        
+
         // 组合数据：变体ID(1字节) + kyber密文 + nonce + AEAD密文
         let mut combined = vec![variant_id];
         combined.extend_from_slice(&kyber_ciphertext_bytes);
         combined.extend_from_slice(&nonce);
         combined.extend_from_slice(&aes_ciphertext);
-        
+
         Ok(Base64String::from(combined))
     }
-    
+
     fn decrypt(
         private_key: &Self::PrivateKey,
         ciphertext: &str,
@@ -149,7 +142,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
     ) -> Result<Vec<u8>, Self::Error> {
         // 解码Base64
         let combined = from_base64(ciphertext)?;
-        
+
         if combined.is_empty() {
             return Err(Error::Format("密文为空".to_string()));
         }
@@ -159,7 +152,8 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         let rest = &combined[1..];
 
         let (kyber_ct_len, shared_secret_bytes) = match variant_id {
-            1 => { // Kyber512
+            1 => {
+                // Kyber512
                 if private_key.0.len() != KYBER512_SECRETKEYBYTES {
                     return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
                 }
@@ -174,7 +168,8 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 let ss = kyber512::decapsulate(&ct, &sk);
                 (KYBER512_CIPHERTEXTBYTES, ss.as_bytes().to_vec())
             }
-            2 => { // Kyber768
+            2 => {
+                // Kyber768
                 if private_key.0.len() != KYBER768_SECRETKEYBYTES {
                     return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
                 }
@@ -189,7 +184,8 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 let ss = kyber768::decapsulate(&ct, &sk);
                 (KYBER768_CIPHERTEXTBYTES, ss.as_bytes().to_vec())
             }
-            3 => { // Kyber1024
+            3 => {
+                // Kyber1024
                 if private_key.0.len() != KYBER1024_SECRETKEYBYTES {
                     return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
                 }
@@ -203,7 +199,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                     .map_err(|_| Error::PostQuantum("无效的Kyber1024密文格式".to_string()))?;
                 let ss = kyber1024::decapsulate(&ct, &sk);
                 (KYBER1024_CIPHERTEXTBYTES, ss.as_bytes().to_vec())
-            },
+            }
             _ => return Err(Error::PostQuantum("未知的Kyber变体ID".to_string())),
         };
 
@@ -231,136 +227,49 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             aad: additional_data.unwrap_or_default(),
         };
 
-        cipher.decrypt(&nonce, payload)
+        cipher
+            .decrypt(&nonce, payload)
             .map_err(|e| Error::PostQuantum(format!("AEAD解密失败: {}", e)))
     }
-    
+
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error> {
         Ok(to_base64(&public_key.0))
     }
-    
+
     fn export_private_key(private_key: &Self::PrivateKey) -> Result<String, Self::Error> {
         Ok(to_base64(private_key.0.as_ref()))
     }
-    
+
     fn import_public_key(key_data: &str) -> Result<Self::PublicKey, Self::Error> {
         let decoded = from_base64(key_data)?;
-        
+
         match decoded.len() {
-            KYBER512_PUBLICKEYBYTES | KYBER768_PUBLICKEYBYTES | KYBER1024_PUBLICKEYBYTES => {},
-            len => return Err(Error::Key(format!(
-                "无效的Kyber公钥大小: {}字节, 预期值为 {}, {} 或 {}",
-                len, KYBER512_PUBLICKEYBYTES, KYBER768_PUBLICKEYBYTES, KYBER1024_PUBLICKEYBYTES
-            ))),
+            KYBER512_PUBLICKEYBYTES | KYBER768_PUBLICKEYBYTES | KYBER1024_PUBLICKEYBYTES => {}
+            len => {
+                return Err(Error::Key(format!(
+                    "无效的Kyber公钥大小: {}字节, 预期值为 {}, {} 或 {}",
+                    len, KYBER512_PUBLICKEYBYTES, KYBER768_PUBLICKEYBYTES, KYBER1024_PUBLICKEYBYTES
+                )));
+            }
         }
-        
+
         Ok(KyberPublicKeyWrapper(decoded))
     }
-    
+
     fn import_private_key(key_data: &str) -> Result<Self::PrivateKey, Self::Error> {
         let decoded = from_base64(key_data)?;
-        
+
         match decoded.len() {
-            KYBER512_SECRETKEYBYTES | KYBER768_SECRETKEYBYTES | KYBER1024_SECRETKEYBYTES => {},
-            len => return Err(Error::Key(format!(
-                "无效的Kyber私钥大小: {}字节, 预期值为 {}, {} 或 {}",
-                len, KYBER512_SECRETKEYBYTES, KYBER768_SECRETKEYBYTES, KYBER1024_SECRETKEYBYTES
-            ))),
+            KYBER512_SECRETKEYBYTES | KYBER768_SECRETKEYBYTES | KYBER1024_SECRETKEYBYTES => {}
+            len => {
+                return Err(Error::Key(format!(
+                    "无效的Kyber私钥大小: {}字节, 预期值为 {}, {} 或 {}",
+                    len, KYBER512_SECRETKEYBYTES, KYBER768_SECRETKEYBYTES, KYBER1024_SECRETKEYBYTES
+                )));
+            }
         }
-        
+
         Ok(KyberPrivateKeyWrapper(ZeroizingVec(decoded)))
-    }
-}
-
-#[cfg(feature = "async-engine")]
-#[async_trait::async_trait]
-impl AsyncStreamingSystem for KyberCryptoSystem {
-    async fn encrypt_stream_async<R, W>(
-        public_key: &Self::PublicKey,
-        mut reader: R,
-        mut writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
-    {
-        let mut buffer = vec![0u8; config.buffer_size];
-        let mut bytes_processed = 0;
-        let mut output_buffer = if config.keep_in_memory { Some(Vec::new()) } else { None };
-
-        loop {
-            let read_bytes = reader.read(&mut buffer).await.map_err(Error::Io)?;
-            if read_bytes == 0 {
-                break;
-            }
-
-            let plaintext = &buffer[..read_bytes];
-            let ciphertext_output = Self::encrypt(public_key, plaintext, additional_data)?;
-
-            let ciphertext_str = ciphertext_output.to_string();
-            let ciphertext_bytes = ciphertext_str.as_bytes();
-            let length = ciphertext_bytes.len() as u32;
-
-            writer.write_all(&length.to_le_bytes()).await.map_err(Error::Io)?;
-            writer.write_all(ciphertext_bytes).await.map_err(Error::Io)?;
-
-            if let Some(buf) = output_buffer.as_mut() {
-                buf.extend_from_slice(ciphertext_bytes);
-            }
-
-            bytes_processed += read_bytes as u64;
-        }
-
-        writer.flush().await.map_err(Error::Io)?;
-
-        Ok(StreamingResult {
-            bytes_processed,
-            buffer: output_buffer,
-        })
-    }
-
-    async fn decrypt_stream_async<R, W>(
-        private_key: &Self::PrivateKey,
-        mut reader: R,
-        mut writer: W,
-        _config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
-    {
-        let mut length_buffer = [0u8; 4];
-        let mut bytes_processed = 0;
-        let mut output_buffer = if _config.keep_in_memory { Some(Vec::new()) } else { None };
-
-        while reader.read_exact(&mut length_buffer).await.is_ok() {
-            let length = u32::from_le_bytes(length_buffer) as usize;
-            let mut ciphertext_buffer = vec![0u8; length];
-            reader.read_exact(&mut ciphertext_buffer).await.map_err(Error::Io)?;
-
-            let ciphertext_str = String::from_utf8(ciphertext_buffer)
-                .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext chunk: {}", e)))?;
-            
-            let plaintext = Self::decrypt(private_key, &ciphertext_str, additional_data)?;
-            
-            writer.write_all(&plaintext).await.map_err(Error::Io)?;
-            
-            if let Some(buf) = output_buffer.as_mut() {
-                buf.extend_from_slice(&plaintext);
-            }
-
-            bytes_processed += length as u64;
-        }
-
-        writer.flush().await.map_err(Error::Io)?;
-
-        Ok(StreamingResult {
-            bytes_processed,
-            buffer: output_buffer,
-        })
     }
 }
 
@@ -370,7 +279,10 @@ mod tests {
     use crate::common::utils::CryptoConfig;
 
     fn setup_keys(k: usize) -> (KyberPublicKeyWrapper, KyberPrivateKeyWrapper) {
-        let config = CryptoConfig { kyber_parameter_k: k, ..Default::default() };
+        let config = CryptoConfig {
+            kyber_parameter_k: k,
+            ..Default::default()
+        };
         KyberCryptoSystem::generate_keypair(&config).unwrap()
     }
 
@@ -381,12 +293,13 @@ mod tests {
             let plaintext = format!("secret data for kyber-{}", k).into_bytes();
 
             let ciphertext = KyberCryptoSystem::encrypt(&public_key, &plaintext, None).unwrap();
-            let decrypted = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), None).unwrap();
+            let decrypted =
+                KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), None).unwrap();
 
             assert_eq!(plaintext, decrypted);
         }
     }
-    
+
     #[test]
     fn test_kyber_with_aad_roundtrip() {
         let (public_key, private_key) = setup_keys(768);
@@ -394,20 +307,23 @@ mod tests {
         let aad = b"additional authenticated data";
 
         let ciphertext = KyberCryptoSystem::encrypt(&public_key, plaintext, Some(aad)).unwrap();
-        let decrypted = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), Some(aad)).unwrap();
+        let decrypted =
+            KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), Some(aad)).unwrap();
 
         assert_eq!(plaintext, decrypted.as_slice());
     }
-    
+
     #[test]
     fn test_kyber_wrong_aad_fails() {
         let (public_key, private_key) = setup_keys(768);
         let plaintext = b"secret data for aad test";
         let correct_aad = b"this is the correct aad";
         let wrong_aad = b"this is the wrong aad";
-        
-        let ciphertext = KyberCryptoSystem::encrypt(&public_key, plaintext, Some(correct_aad)).unwrap();
-        let result = KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), Some(wrong_aad));
+
+        let ciphertext =
+            KyberCryptoSystem::encrypt(&public_key, plaintext, Some(correct_aad)).unwrap();
+        let result =
+            KyberCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), Some(wrong_aad));
 
         assert!(result.is_err());
     }
@@ -416,13 +332,14 @@ mod tests {
     fn test_kyber_tampered_ciphertext_fails() {
         let (public_key, private_key) = setup_keys(1024);
         let plaintext = b"some data that should not be tampered with";
-        
+
         // Test tampering with KEM part
         let ciphertext_b64 = KyberCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
         let mut combined_bytes = from_base64(&ciphertext_b64.to_string()).unwrap();
         combined_bytes[10] ^= 0xff; // Tamper somewhere in the Kyber ciphertext
         let tampered_b64 = Base64String::from(combined_bytes);
-        let result_kem_tamper = KyberCryptoSystem::decrypt(&private_key, &tampered_b64.to_string(), None);
+        let result_kem_tamper =
+            KyberCryptoSystem::decrypt(&private_key, &tampered_b64.to_string(), None);
         assert!(result_kem_tamper.is_err());
 
         // Test tampering with DEM part
@@ -431,10 +348,11 @@ mod tests {
         let dem_part_index = combined_bytes_2.len() - 10;
         combined_bytes_2[dem_part_index] ^= 0xff; // Tamper somewhere in the AEAD ciphertext
         let tampered_b64_2 = Base64String::from(combined_bytes_2);
-        let result_dem_tamper = KyberCryptoSystem::decrypt(&private_key, &tampered_b64_2.to_string(), None);
+        let result_dem_tamper =
+            KyberCryptoSystem::decrypt(&private_key, &tampered_b64_2.to_string(), None);
         assert!(result_dem_tamper.is_err());
     }
-    
+
     #[test]
     fn test_kyber_decrypt_wrong_key_fails() {
         let (public_key_512, _) = setup_keys(512);
@@ -451,7 +369,7 @@ mod tests {
             "密钥错误: 私钥与密文的Kyber级别不匹配"
         );
     }
-    
+
     #[test]
     fn test_kyber_key_export_import() {
         let (public_key, private_key) = setup_keys(1024);
@@ -470,7 +388,7 @@ mod tests {
         // 无效的Base64
         assert!(KyberCryptoSystem::import_public_key("!@#$").is_err());
         assert!(KyberCryptoSystem::import_private_key("!@#$").is_err());
-        
+
         // 长度不匹配
         let short_key = to_base64(&[0u8; 100]);
         assert!(KyberCryptoSystem::import_public_key(&short_key).is_err());
@@ -482,22 +400,22 @@ mod tests {
         let (pk, sk) = setup_keys(768);
         let plaintext = b"";
         let aad = b"some aad";
-        
+
         let encrypted = KyberCryptoSystem::encrypt(&pk, plaintext, Some(aad)).unwrap();
         let decrypted = KyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
-        
+
         assert_eq!(plaintext, decrypted.as_slice());
     }
-    
+
     #[test]
     fn test_empty_aad_roundtrip() {
         let (pk, sk) = setup_keys(768);
         let plaintext = b"some data";
         let aad = b"";
-        
+
         let encrypted = KyberCryptoSystem::encrypt(&pk, plaintext, Some(aad)).unwrap();
         let decrypted = KyberCryptoSystem::decrypt(&sk, &encrypted.to_string(), Some(aad)).unwrap();
-        
+
         assert_eq!(plaintext, decrypted.as_slice());
     }
 
@@ -506,10 +424,10 @@ mod tests {
         let (pk1, _) = setup_keys(768);
         let (_, sk2) = setup_keys(768); // 不同的密钥对
         let plaintext = b"data for key 1";
-        
+
         let encrypted = KyberCryptoSystem::encrypt(&pk1, plaintext, None).unwrap();
         let result = KyberCryptoSystem::decrypt(&sk2, &encrypted.to_string(), None);
-        
+
         assert!(result.is_err());
     }
 
@@ -517,74 +435,56 @@ mod tests {
     fn test_ciphertext_uniqueness() {
         let (pk, _) = setup_keys(768);
         let plaintext = b"the same data";
-        
+
         let ciphertext1 = KyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
         let ciphertext2 = KyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
-        
-        assert_ne!(ciphertext1.to_string(), ciphertext2.to_string());
+
+        assert_ne!(
+            ciphertext1.to_string(),
+            ciphertext2.to_string(),
+            "多次加密应产生不同的密文"
+        );
+    }
+
+    #[cfg(feature = "async-engine")]
+    mod async_tests {
+        use super::*;
+        use crate::asymmetric::traits::AsyncStreamingSystem;
+        use crate::common::streaming::StreamingConfig;
+        use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+        use std::io::Cursor;
+
+        #[tokio::test]
+        async fn test_async_streaming_roundtrip() {
+            let (pk, sk) = setup_keys(512);
+            let config = StreamingConfig::default();
+            let original_data = b"This is a test for Kyber async streaming.".to_vec();
+
+            // Encrypt
+            let mut encrypted_dest = Vec::new();
+            KyberCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
+                &pk,
+                Cursor::new(original_data.clone()),
+                &mut encrypted_dest,
+                &config,
+                None,
+            )
+            .await
+            .unwrap();
+
+            // Decrypt
+            let mut decrypted_dest = Vec::new();
+            KyberCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
+                &sk,
+                Cursor::new(encrypted_dest),
+                &mut decrypted_dest,
+                &config,
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(original_data, decrypted_dest);
+        }
     }
 }
-
-#[cfg(all(test, feature = "async-engine"))]
-mod async_tests {
-    use super::*;
-    use crate::common::utils::CryptoConfig;
-    use std::io::Cursor;
-    use tokio::io::BufWriter;
-    use crate::common::streaming::StreamingConfig;
-
-    #[tokio::test]
-    async fn test_async_streaming_roundtrip() {
-        let config = CryptoConfig::default(); // Kyber768
-        let (public_key, private_key) = KyberCryptoSystem::generate_keypair(&config).unwrap();
-        
-        let original_data = b"This is some data for kyber async streaming.";
-        
-        // Encrypt
-        let mut encrypted_buffer = Vec::new();
-        {
-            let reader = Cursor::new(original_data);
-            let writer = BufWriter::new(&mut encrypted_buffer);
-            let stream_config = StreamingConfig {
-                buffer_size: 20, // Use a small buffer to ensure multiple chunks
-                keep_in_memory: true,
-                ..Default::default()
-            };
-
-            let result = KyberCryptoSystem::encrypt_stream_async(
-                &public_key,
-                reader,
-                writer,
-                &stream_config,
-                None,
-            )
-            .await
-            .unwrap();
-            
-            assert_eq!(result.bytes_processed, original_data.len() as u64);
-        }
-
-        // Decrypt
-        let mut decrypted_buffer = Vec::new();
-        {
-            let reader = Cursor::new(&encrypted_buffer);
-            let writer = BufWriter::new(&mut decrypted_buffer);
-            let stream_config = StreamingConfig {
-                buffer_size: 64,
-                ..Default::default()
-            };
-
-            KyberCryptoSystem::decrypt_stream_async(
-                &private_key,
-                reader,
-                writer,
-                &stream_config,
-                None,
-            )
-            .await
-            .unwrap();
-        }
-
-        assert_eq!(decrypted_buffer, original_data);
-    }
-} 
