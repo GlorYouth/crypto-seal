@@ -24,7 +24,7 @@ chacha = ["chacha20poly1305"]
 
 # 其他功能
 secure-storage = ["argon2", "secrecy", "aes-gcm-feature", "rand_core"]
-async-engine = ["async"]
+async-engine = ["tokio", "tokio-util", "async-trait"]
 parallel = ["rayon"]
 async = ["notify", "tokio", "async-trait"]
 
@@ -35,7 +35,6 @@ serde_json = "1.0"
 serde_bytes = "0.11"
 base64 = "0.22.1"
 arc-swap = "1"
-
 
 # 非对称加密
 rsa = { version = "0.9.8", optional = true }
@@ -65,6 +64,10 @@ uuid = { version = "1.17.0", features = ["v4"] }
 tempfile = "3.20.0"
 notify = { version = "8.0.0", features = ["serde"], optional = true }
 memchr = "2.7.2"
+
+# New dependencies
+num_cpus = "1.16.0"
+tokio-util = { version = "0.7.15", features = ["compat", "io-util"], optional = true }
 
 [dev-dependencies]
 criterion = "0.6"

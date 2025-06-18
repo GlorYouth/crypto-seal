@@ -147,6 +147,68 @@ where
             })?;
         T::decrypt_stream_async(&key, &mut reader, &mut writer, config, None).await
     }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 异步流式加密
+    pub async fn par_encrypt_stream_async<R, W>(
+        &mut self,
+        reader: R,
+        mut writer: W,
+        config: &StreamingConfig,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+        T: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem,
+    {
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+        writer.write_all(key_metadata.id.as_bytes()).await?;
+        writer.write_all(b":").await?;
+        let result =
+            T::par_encrypt_stream_async(&primary_key, reader, writer, config, None).await?;
+        self.key_manager
+            .increment_usage_count_async(&self.password)
+            .await?;
+        Ok(result)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 异步流式解密
+    pub async fn par_decrypt_stream_async<R, W>(
+        &self,
+        mut reader: R,
+        writer: W,
+        config: &StreamingConfig,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+        T: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem,
+    {
+        let mut key_id_buf = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            reader.read_exact(&mut byte).await?;
+            if byte[0] == b':' {
+                break;
+            }
+            key_id_buf.push(byte[0]);
+        }
+        let key_id = String::from_utf8(key_id_buf)
+            .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
+        let key = self
+            .key_manager
+            .derive_key_by_id::<T>(&key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+        T::par_decrypt_stream_async(&key, reader, writer, config, None).await
+    }
 }
 
 #[cfg(all(test, feature = "aes-gcm-feature"))]
@@ -239,5 +301,40 @@ mod tests {
             .unwrap();
 
         assert_eq!(decrypted_writer.into_inner(), plaintext.to_vec());
+    }
+
+    #[cfg(feature = "parallel")]
+    #[tokio::test]
+    async fn test_engine_parallel_streaming_roundtrip_async() {
+        let (seal, password, _dir) = setup().await;
+        let mut engine = seal
+            .symmetric_async_engine::<AesGcmSystem>(password)
+            .await
+            .unwrap();
+
+        let data = vec![4u8; 1024 * 7]; // 7KB data
+        let source = Cursor::new(data.clone());
+        let encrypted_dest = Cursor::new(Vec::new());
+
+        let config = StreamingConfig::default();
+
+        let writer = engine
+            .par_encrypt_stream_async(source, encrypted_dest, &config)
+            .await
+            .unwrap()
+            .1;
+
+        let encrypted_data = writer.into_inner();
+        let encrypted_source = Cursor::new(encrypted_data);
+        let decrypted_dest = Cursor::new(Vec::new());
+
+        let writer = engine
+            .par_decrypt_stream_async(encrypted_source, decrypted_dest, &config)
+            .await
+            .unwrap()
+            .1;
+
+        let decrypted = writer.into_inner();
+        assert_eq!(decrypted, data);
     }
 }

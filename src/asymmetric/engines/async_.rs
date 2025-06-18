@@ -194,4 +194,153 @@ where
         T::decrypt_stream_async::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
             .await
     }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 异步流式加密
+    pub async fn par_encrypt_stream_async<S, R, W>(
+        &mut self,
+        reader: R,
+        mut writer: W,
+        config: &StreamingConfig,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + Send + Sync + 'static,
+        T: crate::asymmetric::traits::AsymmetricAsyncParallelStreamingSystem,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        if self.key_manager.needs_rotation() {
+            self.key_manager
+                .start_rotation_async::<T>(&self.password)
+                .await?;
+        }
+
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+        let public_key = self
+            .key_manager
+            .get_public_key_by_id::<T>(&key_metadata.id)?
+            .ok_or_else(|| Error::Key("Could not find or derive public key.".to_string()))?;
+
+        writer.write_all(key_metadata.id.as_bytes()).await?;
+        writer.write_all(b":").await?;
+
+        let result =
+            T::par_encrypt_stream_async::<S, _, _>(&public_key, reader, writer, config, None)
+                .await?;
+
+        self.key_manager
+            .increment_usage_count_async(&self.password)
+            .await?;
+
+        Ok(result)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 异步流式解密
+    pub async fn par_decrypt_stream_async<S, R, W>(
+        &self,
+        mut reader: R,
+        writer: W,
+        config: &StreamingConfig,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + Send + Sync + 'static,
+        T: crate::asymmetric::traits::AsymmetricAsyncParallelStreamingSystem,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let mut key_id_buf = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            reader.read_exact(&mut byte).await?;
+            if byte[0] == b':' {
+                break;
+            }
+            key_id_buf.push(byte[0]);
+        }
+        let key_id = String::from_utf8(key_id_buf)
+            .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
+
+        let (_, private_key) = self
+            .key_manager
+            .get_keypair_by_id::<T>(&key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
+        T::par_decrypt_stream_async::<S, _, _>(&private_key, reader, writer, config, None).await
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "traditional",
+    feature = "post-quantum",
+    feature = "aes-gcm-feature"
+))]
+mod tests {
+    use super::*;
+    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use crate::seal::Seal;
+    use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+    use secrecy::SecretString;
+    use std::io::Cursor;
+    use std::sync::Arc;
+    use tempfile::{TempDir, tempdir};
+
+    // 辅助函数：设置一个全新的 Seal 和密码
+    async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("my.seal");
+        let password = SecretString::new("a-very-secret-password".into());
+        let seal = Seal::create(seal_path, &password).unwrap();
+        (seal, password, dir)
+    }
+
+    #[cfg(feature = "parallel")]
+    #[tokio::test]
+    async fn test_engine_parallel_streaming_roundtrip_async() {
+        let (seal, password, _dir) = setup().await;
+        let mut engine = seal
+            .asymmetric_async_engine::<RsaKyberCryptoSystem>(password)
+            .await
+            .unwrap();
+
+        let data = vec![5u8; 1024 * 8]; // 8KB data
+        let source = Cursor::new(data.clone());
+        let encrypted_dest = Cursor::new(Vec::new());
+
+        let config = StreamingConfig::default();
+
+        let writer = engine
+            .par_encrypt_stream_async::<AesGcmSystem, _, _>(source, encrypted_dest, &config)
+            .await
+            .unwrap()
+            .1;
+
+        let encrypted_data = writer.into_inner();
+        let encrypted_source = Cursor::new(encrypted_data);
+        let decrypted_dest = Cursor::new(Vec::new());
+
+        let writer = engine
+            .par_decrypt_stream_async::<AesGcmSystem, _, _>(
+                encrypted_source,
+                decrypted_dest,
+                &config,
+            )
+            .await
+            .unwrap()
+            .1;
+
+        let decrypted = writer.into_inner();
+        assert_eq!(decrypted, data);
+    }
 }

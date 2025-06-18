@@ -159,6 +159,134 @@ where
         // 3. 解密剩余的流数据
         T::decrypt_stream(&key, &mut reader, &mut writer, config, None)
     }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 加密一段明文。
+    ///
+    /// 底层使用 `SymmetricParallelSystem` trait。
+    /// 密文格式与非并行版本相同: `key_id:ciphertext_bytes`。
+    pub fn par_encrypt(
+        &mut self,
+        plaintext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error>
+    where
+        T: crate::symmetric::traits::SymmetricParallelSystem,
+    {
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+
+        let ciphertext_bytes =
+            T::par_encrypt(&primary_key, plaintext, additional_data).map_err(Error::from)?;
+
+        let mut output = key_metadata.id.as_bytes().to_vec();
+        output.push(b':');
+        output.extend_from_slice(&ciphertext_bytes);
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(output)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 解密一段密文。
+    ///
+    /// 底层使用 `SymmetricParallelSystem` trait。
+    /// 期望的密文格式与非并行版本相同: `key_id:ciphertext_bytes`。
+    pub fn par_decrypt(
+        &self,
+        ciphertext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error>
+    where
+        T: crate::symmetric::traits::SymmetricParallelSystem,
+    {
+        let separator_pos = memchr(b':', ciphertext).ok_or_else(|| {
+            Error::Format("Invalid ciphertext format. Missing ':' separator.".to_string())
+        })?;
+        let key_id_bytes = &ciphertext[..separator_pos];
+        let actual_ciphertext = &ciphertext[separator_pos + 1..];
+        let key_id = std::str::from_utf8(key_id_bytes)
+            .map_err(|_| Error::Format("Key ID is not valid UTF-8.".to_string()))?;
+
+        let key = self
+            .key_manager
+            .derive_key_by_id::<T>(key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
+        T::par_decrypt(&key, actual_ciphertext, additional_data).map_err(Error::from)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 同步流式加密。
+    ///
+    /// 底层使用 `SymmetricParallelStreamingSystem` trait。
+    pub fn par_encrypt_stream<R: Read + Send, W: Write + Send>(
+        &mut self,
+        mut reader: R,
+        mut writer: W,
+        config: &StreamingConfig,
+    ) -> Result<StreamingResult, Error>
+    where
+        T: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+    {
+        let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
+            Error::KeyManagement("No primary key available for encryption.".to_string())
+        })?;
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+
+        writer.write_all(key_metadata.id.as_bytes())?;
+        writer.write_all(b":")?;
+
+        let result = T::par_encrypt_stream(&primary_key, &mut reader, &mut writer, config, None)?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(result)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 同步流式解密。
+    ///
+    /// 底层使用 `SymmetricParallelStreamingSystem` trait。
+    pub fn par_decrypt_stream<R: Read + Send, W: Write + Send>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+        config: &StreamingConfig,
+    ) -> Result<StreamingResult, Error>
+    where
+        T: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+    {
+        let mut key_id_buf = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            reader.read_exact(&mut byte)?;
+            if byte[0] == b':' {
+                break;
+            }
+            key_id_buf.push(byte[0]);
+        }
+        let key_id = String::from_utf8(key_id_buf)
+            .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
+
+        let key = self
+            .key_manager
+            .derive_key_by_id::<T>(&key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
+        T::par_decrypt_stream(&key, &mut reader, &mut writer, config, None)
+    }
 }
 
 #[cfg(all(test, feature = "aes-gcm-feature"))]
@@ -278,5 +406,51 @@ mod tests {
             .unwrap();
 
         assert_eq!(decrypted_writer.into_inner(), plaintext);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_engine_parallel_encrypt_decrypt_roundtrip() {
+        let (seal, password, _dir) = setup();
+        let mut engine = seal
+            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .unwrap();
+
+        // Use a large plaintext to trigger parallel logic
+        let plaintext = vec![1u8; 1024 * 1024 * 3]; // 3MB
+        let encrypted = engine.par_encrypt(&plaintext, None).unwrap();
+        let decrypted = engine.par_decrypt(&encrypted, None).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_engine_parallel_streaming_roundtrip() {
+        let (seal, password, _dir) = setup();
+        let mut engine = seal
+            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .unwrap();
+
+        let data = vec![2u8; 1024 * 5]; // 5KB data
+        let mut source = Cursor::new(data.clone());
+        let mut encrypted_dest = Cursor::new(Vec::new());
+
+        let config = StreamingConfig::default();
+
+        engine
+            .par_encrypt_stream(&mut source, &mut encrypted_dest, &config)
+            .unwrap();
+
+        let encrypted_data = encrypted_dest.into_inner();
+        let mut encrypted_source = Cursor::new(encrypted_data);
+        let mut decrypted_dest = Cursor::new(Vec::new());
+
+        engine
+            .par_decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &config)
+            .unwrap();
+
+        let decrypted = decrypted_dest.into_inner();
+        assert_eq!(decrypted, data);
     }
 }

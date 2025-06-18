@@ -128,3 +128,81 @@ where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send;
 }
+
+#[cfg(feature = "parallel")]
+/// 并行同步流式加密系统扩展
+pub trait AsymmetricParallelStreamingSystem: AsymmetricCryptographicSystem
+where
+    Error: From<Self::Error>,
+{
+    /// 同步并行流式加密
+    fn par_encrypt_stream<S, R, W>(
+        public_key: &Self::PublicKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+        Error: From<S::Error>,
+        R: Read + Send,
+        W: Write + Send;
+
+    /// 同步并行流式解密
+    fn par_decrypt_stream<S, R, W>(
+        private_key: &Self::PrivateKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+        Error: From<S::Error>,
+        R: Read + Send,
+        W: Write + Send;
+}
+
+#[async_trait::async_trait]
+/// 异步并行流式加密系统扩展
+pub trait AsymmetricAsyncParallelStreamingSystem:
+    AsymmetricCryptographicSystem + Send + Sync
+where
+    Self::Error: Send,
+    Self::PublicKey: 'static,
+    Self::PrivateKey: 'static,
+    Error: From<Self::Error>,
+{
+    /// 异步并行流式加密
+    async fn par_encrypt_stream_async<S, R, W>(
+        public_key: &Self::PublicKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + 'static,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static;
+
+    /// 异步并行流式解密
+    async fn par_decrypt_stream_async<S, R, W>(
+        private_key: &Self::PrivateKey,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + 'static,
+        S::Key: Send + Sync,
+        S::Error: Send,
+        Error: From<S::Error>,
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static;
+}

@@ -98,3 +98,84 @@ where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send;
 }
+
+#[cfg(feature = "parallel")]
+/// 同步对称并行加密系统扩展
+pub trait SymmetricParallelSystem: SymmetricCryptographicSystem
+where
+    Error: From<Self::Error>,
+{
+    /// 并行加密
+    fn par_encrypt(
+        key: &Self::Key,
+        plaintext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error>;
+
+    /// 并行解密
+    fn par_decrypt(
+        key: &Self::Key,
+        ciphertext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error>;
+}
+
+#[cfg(feature = "parallel")]
+/// 同步对称并行流式加密系统扩展
+pub trait SymmetricParallelStreamingSystem: SymmetricCryptographicSystem
+where
+    Error: From<Self::Error>,
+{
+    /// 同步并行流式加密
+    fn par_encrypt_stream<R: Read + Send, W: Write + Send>(
+        key: &Self::Key,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>;
+
+    /// 同步并行流式解密
+    fn par_decrypt_stream<R: Read + Send, W: Write + Send>(
+        key: &Self::Key,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>;
+}
+
+#[cfg(all(feature = "parallel", feature = "async-engine"))]
+#[async_trait::async_trait]
+/// 异步对称并行流式加密系统扩展
+pub trait SymmetricAsyncParallelStreamingSystem:
+    SymmetricCryptographicSystem + Send + Sync
+where
+    Self::Error: Send,
+    Self::Key: 'static,
+    Error: From<Self::Error>,
+{
+    /// 异步并行流式加密
+    async fn par_encrypt_stream_async<R, W>(
+        key: &Self::Key,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static;
+
+    /// 异步并行流式解密
+    async fn par_decrypt_stream_async<R, W>(
+        key: &Self::Key,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<(StreamingResult, W), Error>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static;
+}

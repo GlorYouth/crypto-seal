@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// 流式处理返回结果
@@ -9,36 +10,39 @@ pub struct StreamingResult {
     pub buffer: Option<Vec<u8>>,
 }
 
-/// 默认缓冲区大小（64KB）
-const DEFAULT_BUFFER_SIZE: usize = 65536;
+/// 默认的并行度，通常等于CPU核心数
+fn default_parallelism() -> usize {
+    num_cpus::get()
+}
 
-/// 流式加密配置
-#[derive(Clone)]
+/// 流式处理配置
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StreamingConfig {
-    /// 缓冲区大小
+    /// 用于流式处理的缓冲区大小
     pub buffer_size: usize,
-
-    /// 是否在处理过程中显示进度
+    /// 并行处理的并行度
+    #[serde(default = "default_parallelism")]
+    pub parallelism: usize,
+    /// 是否显示进度回调
     pub show_progress: bool,
-
-    /// 是否在内存中保留完整密文/明文
+    /// 是否在内存中保留处理后的数据
     pub keep_in_memory: bool,
-
-    /// 可选的进度回调
+    /// 进度回调函数
+    #[serde(skip)]
     pub progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
-
-    /// 可选的总字节数，用于进度计算
+    /// 待处理的总字节数，用于进度计算
     pub total_bytes: Option<u64>,
 }
 
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self {
-            buffer_size: DEFAULT_BUFFER_SIZE,
+            buffer_size: 65536, // 64KB
             show_progress: false,
             keep_in_memory: false,
             progress_callback: None,
             total_bytes: None,
+            parallelism: default_parallelism(),
         }
     }
 }

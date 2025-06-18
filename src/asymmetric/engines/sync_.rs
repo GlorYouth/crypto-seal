@@ -172,4 +172,138 @@ where
         // 3. 解密剩余的流数据
         T::decrypt_stream::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
     }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 同步流式加密
+    pub fn par_encrypt_stream<S, R, W>(
+        &mut self,
+        mut reader: R,
+        mut writer: W,
+        config: &StreamingConfig,
+    ) -> Result<StreamingResult, Error>
+    where
+        S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+        T: crate::asymmetric::traits::AsymmetricParallelStreamingSystem,
+        Error: From<S::Error>,
+        R: Read + Send,
+        W: Write + Send,
+    {
+        if self.key_manager.needs_rotation() {
+            self.key_manager.start_rotation::<T>(&self.password)?;
+        }
+
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
+        let public_key = self
+            .key_manager
+            .get_public_key_by_id::<T>(&key_metadata.id)?
+            .ok_or_else(|| Error::Key("Could not find or derive public key.".to_string()))?;
+
+        writer.write_all(key_metadata.id.as_bytes())?;
+        writer.write_all(b":")?;
+
+        let result =
+            T::par_encrypt_stream::<S, _, _>(&public_key, &mut reader, &mut writer, config, None)?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(result)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 同步流式解密
+    pub fn par_decrypt_stream<S, R, W>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+        config: &StreamingConfig,
+    ) -> Result<StreamingResult, Error>
+    where
+        S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+        T: crate::asymmetric::traits::AsymmetricParallelStreamingSystem,
+        Error: From<S::Error>,
+        R: Read + Send,
+        W: Write + Send,
+    {
+        let mut key_id_buf = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            reader.read_exact(&mut byte)?;
+            if byte[0] == b':' {
+                break;
+            }
+            key_id_buf.push(byte[0]);
+        }
+        let key_id = String::from_utf8(key_id_buf)
+            .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
+
+        let (_, private_key) = self
+            .key_manager
+            .get_keypair_by_id::<T>(&key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
+        T::par_decrypt_stream::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "traditional",
+    feature = "post-quantum",
+    feature = "aes-gcm-feature"
+))]
+mod tests {
+    use super::*;
+    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+    use crate::seal::Seal;
+    use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+    use secrecy::SecretString;
+    use std::io::Cursor;
+    use std::sync::Arc;
+    use tempfile::{TempDir, tempdir};
+
+    fn setup() -> (Arc<Seal>, SecretString, TempDir) {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("my.seal");
+        let password = SecretString::new("a-very-secret-password".into());
+        let seal = Seal::create(seal_path, &password).unwrap();
+        (seal, password, dir)
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_engine_parallel_streaming_roundtrip() {
+        let (seal, password, _dir) = setup();
+        let mut engine = seal
+            .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password)
+            .unwrap();
+
+        let data = vec![3u8; 1024 * 6]; // 6KB data
+        let mut source = Cursor::new(data.clone());
+        let mut encrypted_dest = Cursor::new(Vec::new());
+
+        let config = StreamingConfig::default();
+
+        engine
+            .par_encrypt_stream::<AesGcmSystem, _, _>(&mut source, &mut encrypted_dest, &config)
+            .unwrap();
+
+        let encrypted_data = encrypted_dest.into_inner();
+        let mut encrypted_source = Cursor::new(encrypted_data);
+        let mut decrypted_dest = Cursor::new(Vec::new());
+
+        engine
+            .par_decrypt_stream::<AesGcmSystem, _, _>(
+                &mut encrypted_source,
+                &mut decrypted_dest,
+                &config,
+            )
+            .unwrap();
+
+        let decrypted = decrypted_dest.into_inner();
+        assert_eq!(decrypted, data);
+    }
 }

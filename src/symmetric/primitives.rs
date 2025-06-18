@@ -3,6 +3,9 @@
 pub mod async_streaming;
 pub mod streaming;
 
+#[cfg(feature = "parallel")]
+pub mod parallel_streaming;
+
 #[cfg(feature = "async-engine")]
 pub use async_streaming::{AsyncStreamingDecryptor, AsyncStreamingEncryptor};
 pub use streaming::{SymmetricStreamingDecryptor, SymmetricStreamingEncryptor};

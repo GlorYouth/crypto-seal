@@ -10,6 +10,13 @@ use rsa::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
+#[cfg(feature = "parallel")]
+use crate::symmetric::traits::SymmetricParallelSystem;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+#[cfg(feature = "parallel")]
+use std::io::{Cursor, Read};
+
 const KEY_SIZE: usize = 32; // AES-256 需要 32 字节的密钥
 const NONCE_SIZE: usize = 12; // GCM 标准的 Nonce 大小是 12 字节
 
@@ -113,10 +120,101 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     }
 }
 
+#[cfg(feature = "parallel")]
+const PARALLEL_CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB
+
+#[cfg(feature = "parallel")]
+impl SymmetricParallelSystem for AesGcmSystem {
+    /// 使用分块策略并行加密数据。
+    /// 每个块都被独立加密，并附带自己的Nonce和认证标签。
+    /// 输出格式为：[块1长度][加密块1][块2长度][加密块2]...
+    fn par_encrypt(
+        key: &Self::Key,
+        plaintext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        if plaintext.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 1. 将明文分块，并并行加密
+        let encrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = plaintext
+            .par_chunks(PARALLEL_CHUNK_SIZE)
+            .map(|chunk| Self::encrypt(key, chunk, additional_data))
+            .collect();
+
+        // 2. 检查是否有任何块加密失败，并组装成最终的带长度前缀的格式
+        let mut final_result = Vec::new();
+        for result in encrypted_chunks {
+            let chunk = result?;
+            let len = chunk.len() as u32;
+            final_result.extend_from_slice(&len.to_le_bytes());
+            final_result.extend_from_slice(&chunk);
+        }
+
+        Ok(final_result)
+    }
+
+    /// 并行解密使用 `par_encrypt` 加密的数据。
+    fn par_decrypt(
+        key: &Self::Key,
+        ciphertext: &[u8],
+        additional_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        if ciphertext.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 1. 从流式格式中解析出所有独立的加密块
+        let mut reader = Cursor::new(ciphertext);
+        let mut chunks_to_decrypt: Vec<Vec<u8>> = Vec::new();
+        let mut len_buf = [0u8; 4];
+
+        while reader.read_exact(&mut len_buf).is_ok() {
+            let len = u32::from_le_bytes(len_buf) as usize;
+            if reader.get_ref().len() < reader.position() as usize + len {
+                return Err(Error::DecryptionFailed(
+                    "Ciphertext is truncated or malformed.".to_string(),
+                ));
+            }
+            let mut chunk_buf = vec![0u8; len];
+            reader.read_exact(&mut chunk_buf)?;
+            chunks_to_decrypt.push(chunk_buf);
+        }
+
+        // 2. 并行解密所有块
+        let decrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = chunks_to_decrypt
+            .par_iter()
+            .map(|chunk| Self::decrypt(key, chunk, additional_data))
+            .collect();
+
+        // 3. 检查是否有任何块解密失败，并拼接成最终的明文
+        let mut final_result = Vec::new();
+        for result in decrypted_chunks {
+            final_result.extend_from_slice(&result?);
+        }
+
+        Ok(final_result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::utils::CryptoConfig;
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_parallel_encrypt_decrypt_roundtrip() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = vec![0xCF; PARALLEL_CHUNK_SIZE * 2 + 1]; // Make sure it spans multiple chunks
+
+        let ciphertext = AesGcmSystem::par_encrypt(&key, &plaintext, None).unwrap();
+        let decrypted_plaintext = AesGcmSystem::par_decrypt(&key, &ciphertext, None).unwrap();
+
+        assert_eq!(plaintext, decrypted_plaintext);
+    }
 
     #[test]
     fn test_generate_key() {
