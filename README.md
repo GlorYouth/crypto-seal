@@ -2,34 +2,38 @@
 
 [![Crates.io](https://img.shields.io/crates/v/seal-kit.svg)](https://crates.io/crates/seal-kit)  [![Docs.rs](https://docs.rs/seal-kit/badge.svg)](https://docs.rs/seal-kit)  ![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
 
-`seal-kit` 是一个功能齐全且灵活的 Rust 加密库，提供：
+`seal-kit` 是一个功能齐全且灵活的 Rust 加密库，提供统一的框架来处理非对称和对称加密。
 
-- 传统加密（RSA）
-- 后量子加密（Kyber）
-- 混合加密（RSA + Kyber）
-- 自动密钥管理与轮换
-- 安全的密钥存储（基于 Argon2 & AES-GCM）
-- 高级同步/异步引擎 API
-- 流式加解密支持
-- 配置灵活，支持 JSON 文件和环境变量
+- **非对称加密**:
+  - 传统加密 (RSA)
+  - 后量子加密 (Kyber)
+  - 混合加密 (RSA + Kyber)
+- **对称加密**:
+  - AES-256-GCM
+  - ChaCha20-Poly1305 (通过 `chacha` 特性)
+- **核心功能**:
+  - 自动密钥管理与轮换
+  - 安全的密钥存储 (基于 Argon2 & AES-GCM)
+  - 统一的同步/异步引擎 API
+  - 高效的流式加解密
+  - 灵活的配置 (JSON 文件或环境变量)
 
 ---
 
 ## 主要特性
 
-- **统一接口**：通过 `CryptographicSystem` 特征，兼容多种加密系统。
-- **自动敏感数据零化**：使用 `ZeroizingVec` 自动清除私钥等敏感数据在内存中的残留。
-- **AEAD 算法多样化**：支持 AES-GCM 和 ChaCha20-Poly1305（启用 `chacha` 特性）。
-- **批量并行加密**：异步引擎 `AsyncQSealEngine` 提供 `encrypt_batch` 接口，可在 `parallel` 特性下并行运行。
-- **自动密钥轮换**：基于使用次数或有效期自动更新密钥。
-- **安全存储**：`EncryptedKeyContainer` 与 `KeyFileStorage`，保护磁盘上的密钥。
-- **高级同步 API**：`QSealEngine` 自动管理密钥、轮换、签名与验证。
-- **异步并发 API**：`AsyncQSealEngine` 支持多线程安全调用。
-- **混合加密**：`HybridRsaKyber` 提供双重安全保障。
-- **认证加解密**：可选签名与签名验证，防止篡改。
-- **流式处理**：分块加解密大数据，支持进度报告。
-- **可定制配置**：通过 `ConfigManager` 加载 JSON 文件或环境变量。
-- **特性标志**：`traditional`、`post-quantum`、`secure-storage`、`async-engine`、`chacha`、`parallel`。
+- **统一接口**: 通过 `AsymmetricCryptographicSystem` 和 `SymmetricCryptographicSystem` 特征，支持多种加密系统。
+- **高级引擎**:
+  - `AsymmetricQSealEngine`: 用于非对称加密，自动处理密钥对管理、轮换、签名和验证。
+  - `SymmetricQSealEngine`: 用于对称加密，简化密钥管理和数据保护。
+  - 异步版本 (`AsymmetricQSealEngineAsync` / `SymmetricQSealEngineAsync`) 支持高并发场景。
+- **混合加密**: `HybridRsaKyber` 结合了 RSA 和 Kyber 的优点，提供双重安全保障。
+- **流式处理**: 支持对大文件或数据流进行分块加解密，内存占用低，并可报告进度。
+- **安全密钥存储**: 使用 `EncryptedKeyContainer` 和 `KeyFileStorage`，通过强密码派生函数 Argon2 和 AES-GCM 加密来保护磁盘上的密钥。
+- **自动密钥轮换**: 可根据使用次数或时间有效期自动轮换密钥，提高安全性。
+- **内存安全**: 使用 `secrecy` 和 `zeroize` crate 在敏感数据（如私钥）离开作用域时自动从内存中清除。
+- **高度可配置**: 通过 `ConfigManager` 从 JSON 文件或环境变量加载配置。
+- **模块化特性**: 通过 Cargo features 可以按需启用功能，减小最终二进制文件大小。
 
 ---
 
@@ -39,140 +43,125 @@
 
 ```toml
 [dependencies]
-seal-kit = "0.1.0"
-
-# 可选特性：
-# seal-kit = { version = "0.1.0", features = ["secure-storage", "async-engine"] }
+seal-kit = { version = "0.1.0", features = ["asymmetric", "symmetric", "secure-storage", "async-engine"] }
 ```
+
+默认情况下，`asymmetric` 和 `symmetric` 都被启用。您可以根据需要选择特性。
 
 ---
 
 ## 示例
 
-### 同步引擎 (`QSealEngine`)
+### 非对称加密引擎 (`AsymmetricQSealEngine`)
 
-- 本示例展示三种初始化方式：默认配置、JSON 配置文件、环境变量。
+本示例展示了如何使用 `AsymmetricQSealEngine` 进行混合加密。
 
 ```rust
 use std::sync::Arc;
-use seal_kit::{QSealEngine, HybridRsaKyber, ConfigManager};
+use seal_kit::{AsymmetricQSealEngine, HybridRsaKyber, ConfigManager};
 
 fn main() -> anyhow::Result<()> {
-    // 方法一：默认配置
-    let mut engine_default = QSealEngine::<HybridRsaKyber>::with_defaults("user_keys")?;
+    // 使用默认配置初始化引擎
+    let config = Arc::new(ConfigManager::new());
+    let mut engine = AsymmetricQSealEngine::<HybridRsaKyber>::new(config, "my_asymmetric_keys")?;
 
-    // 方法二：从 JSON 配置文件
-    let mut engine_file = QSealEngine::<HybridRsaKyber>::from_file("config.json", "user_keys")?;
+    let data = b"这是一条需要非对称加密的机密信息";
+    
+    // 加密
+    let cipher = engine.encrypt(data)?;
+    println!("加密后的数据: {}", cipher);
+    
+    // 解密
+    let plain = engine.decrypt(&cipher)?;
+    println!("解密后的数据: {}", String::from_utf8_lossy(&plain));
 
-    // 方法三：从环境变量配置
-    let config = Arc::new(ConfigManager::from_env());
-    let mut engine_env = QSealEngine::<HybridRsaKyber>::new(config, "user_keys")?;
-
-    let data = b"机密信息";
-    let cipher = engine_default.encrypt(data)?;
-    let plain = engine_default.decrypt(&cipher)?;
     assert_eq!(plain, data);
 
     Ok(())
 }
 ```
 
-### 异步引擎 (`AsyncQSealEngine`)
+### 对称加密引擎 (`SymmetricQSealEngine`)
+
+本示例展示了如何使用 `SymmetricQSealEngine` 和 `AesGcmSystem` 进行流式加密。
 
 ```rust
+use std::io::Cursor;
 use std::sync::Arc;
-use seal_kit::{AsyncQSealEngine, ConfigManager, PostQuantumKyber};
+use seal_kit::{SymmetricQSealEngine, ConfigManager};
+use seal_kit::common::streaming::StreamingConfig;
+use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 准备数据
+    let data = b"这是一长段需要通过对称加密流式处理的数据...".repeat(100);
+
+    // 1. 初始化引擎
     let config = Arc::new(ConfigManager::new());
-    let engine = AsyncQSealEngine::<PostQuantumKyber>::new(config, "session_keys")?;
+    let mut engine = SymmetricQSealEngine::<AesGcmSystem>::new(config, "my_symmetric_keys")?;
 
-    let cipher = engine.encrypt(b"hello")?;
-    let plain = engine.decrypt(&cipher)?;
-    assert_eq!(plain, b"hello");
+    // 2. 配置流式处理
+    let sc = StreamingConfig::default()
+        .with_buffer_size(1024) // 1KB 缓冲区
+        .with_show_progress(true);
 
+    // 3. 流式加密到内存
+    let mut encrypted_buf = Vec::new();
+    engine.encrypt_stream(Cursor::new(&data), &mut encrypted_buf, &sc)?;
+    println!("\n加密完成!");
+
+    // 4. 流式解密
+    let mut decrypted_buf = Vec::new();
+    engine.decrypt_stream(Cursor::new(&encrypted_buf), &mut decrypted_buf, &sc)?;
+    println!("\n解密完成!");
+
+    // 5. 验证数据
+    assert_eq!(decrypted_buf, data);
+    println!("\n数据验证成功！");
+    
     Ok(())
 }
 ```
 
-### 底层接口 (`CryptographicSystem`)
+### 底层接口 (`AsymmetricCryptographicSystem`)
+
+直接使用加密系统接口，绕过引擎层。
 
 ```rust
-use seal_kit::{CryptographicSystem, CryptoConfig, TraditionalRsa};
+use seal_kit::{AsymmetricCryptographicSystem, TraditionalRsa, common::utils::CryptoConfig};
 
 fn main() {
     let config = CryptoConfig::default();
     let (pk, sk) = TraditionalRsa::generate_keypair(&config).unwrap();
-    let cipher = TraditionalRsa::encrypt(&pk, b"data", None).unwrap();
+    let cipher = TraditionalRsa::encrypt(&pk, b"raw data", None).unwrap();
     let plain = TraditionalRsa::decrypt(&sk, &cipher.to_string(), None).unwrap();
-    assert_eq!(plain, b"data");
+    assert_eq!(plain, b"raw data");
 }
-```
-
-### 流式加解密
-
-```rust
-use std::fs::File;
-use std::sync::Arc;
-use seal_kit::{QSealEngine, TraditionalRsa, ConfigManager};
-use seal_kit::primitives::StreamingConfig;
-
-fn main() -> anyhow::Result<()> {
-    // 1. 初始化引擎
-    let config = Arc::new(ConfigManager::new());
-    let mut engine = QSealEngine::<TraditionalRsa>::new(config, "file_stream_keys")?;
-
-    // 准备明文文件 (请自行创建 plain.txt)
-    let mut reader = File::open("plain.txt")?;
-    let mut writer = File::create("cipher.dat")?;
-    
-    // 2. 配置流式处理
-    let total_size = reader.metadata()?.len();
-    let sc = StreamingConfig::default()
-        .with_keep_in_memory(false) // 处理大文件时无需在内存保留
-        .with_progress_callback(Arc::new(move |processed, total| {
-            let total = total.unwrap_or(0);
-            println!("Encrypting... {} / {} bytes processed.", processed, total);
-        }))
-        .with_total_bytes(total_size);
-
-    // 3. 执行流式加密
-    engine.encrypt_stream(reader, &mut writer, &sc)?;
-
-    // 4. 执行流式解密
-    let mut reader2 = File::open("cipher.dat")?;
-    let mut writer2 = File::create("plain_decrypted.txt")?;
-    engine.decrypt_stream(&mut reader2, &mut writer2, &sc)?;
-
-    Ok(())
-}
-```
-
-### 安全密钥存储
-
-```rust
-use secrecy::SecretString;
-use seal_kit::EncryptedKeyContainer;
-
-let password = SecretString::new("mypassword".to_string());
-let data = b"secret_key";
-let data = b"secret_key";
-let container = EncryptedKeyContainer::new(&password, data, "my-algo")?;
-let recovered = container.get_key(&password)?;
-assert_eq!(recovered, data);
 ```
 
 ---
 
-## 特性标志（Features）
+## 特性标志 (Features)
 
-- `traditional`：启用传统 RSA（默认）
-- `post-quantum`：启用 Kyber（默认）
-- `secure-storage`：启用 `EncryptedKeyContainer`
-- `async-engine`：启用 `AsyncQSealEngine`
-- `chacha`：启用 ChaCha20-Poly1305 AEAD 支持（替代 AES-GCM）
-- `parallel`：启用异步引擎的 `encrypt_batch` 并行批量加密
+`seal-kit` 被设计为模块化的，您可以通过特性标志来选择需要的功能。
+
+### 默认特性
+
+`default = ["asymmetric", "symmetric", "secure-storage", "async-engine", "parallel"]`
+
+### 功能类别
+
+- **`asymmetric`**: 启用所有非对称加密功能。
+  - **`traditional`**: 启用 RSA 加密 (`RsaCryptoSystem`)。
+  - **`post-quantum`**: 启用 Kyber 加密 (`KyberCryptoSystem`)。
+
+- **`symmetric`**: 启用所有对称加密功能。
+  - **`aes-gcm-feature`**: 启用 AES-256-GCM (`AesGcmSystem`)。
+  - **`chacha`**: 启用 ChaCha20-Poly1305。
+
+- **`secure-storage`**: 启用安全的密钥磁盘存储功能 (`EncryptedKeyContainer`)。
+- **`async-engine`**: 启用所有异步 API (`...Async`)。
+- **`parallel`**: 在异步引擎中启用批量操作的并行处理。
 
 ---
 
@@ -180,7 +169,7 @@ assert_eq!(recovered, data);
 
 ### JSON 配置文件
 
-创建 `config.json`，例如：
+`seal-kit` 的行为可以通过 `config.json` 文件进行配置。对称加密目前不需要特定配置。
 
 ```json
 {
@@ -201,7 +190,7 @@ assert_eq!(recovered, data);
     "rotation_start_days": 7
   },
   "storage": {
-    "key_storage_dir": "./q_seal_keys",
+    "key_storage_dir": "./seal_keys",
     "use_metadata_cache": true,
     "secure_delete": true,
     "file_permissions": 384
@@ -211,32 +200,22 @@ assert_eq!(recovered, data);
 
 ### 环境变量
 
-您可以使用以下环境变量来覆盖配置：
+您可以使用环境变量来覆盖 JSON 配置。
 
-- `Q_SEAL_USE_TRADITIONAL`（true/false）
-- `Q_SEAL_USE_PQ`（true/false）
-- `Q_SEAL_RSA_BITS`（整数）
-- `Q_SEAL_KYBER_PARAMETER_K`（整数）
-- `Q_SEAL_USE_AUTHENTICATED_ENCRYPTION`（true/false）
-- `Q_SEAL_AUTO_VERIFY_SIGNATURES`（true/false）
-- `Q_SEAL_KEY_VALIDITY_DAYS`（整数）
-- `Q_SEAL_MAX_KEY_USES`（整数）
-- `Q_SEAL_ROTATION_START_DAYS`（整数）
-- `Q_SEAL_KEY_STORAGE_DIR`（字符串）
-- `Q_SEAL_USE_METADATA_CACHE`（true/false）
-- `Q_SEAL_SECURE_DELETE`（true/false）
-- `Q_SEAL_FILE_PERMISSIONS`（整数）
+- `Q_SEAL_USE_TRADITIONAL` (true/false)
+- `Q_SEAL_USE_PQ` (true/false)
+- `Q_SEAL_RSA_BITS` (整数)
+- `Q_SEAL_KEYBER_PARAMETER_K` (整数)
+- ...等等。
 
 ---
 
-## 性能基准测试（Benchmarks）
-本库集成了基于 `criterion` 的性能基准测试，涵盖：
+## 性能基准测试 (Benchmarks)
 
-- 传统 RSA、后量子 Kyber、混合加密的单次加解密
-- `QSealEngine` 的单次加解密操作
+本库集成了基于 `criterion` 的性能基准测试。
 
 执行基准测试：
-```
+```sh
 cargo bench
 ```
 
