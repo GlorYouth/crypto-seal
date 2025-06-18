@@ -1,7 +1,7 @@
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Deserialize, Serialize};
-use crate::asymmetric::traits::CryptographicSystem;
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 #[cfg(feature = "async-engine")]
 use crate::asymmetric::traits::AsyncStreamingSystem;
 use crate::common::errors::Error;
@@ -20,7 +20,7 @@ use chacha20poly1305::{
 use rsa::rand_core::OsRng;
 
 #[cfg(feature = "async-engine")]
-use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
+use crate::common::streaming::StreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::common::streaming::StreamingResult;
@@ -52,7 +52,7 @@ const KYBER1024_PUBLICKEYBYTES: usize = kyber1024::public_key_bytes();
 const KYBER1024_SECRETKEYBYTES: usize = kyber1024::secret_key_bytes();
 const KYBER1024_CIPHERTEXTBYTES: usize = kyber1024::ciphertext_bytes();
 
-impl CryptographicSystem for KyberCryptoSystem {
+impl AsymmetricCryptographicSystem for KyberCryptoSystem {
     type PublicKey = KyberPublicKeyWrapper;
     type PrivateKey = KyberPrivateKeyWrapper;
     type CiphertextOutput = Base64String;
@@ -266,7 +266,7 @@ impl AsyncStreamingSystem for KyberCryptoSystem {
         public_key: &Self::PublicKey,
         mut reader: R,
         mut writer: W,
-        config: &AsyncStreamingConfig,
+        config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -312,7 +312,7 @@ impl AsyncStreamingSystem for KyberCryptoSystem {
         private_key: &Self::PrivateKey,
         mut reader: R,
         mut writer: W,
-        _config: &AsyncStreamingConfig,
+        _config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -399,7 +399,7 @@ mod async_tests {
     use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
-    use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
+    use crate::common::streaming::StreamingConfig;
 
     #[tokio::test]
     async fn test_async_streaming_roundtrip() {
@@ -413,7 +413,7 @@ mod async_tests {
         {
             let reader = Cursor::new(original_data);
             let writer = BufWriter::new(&mut encrypted_buffer);
-            let stream_config = AsyncStreamingConfig {
+            let stream_config = StreamingConfig {
                 buffer_size: 20, // Use a small buffer to ensure multiple chunks
                 keep_in_memory: true,
                 ..Default::default()
@@ -437,7 +437,7 @@ mod async_tests {
         {
             let reader = Cursor::new(&encrypted_buffer);
             let writer = BufWriter::new(&mut decrypted_buffer);
-            let stream_config = AsyncStreamingConfig {
+            let stream_config = StreamingConfig {
                 buffer_size: 64,
                 ..Default::default()
             };

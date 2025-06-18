@@ -13,19 +13,20 @@ pub struct StreamingResult {
 const DEFAULT_BUFFER_SIZE: usize = 65536;
 
 /// 流式加密配置
+#[derive(Clone)]
 pub struct StreamingConfig {
     /// 缓冲区大小
     pub buffer_size: usize,
-    
+
     /// 是否在处理过程中显示进度
     pub show_progress: bool,
-    
+
     /// 是否在内存中保留完整密文/明文
     pub keep_in_memory: bool,
-    
+
     /// 可选的进度回调
     pub progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
-    
+
     /// 可选的总字节数，用于进度计算
     pub total_bytes: Option<u64>,
 }

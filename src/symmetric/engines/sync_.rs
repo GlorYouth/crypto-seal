@@ -1,12 +1,14 @@
 //! 对称加密引擎 `SymmetricQSealEngine`
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::io::{Read, Write};
+use std::path::Path;
 use crate::common::errors::Error;
-use crate::common::utils::CryptoConfig;
+use crate::common::config::ConfigManager;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
-use crate::rotation::{KeyStorage, RotationPolicy};
+use crate::storage::KeyFileStorage;
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
+
 /// `SymmetricQSealEngine`：一个使用对称加密算法并支持密钥自动轮换的用户友好引擎。
 ///
 /// 该引擎泛型于一个 `SymmetricCryptographicSystem`，负责处理所有的密钥管理、
@@ -16,8 +18,8 @@ where
     T::Error: std::error::Error + 'static,
     Error: From<T::Error>,
 {
-    key_manager: Arc<Mutex<SymmetricKeyRotationManager<T>>>,
-    config: CryptoConfig,
+    config: Arc<ConfigManager>,
+    key_manager: SymmetricKeyRotationManager<T>,
 }
 
 impl<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem> SymmetricQSealEngine<T>
@@ -25,86 +27,75 @@ where
     T::Error: std::error::Error + 'static,
     Error: From<T::Error>,
 {
-    /// 创建一个新的 `SymmetricQSealEngine` 实例。
-    ///
-    /// # 参数
-    /// * `config`: 加密配置。
-    /// * `rotation_policy`: 密钥轮换策略。
-    /// * `key_storage`: 密钥存储的实现。
-    /// * `key_prefix`: 用于在存储中标识该引擎密钥的前缀。
-    ///
-    /// # 返回
-    /// 返回一个初始化好的 `SymmetricQSealEngine` 实例。
-    pub fn new(
-        config: CryptoConfig,
-        rotation_policy: RotationPolicy,
-        key_storage: Arc<dyn KeyStorage>,
-        key_prefix: &str,
-    ) -> Result<Self, Error> {
-        let mut key_manager = SymmetricKeyRotationManager::new(
+    /// 使用指定的配置管理器创建一个新的引擎实例。
+    pub fn new(config_manager: Arc<ConfigManager>, key_prefix: &str) -> Result<Self, Error> {
+        let storage_config = config_manager.get_storage_config();
+        let key_storage = Arc::new(KeyFileStorage::new(&storage_config.key_storage_dir)?);
+        let rotation_policy = config_manager.get_rotation_policy();
+        
+        let mut key_manager = SymmetricKeyRotationManager::<T>::new(
             key_storage,
             rotation_policy,
-            key_prefix,
+            key_prefix
         );
-        key_manager.initialize(&config)?;
-
+        key_manager.initialize(&config_manager.get_crypto_config())?;
+        
         Ok(Self {
-            key_manager: Arc::new(Mutex::new(key_manager)),
-            config,
+            config: config_manager,
+            key_manager,
         })
+    }
+    
+    /// 从配置文件路径创建一个新的引擎实例
+    pub fn from_file<P: AsRef<Path>>(path: P, key_prefix: &str) -> Result<Self, Error> {
+        let config_manager = Arc::new(ConfigManager::from_file(path)?);
+        Self::new(config_manager, key_prefix)
+    }
+
+    /// 使用默认配置创建一个新的引擎实例
+    pub fn with_defaults(key_prefix: &str) -> Result<Self, Error> {
+        let config_manager = Arc::new(ConfigManager::new());
+        Self::new(config_manager, key_prefix)
+    }
+    
+    /// 返回一个构造器以创建引擎
+    pub fn builder() -> SymmetricQSealEngineBuilder<T> {
+        SymmetricQSealEngineBuilder::new()
     }
 
     /// 加密一段明文。
-    ///
-    /// 该方法会自动处理密钥轮换检查，并使用当前的主密钥进行加密。
-    ///
-    /// # 参数
-    /// * `plaintext`: 要加密的明文数据。
-    /// * `additional_data`: （可选）附加数据，将参与认证但不会被加密。
-    ///
-    /// # 返回
-    /// 成功时返回加密后的密文（Base64 编码的字符串），失败时返回错误。
-    pub fn encrypt(&self, plaintext: &[u8], additional_data: Option<&[u8]>) -> Result<String, Error> {
-        let mut manager = self.key_manager.lock().unwrap();
-
-        // 在加密前检查是否需要轮换
+    pub fn encrypt(&mut self, plaintext: &[u8], additional_data: Option<&[u8]>) -> Result<String, Error> {
+        let manager = &mut self.key_manager;
+        manager.complete_rotation()?;
         if manager.needs_rotation() {
-            manager.start_rotation(&self.config)?;
+            manager.start_rotation(&self.config.get_crypto_config())?;
         }
 
         let key = manager.get_primary_key()
-            .ok_or_else(|| Error::Operation("没有可用的主密钥进行加密".to_string()))?;
+            .map(|k| k.clone())
+            .ok_or_else(|| Error::Key("没有可用的主密钥进行加密".to_string()))?;
 
-        let ciphertext = T::encrypt(key, plaintext, additional_data)
-            .map_err(|e| Error::Operation(format!("加密失败: {}", e)))?;
-
-        // 增加使用计数
         manager.increment_usage_count()?;
+
+        let ciphertext = T::encrypt(&key, plaintext, additional_data)
+            .map_err(|e| Error::Operation(format!("加密失败: {}", e)))?;
 
         Ok(ciphertext.to_string())
     }
 
     /// 解密一段密文。
-    ///
-    /// 该方法会尝试使用引擎中管理的所有密钥（包括主密钥和次要密钥）进行解密，
-    /// 直到成功为止。这确保了在密钥轮换后，由旧密钥加密的数据仍然可以被解密。
-    ///
-    /// # 参数
-    /// * `ciphertext`: 要解密的密文（Base64 编码的字符串）。
-    /// * `additional_data`: （可选）附加数据。
-    ///
-    /// # 返回
-    /// 成功时返回解密后的明文，如果所有密钥都无法解密，则返回错误。
-    pub fn decrypt(&self, ciphertext: &str, additional_data: Option<&[u8]>) -> Result<Vec<u8>, Error> {
-        let manager = self.key_manager.lock().unwrap();
+    pub fn decrypt(&mut self, ciphertext: &str, additional_data: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+        let manager = &mut self.key_manager;
+        manager.complete_rotation()?;
+        
         let keys = manager.get_all_keys();
-
         if keys.is_empty() {
             return Err(Error::Operation("没有可用的密钥进行解密".to_string()));
         }
 
-        for key in keys {
-            if let Ok(plaintext) = T::decrypt(key, ciphertext, additional_data) {
+        for key_ref in keys {
+            let key = key_ref.clone(); // 克隆以避免生命周期问题
+            if let Ok(plaintext) = T::decrypt(&key, ciphertext, additional_data) {
                 return Ok(plaintext);
             }
         }
@@ -113,63 +104,98 @@ where
     }
 
     /// 同步流式加密
-    ///
-    /// # 参数
-    /// * `reader`: 从中读取明文的输入流。
-    /// * `writer`: 将加密数据写入的输出流。
-    /// * `config`: 流处理配置。
-    ///
-    /// # 返回
-    /// 成功时返回处理结果，失败时返回错误。
     pub fn encrypt_stream<R: Read, W: Write>(
-        &self,
+        &mut self,
         reader: R,
         writer: W,
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
-        let mut manager = self.key_manager.lock().unwrap();
-
+        let manager = &mut self.key_manager;
+        manager.complete_rotation()?;
         if manager.needs_rotation() {
-            manager.start_rotation(&self.config)?;
+            manager.start_rotation(&self.config.get_crypto_config())?;
         }
 
-        // 克隆主密钥以释放对 `manager` 的借用
         let key = manager.get_primary_key()
             .map(|k| k.clone())
-            .ok_or_else(|| Error::Operation("没有可用的主密钥进行加密".to_string()))?;
+            .ok_or_else(|| Error::Key("没有可用的主密钥进行加密".to_string()))?;
         
-        // 现在可以安全地可变借用 manager
         manager.increment_usage_count()?;
         
-        // 使用克隆的密钥进行流式加密
         T::encrypt_stream(&key, reader, writer, config, None)
     }
 
     /// 同步流式解密
-    ///
-    /// 注意：此方法当前只使用主密钥进行解密。对于需要使用旧密钥解密的场景，
-    /// 流协议本身需要包含密钥标识符。
-    ///
-    /// # 参数
-    /// * `reader`: 从中读取密文的输入流。
-    /// * `writer`: 将解密数据写入的输出流。
-    /// * `config`: 流处理配置。
-    ///
-    /// # 返回
-    /// 成功时返回处理结果，失败时返回错误。
     pub fn decrypt_stream<R: Read, W: Write>(
-        &self,
+        &mut self,
         reader: R,
         writer: W,
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
-        let manager = self.key_manager.lock().unwrap();
+        let manager = &mut self.key_manager;
+        manager.complete_rotation()?;
 
-        // 克隆密钥以释放借用
         let key = manager.get_primary_key()
             .map(|k| k.clone())
-            .ok_or_else(|| Error::Operation("没有可用的主密钥进行解密".to_string()))?;
+            .ok_or_else(|| Error::Key("没有可用的主密钥进行解密".to_string()))?;
         
         T::decrypt_stream(&key, reader, writer, config, None)
+    }
+
+    /// 获取当前的配置管理器
+    pub fn config(&self) -> Arc<ConfigManager> {
+        Arc::clone(&self.config)
+    }
+}
+
+/// `SymmetricQSealEngine` 的构造器
+pub struct SymmetricQSealEngineBuilder<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem>
+where
+    T::Error: std::error::Error + 'static,
+    Error: From<T::Error>,
+{
+    config_manager: Option<Arc<ConfigManager>>,
+    key_prefix: Option<String>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem> SymmetricQSealEngineBuilder<T>
+where
+    T::Error: std::error::Error + 'static,
+    Error: From<T::Error>,
+{
+    /// 创建一个新的构造器
+    pub fn new() -> Self {
+        Self {
+            config_manager: None,
+            key_prefix: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// 使用现有的 `ConfigManager`
+    pub fn with_config_manager(mut self, config_manager: Arc<ConfigManager>) -> Self {
+        self.config_manager = Some(config_manager);
+        self
+    }
+
+    /// 从配置文件加载配置
+    pub fn with_config_file<P: AsRef<Path>>(mut self, path: P) -> Result<Self, Error> {
+        let config_manager = Arc::new(ConfigManager::from_file(path)?);
+        self.config_manager = Some(config_manager);
+        Ok(self)
+    }
+
+    /// 设置密钥前缀
+    pub fn with_key_prefix(mut self, prefix: &str) -> Self {
+        self.key_prefix = Some(prefix.to_string());
+        self
+    }
+    
+    /// 构建 `SymmetricQSealEngine`
+    pub fn build(self) -> Result<SymmetricQSealEngine<T>, Error> {
+        let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
+        let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
+        SymmetricQSealEngine::new(cm, &prefix)
     }
 } 

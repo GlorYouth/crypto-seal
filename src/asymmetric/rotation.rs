@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-use crate::{CryptographicSystem, Error};
+use crate::{AsymmetricCryptographicSystem, Error};
 use crate::common::utils::CryptoConfig;
 use crate::rotation::{KeyMetadata, KeyPairData, KeyStatus, KeyStorage, RotationPolicy};
 
 /// 密钥轮换管理器
-pub struct KeyRotationManager<T: CryptographicSystem> {
+pub struct KeyRotationManager<T: AsymmetricCryptographicSystem> {
     /// 主密钥（当前活跃密钥）
     primary_key: Option<(T::PublicKey, T::PrivateKey, KeyMetadata)>,
     /// 次要密钥（用于解密旧数据，或即将启用的新密钥）
@@ -19,7 +19,7 @@ pub struct KeyRotationManager<T: CryptographicSystem> {
     key_prefix: String,
 }
 
-impl<T: CryptographicSystem> KeyRotationManager<T> 
+impl<T: AsymmetricCryptographicSystem> KeyRotationManager<T> 
 where
     T::Error: std::error::Error + 'static,
 {

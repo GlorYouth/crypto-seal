@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::io::{Read, Write};
-use crate::asymmetric::traits::{CryptographicSystem, SyncStreamingSystem};
+use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
 use crate::common::config::ConfigManager;
 use crate::common::errors::Error;
 use crate::asymmetric::rotation::KeyRotationManager;
@@ -17,10 +17,10 @@ use crate::common::streaming::{StreamingConfig, StreamingResult};
 ///
 /// 这是一个高级API，它封装了所有底层组件，提供了一个简单、统一的接口。
 /// `C` 是一个实现了 `CryptographicSystem` 和 `SyncStreamingSystem` 特征的加密系统类型。
-pub struct QSealEngine<C: CryptographicSystem + SyncStreamingSystem>
+pub struct AsymmetricQSealEngine<C: AsymmetricCryptographicSystem + AsymmetricSyncStreamingSystem>
 where
     // 确保引擎内可以处理其使用的加密系统的错误
-    Error: From<<C as CryptographicSystem>::Error>
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>
 {
     /// 配置管理器
     config: Arc<ConfigManager>,
@@ -28,10 +28,10 @@ where
     key_manager: KeyRotationManager<C>,
 }
 
-impl<C: CryptographicSystem + SyncStreamingSystem> QSealEngine<C>
+impl<C: AsymmetricCryptographicSystem + AsymmetricSyncStreamingSystem> AsymmetricQSealEngine<C>
 where
-    Error: From<<C as CryptographicSystem>::Error>,
-    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>,
+    <C as AsymmetricCryptographicSystem>::Error: std::error::Error + 'static,
 {
     /// 使用指定的配置管理器创建一个新的引擎实例
     ///
@@ -191,10 +191,10 @@ where
     }
 }
 
-impl<C: AuthenticatedCryptoSystem> QSealEngine<C>
+impl<C: AuthenticatedCryptoSystem> AsymmetricQSealEngine<C>
 where
-    Error: From<<C as CryptographicSystem>::Error>,
-    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>,
+    <C as AsymmetricCryptographicSystem>::Error: std::error::Error + 'static,
 {
     /// 带认证的加密: 根据配置执行必要的轮换并可选签名
     pub fn encrypt_authenticated(&mut self, plaintext: &[u8]) -> Result<String, Error> {
@@ -261,20 +261,20 @@ where
 }
 
 /// `QSealEngine` 的构造器
-pub struct QSealEngineBuilder<C: CryptographicSystem + SyncStreamingSystem>
+pub struct QSealEngineBuilder<C: AsymmetricCryptographicSystem + AsymmetricSyncStreamingSystem>
 where
-    Error: From<<C as CryptographicSystem>::Error>,
-    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>,
+    <C as AsymmetricCryptographicSystem>::Error: std::error::Error + 'static,
 {
     config_manager: Option<Arc<ConfigManager>>,
     key_prefix: Option<String>,
     _phantom: std::marker::PhantomData<C>,
 }
 
-impl<C: CryptographicSystem + SyncStreamingSystem> QSealEngineBuilder<C>
+impl<C: AsymmetricCryptographicSystem + AsymmetricSyncStreamingSystem> QSealEngineBuilder<C>
 where
-    Error: From<<C as CryptographicSystem>::Error>,
-    <C as CryptographicSystem>::Error: std::error::Error + 'static,
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>,
+    <C as AsymmetricCryptographicSystem>::Error: std::error::Error + 'static,
 {
     /// 创建一个新的构造器
     pub fn new() -> Self {
@@ -332,10 +332,10 @@ where
     }
 
     /// 构建 `QSealEngine`
-    pub fn build(self) -> Result<QSealEngine<C>, Error> {
+    pub fn build(self) -> Result<AsymmetricQSealEngine<C>, Error> {
         let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
         let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
-        QSealEngine::new(cm, &prefix)
+        AsymmetricQSealEngine::new(cm, &prefix)
     }
 }
 
@@ -350,7 +350,7 @@ mod tests {
     /// 简单的测试用系统，仅实现基础加密/解密
     #[derive(Clone)]
     struct DummyCryptoSystem;
-    impl CryptographicSystem for DummyCryptoSystem {
+    impl AsymmetricCryptographicSystem for DummyCryptoSystem {
         type PublicKey = String;
         type PrivateKey = String;
         type CiphertextOutput = Base64String;
@@ -374,7 +374,7 @@ mod tests {
     /// 支持认证加解密的测试用系统
     #[derive(Clone)]
     struct DummyAuthSystem;
-    impl CryptographicSystem for DummyAuthSystem {
+    impl AsymmetricCryptographicSystem for DummyAuthSystem {
         type PublicKey = String;
         type PrivateKey = String;
         type CiphertextOutput = Base64String;
@@ -440,9 +440,9 @@ mod tests {
         }
     }
 
-    fn make_engine<C: CryptographicSystem>(config: Arc<ConfigManager>, prefix: &str) -> QSealEngine<C>
-    where Error: From<<C as CryptographicSystem>::Error>, <C as CryptographicSystem>::Error: std::error::Error + 'static {
-        QSealEngine::new(config, prefix).unwrap()
+    fn make_engine<C: AsymmetricCryptographicSystem>(config: Arc<ConfigManager>, prefix: &str) -> AsymmetricQSealEngine<C>
+    where Error: From<<C as AsymmetricCryptographicSystem>::Error>, <C as AsymmetricCryptographicSystem>::Error: std::error::Error + 'static {
+        AsymmetricQSealEngine::new(config, prefix).unwrap()
     }
 
     #[test]

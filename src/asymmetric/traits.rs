@@ -3,12 +3,12 @@ use std::fmt::Debug;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::io::{Read, Write};
 use crate::Error;
-use crate::common::AsyncStreamingConfig;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingConfig;
+use crate::common::streaming::StreamingResult;
 use crate::common::utils::CryptoConfig;
 
 /// 加密系统的公共特征，统一各种加密算法的接口
-pub trait CryptographicSystem: Sized {
+pub trait AsymmetricCryptographicSystem: Sized {
     /// 公钥类型
     type PublicKey: Clone + Serialize + for<'de> Deserialize<'de> + Debug;
     
@@ -52,7 +52,7 @@ pub trait CryptographicSystem: Sized {
 }
 
 /// 同步流式加密系统扩展
-pub trait SyncStreamingSystem: CryptographicSystem
+pub trait AsymmetricSyncStreamingSystem: AsymmetricCryptographicSystem
 where
     Error: From<Self::Error>,
 {
@@ -78,7 +78,7 @@ where
 /// 异步流式加密系统扩展
 #[cfg(feature = "async-engine")]
 #[async_trait::async_trait]
-pub trait AsyncStreamingSystem: CryptographicSystem + Send + Sync
+pub trait AsyncStreamingSystem: AsymmetricCryptographicSystem + Send + Sync
 where
     Self::Error: Send,
     Error: From<Self::Error>,
@@ -88,7 +88,7 @@ where
         public_key: &Self::PublicKey,
         reader: R,
         writer: W,
-        config: &AsyncStreamingConfig,
+        config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -100,7 +100,7 @@ where
         private_key: &Self::PrivateKey,
         reader: R,
         writer: W,
-        config: &AsyncStreamingConfig,
+        config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where

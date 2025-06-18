@@ -5,12 +5,12 @@ use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use sha2::Sha256;
 use rsa::rand_core::OsRng as RsaOsRng;
 use serde::{Deserialize, Serialize};
-use crate::asymmetric::traits::CryptographicSystem;
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 #[cfg(feature = "async-engine")]
 use crate::asymmetric::traits::AsyncStreamingSystem;
 use crate::common::errors::Error;
 #[cfg(feature = "async-engine")]
-use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
+use crate::common::streaming::StreamingConfig;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::common::streaming::StreamingResult;
@@ -98,7 +98,7 @@ impl RsaCryptoSystem {
     }
 }
 
-impl CryptographicSystem for RsaCryptoSystem {
+impl AsymmetricCryptographicSystem for RsaCryptoSystem {
     type PublicKey = RsaPublicKeyWrapper;
     type PrivateKey = RsaPrivateKeyWrapper;
     type CiphertextOutput = Base64String;
@@ -208,7 +208,7 @@ impl AsyncStreamingSystem for RsaCryptoSystem {
         public_key: &Self::PublicKey,
         mut reader: R,
         mut writer: W,
-        config: &AsyncStreamingConfig,
+        config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -254,7 +254,7 @@ impl AsyncStreamingSystem for RsaCryptoSystem {
         private_key: &Self::PrivateKey,
         mut reader: R,
         mut writer: W,
-        _config: &AsyncStreamingConfig,
+        _config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -339,7 +339,7 @@ mod async_tests {
     use crate::common::utils::CryptoConfig;
     use std::io::Cursor;
     use tokio::io::BufWriter;
-    use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
+    use crate::common::streaming::StreamingConfig;
 
     #[tokio::test]
     async fn test_async_streaming_roundtrip() {
@@ -353,7 +353,7 @@ mod async_tests {
         {
             let reader = Cursor::new(original_data);
             let writer = BufWriter::new(&mut encrypted_buffer);
-            let stream_config = AsyncStreamingConfig {
+            let stream_config = StreamingConfig {
                 buffer_size: 16,
                 keep_in_memory: true,
                 ..Default::default()
@@ -377,7 +377,7 @@ mod async_tests {
         {
             let reader = Cursor::new(&encrypted_buffer);
             let writer = BufWriter::new(&mut decrypted_buffer);
-            let stream_config = AsyncStreamingConfig {
+            let stream_config = StreamingConfig {
                 buffer_size: 32,
                 ..Default::default()
             };

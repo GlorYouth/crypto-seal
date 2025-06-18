@@ -1,8 +1,11 @@
 use std::io::{Read, Write};
 use std::fmt::Debug;
-use crate::Error;
 use crate::common::utils::CryptoConfig;
+use crate::common::errors::Error;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
+
+#[cfg(feature = "async-engine")]
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// 对称加密系统的公共特征
 pub trait SymmetricCryptographicSystem: Sized {
@@ -10,7 +13,7 @@ pub trait SymmetricCryptographicSystem: Sized {
     type Key: Clone + Debug; 
     
     /// 密文的输出格式。
-    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + ToString;
+    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + ToString + Send + Sync;
     
     /// 该系统的错误类型。
     type Error: std::error::Error;
@@ -61,4 +64,37 @@ where
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>;
+}
+
+/// 异步对称流式加密系统扩展
+#[cfg(feature = "async-engine")]
+#[async_trait::async_trait]
+pub trait SymmetricAsyncStreamingSystem: SymmetricCryptographicSystem + Send + Sync
+where
+    Self::Error: Send,
+    Error: From<Self::Error>,
+{
+    /// 异步流式加密
+    async fn encrypt_stream_async<R, W>(
+        key: &Self::Key,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send;
+
+    /// 异步流式解密
+    async fn decrypt_stream_async<R, W>(
+        key: &Self::Key,
+        reader: R,
+        writer: W,
+        config: &StreamingConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<StreamingResult, Error>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send;
 }

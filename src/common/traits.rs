@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use serde::{Deserialize, Serialize};
-use crate::asymmetric::traits::CryptographicSystem;
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 
 /// 密钥状态
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -33,7 +33,7 @@ pub struct KeyMetadata {
 }
 
 /// 认证加密系统扩展特征
-pub trait AuthenticatedCryptoSystem: CryptographicSystem {
+pub trait AuthenticatedCryptoSystem: AsymmetricCryptographicSystem {
     /// 认证加密输出类型
     type AuthenticatedOutput: AsRef<[u8]> + From<Vec<u8>> + ToString;
     

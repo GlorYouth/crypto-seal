@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
-use seal_kit::{HybridRsaKyber, PostQuantumKyber, QSealEngine, TraditionalRsa};
-use seal_kit::asymmetric::traits::CryptographicSystem;
+use seal_kit::{HybridRsaKyber, PostQuantumKyber, AsymmetricQSealEngine, TraditionalRsa};
+use seal_kit::asymmetric::traits::AsymmetricCryptographicSystem;
 use seal_kit::ConfigManager;
 use std::sync::Arc;
 use std::io::Cursor;
@@ -9,7 +9,7 @@ use std::fs;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use rsa::pkcs8::DecodePrivateKey;
 use criterion::SamplingMode;
-use seal_kit::asymmetric::traits::SyncStreamingSystem;
+use seal_kit::asymmetric::traits::AsymmetricSyncStreamingSystem;
 use seal_kit::common::streaming::StreamingConfig;
 use seal_kit::common::utils::{from_base64, CryptoConfig};
 
@@ -59,7 +59,7 @@ fn bench_engine(c: &mut Criterion) {
     // 在运行前清理旧的密钥，避免因格式变更导致测试失败
     let _ = fs::remove_dir_all("keys");
 
-    let mut engine = QSealEngine::<HybridRsaKyber>::with_defaults("bench_keys").unwrap();
+    let mut engine = AsymmetricQSealEngine::<HybridRsaKyber>::with_defaults("bench_keys").unwrap();
     let data = vec![0u8; 1024];
     c.bench_function("QSealEngine<HybridRsaKyber> encrypt 1KB", |b| {
         b.iter(|| engine.encrypt(black_box(&data)).unwrap());
@@ -82,7 +82,7 @@ fn bench_qseal_rsa(c: &mut Criterion) {
     let mut crypto_cfg = config_mgr.get_crypto_config();
     crypto_cfg.rsa_key_bits = 2048;
     config_mgr.update_crypto_config(crypto_cfg).unwrap();
-    let mut engine = QSealEngine::<TraditionalRsa>::new(config_mgr, "bench_keys_rsa").unwrap();
+    let mut engine = AsymmetricQSealEngine::<TraditionalRsa>::new(config_mgr, "bench_keys_rsa").unwrap();
     let data = vec![0u8; 245];
     c.bench_function("QSealEngine<TraditionalRsa> encrypt 245B", |b| {
         b.iter(|| engine.encrypt(black_box(&data)).unwrap());
@@ -100,7 +100,7 @@ fn bench_qseal_kyber(c: &mut Criterion) {
     // 在运行前清理旧的密钥，避免因格式变更导致测试失败
     let _ = fs::remove_dir_all("keys");
 
-    let mut engine = QSealEngine::<PostQuantumKyber>::with_defaults("bench_keys_kyber").unwrap();
+    let mut engine = AsymmetricQSealEngine::<PostQuantumKyber>::with_defaults("bench_keys_kyber").unwrap();
     let data = vec![0u8; 1024];
     c.bench_function("QSealEngine<PostQuantumKyber> encrypt 1KB", |b| {
         b.iter(|| engine.encrypt(black_box(&data)).unwrap());

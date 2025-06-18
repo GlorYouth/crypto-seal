@@ -1,6 +1,6 @@
 #![cfg(feature = "traditional")]
 use seal_kit::TraditionalRsa;
-use seal_kit::asymmetric::traits::CryptographicSystem;
+use seal_kit::asymmetric::traits::AsymmetricCryptographicSystem;
 use seal_kit::common::utils::CryptoConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-pub(crate) use crate::asymmetric::traits::CryptographicSystem;
+pub(crate) use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 pub(crate) use crate::common::traits::{KeyMetadata, KeyStatus};
 use crate::common::errors::Error;
 use crate::common::utils::CryptoConfig;
@@ -57,7 +57,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::collections::HashMap;
     use crate::asymmetric::rotation::KeyRotationManager;
-    use crate::asymmetric::traits::CryptographicSystem;
+    use crate::asymmetric::traits::AsymmetricCryptographicSystem;
     use crate::common::traits::{KeyMetadata, KeyStatus};
     use crate::common::errors::Error;
     use crate::common::utils::Base64String;
@@ -103,7 +103,7 @@ mod tests {
     /// 简单的 DummySystem，用于测试密钥轮换逻辑
     #[derive(Clone)]
     struct DummySystem;
-    impl CryptographicSystem for DummySystem {
+    impl AsymmetricCryptographicSystem for DummySystem {
         type PublicKey = String;
         type PrivateKey = String;
         type CiphertextOutput = Base64String;

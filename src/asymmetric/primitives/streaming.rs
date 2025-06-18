@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use crate::asymmetric::traits::CryptographicSystem;
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::errors::Error;
 use std::sync::Arc;
 #[cfg(feature = "parallel")]
@@ -8,9 +8,9 @@ use rayon::prelude::*;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
 
 /// 流式加密器，将输入流数据加密并写入输出流
-pub struct StreamingEncryptor<'a, C: CryptographicSystem, R: Read, W: Write> 
+pub struct StreamingEncryptor<'a, C: AsymmetricCryptographicSystem, R: Read, W: Write> 
 where
-    Error: From<<C as CryptographicSystem>::Error>
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>
 {
     reader: R,
     writer: W,
@@ -26,9 +26,9 @@ where
     buffer: Option<Vec<u8>>,
 }
 
-impl<'a, C: CryptographicSystem, R: Read, W: Write> StreamingEncryptor<'a, C, R, W>
+impl<'a, C: AsymmetricCryptographicSystem, R: Read, W: Write> StreamingEncryptor<'a, C, R, W>
 where
-    Error: From<<C as CryptographicSystem>::Error>
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>
 {
     /// 创建新的流式加密器
     pub fn new(reader: R, writer: W, public_key: &'a C::PublicKey, config: &StreamingConfig) -> Self {
@@ -127,9 +127,9 @@ where
 }
 
 /// 流式解密器，将加密的输入流解密并写入输出流
-pub struct StreamingDecryptor<'a, C: CryptographicSystem, R: Read, W: Write>
+pub struct StreamingDecryptor<'a, C: AsymmetricCryptographicSystem, R: Read, W: Write>
 where
-    Error: From<<C as CryptographicSystem>::Error>
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>
 {
     reader: R,
     writer: W,
@@ -144,9 +144,9 @@ where
     buffer: Option<Vec<u8>>,
 }
 
-impl<'a, C: CryptographicSystem, R: Read, W: Write> StreamingDecryptor<'a, C, R, W>
+impl<'a, C: AsymmetricCryptographicSystem, R: Read, W: Write> StreamingDecryptor<'a, C, R, W>
 where
-    Error: From<<C as CryptographicSystem>::Error>
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>
 {
     /// 创建新的流式解密器
     pub fn new(reader: R, writer: W, private_key: &'a C::PrivateKey, config: &StreamingConfig) -> Self {
@@ -244,9 +244,9 @@ where
     }
 }
 
-impl<T> crate::asymmetric::traits::SyncStreamingSystem for T
+impl<T> crate::asymmetric::traits::AsymmetricSyncStreamingSystem for T
 where
-    T: CryptographicSystem,
+    T: AsymmetricCryptographicSystem,
     Error: From<T::Error>,
 {
     fn encrypt_stream<R: Read, W: Write>(
@@ -291,10 +291,10 @@ pub fn encrypt_stream_parallel<C, R, W>(
     additional_data: Option<&[u8]>,
 ) -> Result<StreamingResult, Error>
 where
-    C: CryptographicSystem,
+    C: AsymmetricCryptographicSystem,
     C::PublicKey: Sync + Send,
-    <C as CryptographicSystem>::Error: Send + 'static,
-    Error: From<<C as CryptographicSystem>::Error>,
+    <C as AsymmetricCryptographicSystem>::Error: Send + 'static,
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>,
     R: Read + Send,
     W: Write + Send,
 {
@@ -308,7 +308,7 @@ where
     // 统计原始明文字节总数
     let plaintext_total: u64 = chunks.iter().map(|c| c.len() as u64).sum();
     // 并行执行加密并收集结果
-    let cipher_results: Vec<Result<Vec<u8>, <C as CryptographicSystem>::Error>> =
+    let cipher_results: Vec<Result<Vec<u8>, <C as AsymmetricCryptographicSystem>::Error>> =
         chunks.into_par_iter()
             .map(|plaintext| {
                 C::encrypt(public_key, &plaintext, additional_data)
@@ -344,10 +344,10 @@ pub fn decrypt_stream_parallel<C, R, W>(
     additional_data: Option<&[u8]>,
 ) -> Result<StreamingResult, Error>
 where
-    C: CryptographicSystem,
+    C: AsymmetricCryptographicSystem,
     C::PrivateKey: Sync + Send,
-    <C as CryptographicSystem>::Error: Send + 'static,
-    Error: From<<C as CryptographicSystem>::Error>,
+    <C as AsymmetricCryptographicSystem>::Error: Send + 'static,
+    Error: From<<C as AsymmetricCryptographicSystem>::Error>,
     R: Read + Send,
     W: Write + Send,
 {
@@ -368,7 +368,7 @@ where
         chunks.push(ciphertext);
     }
     // 并行执行解密并收集结果
-    let plain_results: Vec<Result<Vec<u8>, <C as CryptographicSystem>::Error>> =
+    let plain_results: Vec<Result<Vec<u8>, <C as AsymmetricCryptographicSystem>::Error>> =
         chunks.into_par_iter()
             .map(|ciphertext| C::decrypt(private_key, &ciphertext, additional_data))
             .collect();
@@ -395,10 +395,10 @@ where
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use crate::asymmetric::traits::CryptographicSystem;
+    use crate::asymmetric::traits::AsymmetricCryptographicSystem;
     use std::sync::Mutex;
     
-    use crate::asymmetric::traits::SyncStreamingSystem;
+    use crate::asymmetric::traits::AsymmetricSyncStreamingSystem;
     use crate::common::utils::{constant_time_eq, from_base64, Base64String, CryptoConfig};
 
     #[cfg(feature = "post-quantum")]
@@ -460,7 +460,7 @@ mod tests {
         // 使用DummySystem测试进度回调和内存缓冲
         #[derive(Clone)]
         struct DummySystem;
-        impl CryptographicSystem for DummySystem {
+        impl AsymmetricCryptographicSystem for DummySystem {
             type PublicKey = ();
             type PrivateKey = ();
             type CiphertextOutput = Base64String;
@@ -557,7 +557,7 @@ mod tests {
         // 使用 DummySystem 测试 keep_in_memory = false 时 buffer = None
         #[derive(Clone)]
         struct DummySystem;
-        impl CryptographicSystem for DummySystem {
+        impl AsymmetricCryptographicSystem for DummySystem {
             type PublicKey = ();
             type PrivateKey = ();
             type CiphertextOutput = Base64String;

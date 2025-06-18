@@ -9,11 +9,8 @@ pub mod config;
 pub use crate::asymmetric::primitives::streaming::*;
 
 #[cfg(feature = "async-engine")]
-pub use crate::asymmetric::primitives::async_streaming::{AsyncStreamingConfig, AsyncStreamingDecryptor, AsyncStreamingEncryptor};
+pub use crate::asymmetric::primitives::async_streaming::{AsyncStreamingDecryptor, AsyncStreamingEncryptor};
 
-use base64::Engine as _;
-use zeroize::{Zeroize, ZeroizeOnDrop};
-use std::ops::{Deref, DerefMut};
-use serde::{Deserialize, Serialize};
-use serde_bytes;
+#[cfg(feature = "async-engine")]
+pub use streaming::StreamingConfig;
 

@@ -14,12 +14,12 @@ use crate::rotation::{KeyMetadata, KeyStorage, RotationPolicy};
 use crate::storage::KeyFileStorage;
 use crate::common::traits::AuthenticatedCryptoSystem;
 use crate::common::streaming::StreamingResult;
-use crate::asymmetric::primitives::async_streaming::AsyncStreamingConfig;
+use crate::common::streaming::StreamingConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
-use crate::asymmetric::traits::{AsyncStreamingSystem, CryptographicSystem};
+use crate::asymmetric::traits::{AsyncStreamingSystem, AsymmetricCryptographicSystem};
 
 /// 并发版 QSeal 引擎，支持多线程同时调用
-pub struct AsyncQSealEngine<C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>
+pub struct AsymmetricQSealEngineAsync<C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>
 where
     Error: From<C::Error>,
     C::Error: Send,
@@ -41,9 +41,9 @@ struct KeyPairData {
     private_key: String,
 }
 
-impl<C> AsyncQSealEngine<C>
+impl<C> AsymmetricQSealEngineAsync<C>
 where
-    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
     Error: From<C::Error>,
     C::Error: Send,
 {
@@ -53,7 +53,7 @@ where
         let key_storage = Arc::new(KeyFileStorage::new(&storage_config.key_storage_dir)?);
         let rotation_policy = config.get_rotation_policy();
         let prefix = key_prefix.to_string();
-        let engine = AsyncQSealEngine {
+        let engine = AsymmetricQSealEngineAsync {
             config: config.clone(),
             key_storage: key_storage.clone(),
             rotation_policy: rotation_policy.clone(),
@@ -280,7 +280,7 @@ where
         &self,
         reader: R,
         writer: W,
-        config: &AsyncStreamingConfig,
+        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         R: AsyncRead + Unpin + Send,
@@ -305,7 +305,7 @@ where
         &self,
         reader: R,
         writer: W,
-        config: &AsyncStreamingConfig,
+        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         R: AsyncRead + Unpin + Send,
@@ -325,9 +325,9 @@ where
 }
 
 #[cfg(feature = "parallel")]
-impl<C> AsyncQSealEngine<C>
+impl<C> AsymmetricQSealEngineAsync<C>
 where
-    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
     Error: From<C::Error>,
     C::Error: Send,
 {
@@ -336,17 +336,17 @@ where
     where
         Self: Sync,
         T: AsRef<[u8]> + Sync,
-        <C as CryptographicSystem>::PublicKey: Send + Sync,
-        <C as CryptographicSystem>::PrivateKey: Send + Sync,
+        <C as AsymmetricCryptographicSystem>::PublicKey: Send + Sync,
+        <C as AsymmetricCryptographicSystem>::PrivateKey: Send + Sync,
     {
         inputs.par_iter().map(|item| self.encrypt(item.as_ref())).collect()
     }
 }
 
 #[cfg(not(feature = "parallel"))]
-impl<C> AsyncQSealEngine<C>
+impl<C> AsymmetricQSealEngineAsync<C>
 where
-    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
     Error: From<C::Error>,
     C::Error: Send,
 {
@@ -360,7 +360,7 @@ where
 }
 
 /// `AsyncQSealEngine` 的构造器
-pub struct AsyncQSealEngineBuilder<C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>
+pub struct AsyncQSealEngineBuilder<C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static>
 where
     Error: From<C::Error>,
     C::Error: Send,
@@ -372,7 +372,7 @@ where
 
 impl<C> AsyncQSealEngineBuilder<C>
 where
-    C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+    C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
     Error: From<C::Error>,
     C::Error: Send,
 {
@@ -432,10 +432,10 @@ where
     }
 
     /// 构建 `AsyncQSealEngine`
-    pub fn build(self) -> Result<AsyncQSealEngine<C>, Error> {
+    pub fn build(self) -> Result<AsymmetricQSealEngineAsync<C>, Error> {
         let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
         let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
-        AsyncQSealEngine::new(cm, &prefix)
+        AsymmetricQSealEngineAsync::new(cm, &prefix)
     }
 }
 
@@ -450,7 +450,7 @@ mod tests {
     // A dummy crypto system for testing
     struct DummyCryptoSystem;
 
-    impl CryptographicSystem for DummyCryptoSystem {
+    impl AsymmetricCryptographicSystem for DummyCryptoSystem {
         type PublicKey = String;
         type PrivateKey = String;
         type CiphertextOutput = Base64String;
@@ -481,7 +481,7 @@ mod tests {
             _public_key: &Self::PublicKey,
             mut reader: R,
             mut writer: W,
-            _config: &AsyncStreamingConfig,
+            _config: &StreamingConfig,
             _additional_data: Option<&[u8]>,
         ) -> Result<StreamingResult, Error>
         where
@@ -498,7 +498,7 @@ mod tests {
             _private_key: &Self::PrivateKey,
             mut reader: R,
             mut writer: W,
-            _config: &AsyncStreamingConfig,
+            _config: &StreamingConfig,
             _additional_data: Option<&[u8]>,
         ) -> Result<StreamingResult, Error>
         where
@@ -515,7 +515,7 @@ mod tests {
     // A dummy authenticated crypto system for testing
     struct DummyAuthSystem;
 
-    impl CryptographicSystem for DummyAuthSystem {
+    impl AsymmetricCryptographicSystem for DummyAuthSystem {
         type PublicKey = String;
         type PrivateKey = String;
         type CiphertextOutput = Base64String;
@@ -584,7 +584,7 @@ mod tests {
             _public_key: &Self::PublicKey,
             _reader: R,
             _writer: W,
-            _config: &AsyncStreamingConfig,
+            _config: &StreamingConfig,
             _additional_data: Option<&[u8]>,
         ) -> Result<StreamingResult, Error>
         where
@@ -598,7 +598,7 @@ mod tests {
             _private_key: &Self::PrivateKey,
             _reader: R,
             _writer: W,
-            _config: &AsyncStreamingConfig,
+            _config: &StreamingConfig,
             _additional_data: Option<&[u8]>,
         ) -> Result<StreamingResult, Error>
         where
@@ -609,14 +609,14 @@ mod tests {
         }
     }
 
-    fn setup_test_engine<C>(key_prefix: &str) -> (tempfile::TempDir, AsyncQSealEngine<C>)
+    fn setup_test_engine<C>(key_prefix: &str) -> (tempfile::TempDir, AsymmetricQSealEngineAsync<C>)
     where
-        C: CryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
+        C: AsymmetricCryptographicSystem + AsyncStreamingSystem + Send + Sync + 'static,
         Error: From<C::Error>,
         C::Error: Send,
     {
         let dir = tempfile::tempdir().unwrap();
-        let engine = AsyncQSealEngine::<C>::builder()
+        let engine = AsymmetricQSealEngineAsync::<C>::builder()
             .with_storage_dir(dir.path().to_str().unwrap())
             .unwrap()
             .with_key_prefix(key_prefix)
@@ -644,7 +644,7 @@ mod tests {
         let mut source = Cursor::new(plaintext);
         let mut sink = Vec::new();
         
-        let config = AsyncStreamingConfig::default();
+        let config = StreamingConfig::default();
 
         engine.encrypt_stream(&mut source, &mut sink, &config).await.unwrap();
 
@@ -669,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_encrypt_without_signature() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = AsyncQSealEngine::<DummyAuthSystem>::builder()
+        let engine = AsymmetricQSealEngineAsync::<DummyAuthSystem>::builder()
             .with_storage_dir(dir.path().to_str().unwrap())
             .unwrap()
             .with_key_prefix("test_auth_no_sign")

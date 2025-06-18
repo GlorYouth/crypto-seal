@@ -1,68 +1,15 @@
 #![cfg(feature = "async-engine")]
 
 use crate::common::errors::Error;
-use crate::common::streaming::StreamingResult;
-use crate::asymmetric::traits::CryptographicSystem;
+use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
-/// 异步流式加密配置
-pub struct AsyncStreamingConfig {
-    /// 缓冲区大小
-    pub buffer_size: usize,
-    /// 是否在处理过程中显示进度
-    pub show_progress: bool,
-    /// 是否在内存中保留完整密文/明文
-    pub keep_in_memory: bool,
-    /// 可选的异步进度回调
-    pub progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
-    /// 可选的总字节数，用于进度计算
-    pub total_bytes: Option<u64>,
-}
-
-impl Default for AsyncStreamingConfig {
-    fn default() -> Self {
-        Self {
-            buffer_size: 65536, // 64KB
-            show_progress: false,
-            keep_in_memory: false,
-            progress_callback: None,
-            total_bytes: None,
-        }
-    }
-}
-
-impl AsyncStreamingConfig {
-    pub fn with_total_bytes(mut self, total: u64) -> Self {
-        self.total_bytes = Some(total);
-        self
-    }
-    pub fn with_buffer_size(mut self, size: usize) -> Self {
-        self.buffer_size = size;
-        self
-    }
-    pub fn with_show_progress(mut self, show: bool) -> Self {
-        self.show_progress = show;
-        self
-    }
-    pub fn with_keep_in_memory(mut self, keep: bool) -> Self {
-        self.keep_in_memory = keep;
-        self
-    }
-    pub fn with_progress_callback(
-        mut self,
-        callback: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>,
-    ) -> Self {
-        self.progress_callback = Some(callback);
-        self
-    }
-}
 
 /// 异步流式加密器
 pub struct AsyncStreamingEncryptor<'a, C, R, W>
 where
-    C: CryptographicSystem,
+    C: AsymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     Error: From<C::Error>,
@@ -70,14 +17,14 @@ where
     reader: R,
     writer: W,
     public_key: &'a C::PublicKey,
-    config: AsyncStreamingConfig,
+    config: StreamingConfig,
     additional_data: Option<Vec<u8>>,
     _phantom: PhantomData<C>,
 }
 
 impl<'a, C, R, W> AsyncStreamingEncryptor<'a, C, R, W>
 where
-    C: CryptographicSystem,
+    C: AsymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     Error: From<C::Error>,
@@ -86,7 +33,7 @@ where
         reader: R,
         writer: W,
         public_key: &'a C::PublicKey,
-        config: AsyncStreamingConfig,
+        config: StreamingConfig,
     ) -> Self {
         Self {
             reader,
@@ -165,7 +112,7 @@ where
 /// 异步流式解密器
 pub struct AsyncStreamingDecryptor<'a, C, R, W>
 where
-    C: CryptographicSystem,
+    C: AsymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     Error: From<C::Error>,
@@ -173,14 +120,14 @@ where
     reader: R,
     writer: W,
     private_key: &'a C::PrivateKey,
-    config: AsyncStreamingConfig,
+    config: StreamingConfig,
     additional_data: Option<Vec<u8>>,
     _phantom: PhantomData<C>,
 }
 
 impl<'a, C, R, W> AsyncStreamingDecryptor<'a, C, R, W>
 where
-    C: CryptographicSystem,
+    C: AsymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     Error: From<C::Error>,
@@ -189,7 +136,7 @@ where
         reader: R,
         writer: W,
         private_key: &'a C::PrivateKey,
-        config: AsyncStreamingConfig,
+        config: StreamingConfig,
     ) -> Self {
         Self {
             reader,
@@ -223,11 +170,11 @@ where
                 .await
                 .map_err(Error::Io)?;
 
-            let ciphertext_str = String::from_utf8(ciphertext_buffer)
+            let ciphertext = String::from_utf8(ciphertext_buffer)
                 .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext: {}", e)))?;
                 
             let plaintext =
-                C::decrypt(self.private_key, &ciphertext_str, self.additional_data.as_deref())?;
+                C::decrypt(self.private_key, &ciphertext, self.additional_data.as_deref())?;
             
             self.writer.write_all(&plaintext).await.map_err(Error::Io)?;
 

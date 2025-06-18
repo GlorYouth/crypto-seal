@@ -11,7 +11,7 @@ pub mod rotation;
 pub mod asymmetric;
 pub mod symmetric;
 
-pub use asymmetric::traits::CryptographicSystem;
+pub use asymmetric::traits::AsymmetricCryptographicSystem;
 #[cfg(feature = "secure-storage")]
 pub use common::traits::SecureKeyStorage;
 pub use common::traits::AuthenticatedCryptoSystem;
@@ -20,9 +20,9 @@ pub use common::errors::Error;
 pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 pub use asymmetric::rotation::KeyRotationManager;
 pub use common::config::ConfigManager;
-pub use asymmetric::engines::QSealEngine;
+pub use asymmetric::engines::AsymmetricQSealEngine;
 #[cfg(feature = "async-engine")]
-pub use asymmetric::engines::AsyncQSealEngine;
+pub use asymmetric::engines::AsymmetricQSealEngineAsync;
 pub use symmetric::engines::SymmetricQSealEngine;
 
 // 条件编译特性

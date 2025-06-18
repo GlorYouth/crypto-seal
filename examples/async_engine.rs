@@ -9,12 +9,12 @@ fn main() {
 #[cfg(all(feature = "async-engine", feature = "traditional", feature = "post-quantum"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{sync::Arc, fs};
-    use seal_kit::{ConfigManager, AsyncQSealEngine, HybridRsaKyber};
+    use seal_kit::{ConfigManager, AsymmetricQSealEngineAsync, HybridRsaKyber};
 
     // 初始化配置
     let config = Arc::new(ConfigManager::new());
     // 创建并发引擎，使用混合加密 HybridRsaKyber
-    let engine = AsyncQSealEngine::<HybridRsaKyber>::new(config, "async_example")?;
+    let engine = AsymmetricQSealEngineAsync::<HybridRsaKyber>::new(config, "async_example")?;
 
     let data = b"Hello, Async QSeal!";
     // 执行加解密

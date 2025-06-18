@@ -1,6 +1,6 @@
 #![cfg(feature = "post-quantum")]
 use std::{fs, sync::Arc};
-use seal_kit::{QSealEngine, ConfigManager, Error, PostQuantumKyber};
+use seal_kit::{AsymmetricQSealEngine, ConfigManager, Error, PostQuantumKyber};
 
 fn main() -> Result<(), Error> {
     let data = "示例数据: 同步引擎".as_bytes();
@@ -15,7 +15,7 @@ fn main() -> Result<(), Error> {
     mgr.update_crypto_config(cfg)?;
     println!("默认配置更新完成");
     println!("开始创建默认配置引擎...");
-    let mut engine_default = QSealEngine::<PostQuantumKyber>::new(Arc::new(mgr), "example_keys")?;
+    let mut engine_default = AsymmetricQSealEngine::<PostQuantumKyber>::new(Arc::new(mgr), "example_keys")?;
     println!("默认配置引擎创建完成");
     println!("开始默认配置 encrypt...");
     let cipher1 = engine_default.encrypt(data)?;
@@ -63,7 +63,7 @@ fn main() -> Result<(), Error> {
     println!("config.json 写入完成");
 
     println!("开始创建 JSON 文件配置引擎...");
-    let mut engine_file = QSealEngine::<PostQuantumKyber>::from_file("config.json", "example_keys")?;
+    let mut engine_file = AsymmetricQSealEngine::<PostQuantumKyber>::from_file("config.json", "example_keys")?;
     println!("JSON 引擎创建完成");
     let cipher2 = engine_file.encrypt(data)?;
     println!("JSON 引擎 encrypt 完成");
@@ -85,7 +85,7 @@ fn main() -> Result<(), Error> {
     println!("环境变量设置完成");
     println!("开始创建环境变量配置引擎...");
     let config_env = Arc::new(ConfigManager::from_env());
-    let mut engine_env = QSealEngine::<PostQuantumKyber>::new(config_env, "example_keys")?;
+    let mut engine_env = AsymmetricQSealEngine::<PostQuantumKyber>::new(config_env, "example_keys")?;
     println!("环境变量配置引擎创建完成");
     println!("开始环境变量 encrypt...");
     let cipher3 = engine_env.encrypt(data)?;

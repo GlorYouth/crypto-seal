@@ -1,6 +1,6 @@
 #![cfg(feature = "traditional")]
 use std::io::Cursor;
-use seal_kit::{QSealEngine, TraditionalRsa, ConfigManager};
+use seal_kit::{AsymmetricQSealEngine, TraditionalRsa, ConfigManager};
 use seal_kit::common::streaming::StreamingConfig;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. 使用默认配置初始化同步引擎
     // QSealEngine 会自动处理密钥的生成、加载和轮换
     let config = Arc::new(ConfigManager::new());
-    let mut engine = QSealEngine::<TraditionalRsa>::new(config, "streaming_example_keys")?;
+    let mut engine = AsymmetricQSealEngine::<TraditionalRsa>::new(config, "streaming_example_keys")?;
 
     // 2. 构建流式配置
     let sc = StreamingConfig::default()

@@ -3,9 +3,9 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use seal_kit::common::{decrypt_stream_parallel, encrypt_stream_parallel};
 use seal_kit::{HybridRsaKyber, PostQuantumKyber, TraditionalRsa};
-use seal_kit::asymmetric::traits::SyncStreamingSystem;
+use seal_kit::asymmetric::traits::AsymmetricSyncStreamingSystem;
 use std::io::Cursor;
-use seal_kit::asymmetric::traits::CryptographicSystem;
+use seal_kit::asymmetric::traits::AsymmetricCryptographicSystem;
 use seal_kit::common::streaming::StreamingConfig;
 use seal_kit::common::utils::CryptoConfig;
 
