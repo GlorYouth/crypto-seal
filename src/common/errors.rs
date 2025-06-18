@@ -37,6 +37,8 @@ pub enum Error {
     KeyExportFailed(String),
     /// 密钥管理错误
     KeyManagement(String),
+    /// 配置错误
+    Configuration(String),
 }
 
 impl fmt::Display for Error {
@@ -55,6 +57,7 @@ impl fmt::Display for Error {
             Error::KeyImportFailed(msg) => write!(f, "密钥导入失败: {}", msg),
             Error::KeyExportFailed(msg) => write!(f, "密钥导出失败: {}", msg),
             Error::KeyManagement(msg) => write!(f, "密钥管理错误: {}", msg),
+            Error::Configuration(msg) => write!(f, "配置错误: {}", msg),
         }
     }
 }
@@ -83,6 +86,12 @@ impl From<base64::DecodeError> for Error {
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
         Error::Serialization(format!("JSON错误: {}", err))
+    }
+}
+
+impl From<config::ConfigError> for Error {
+    fn from(err: config::ConfigError) -> Self {
+        Error::Configuration(err.to_string())
     }
 }
 

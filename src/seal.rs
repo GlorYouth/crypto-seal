@@ -11,6 +11,7 @@ use crate::asymmetric::engines::AsymmetricQSealAsyncEngine;
 use crate::asymmetric::engines::AsymmetricQSealEngine;
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
+use crate::common::config::ConfigManager;
 use crate::common::ConfigFile;
 use crate::common::errors::Error;
 use crate::common::traits::{KeyMetadata, SecureKeyStorage};
@@ -88,7 +89,7 @@ impl Seal {
         let initial_payload = VaultPayload {
             master_seed,
             key_registry: HashMap::new(),
-            config: ConfigFile::default(),
+            config: ConfigManager::new()?,
         };
 
         // 3. 将初始载荷写入加密文件。
