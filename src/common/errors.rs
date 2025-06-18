@@ -35,6 +35,8 @@ pub enum Error {
     KeyImportFailed(String),
     /// 密钥导出失败
     KeyExportFailed(String),
+    /// 密钥管理错误
+    KeyManagement(String),
 }
 
 impl fmt::Display for Error {
@@ -52,6 +54,7 @@ impl fmt::Display for Error {
             Error::DecryptionFailed(msg) => write!(f, "解密失败: {}", msg),
             Error::KeyImportFailed(msg) => write!(f, "密钥导入失败: {}", msg),
             Error::KeyExportFailed(msg) => write!(f, "密钥导出失败: {}", msg),
+            Error::KeyManagement(msg) => write!(f, "密钥管理错误: {}", msg),
         }
     }
 }

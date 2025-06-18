@@ -18,7 +18,7 @@ traditional = ["rsa"]
 post-quantum = ["pqcrypto-kyber", "pqcrypto-traits", "aes-gcm-feature"]
 
 # 对称加密
-symmetric = ["aes-gcm-feature", "chacha"]
+symmetric = ["aes-gcm-feature", "chacha", "secure-storage"]
 aes-gcm-feature = ["aes-gcm", "rand_core"]
 chacha = ["chacha20poly1305"]
 
@@ -51,8 +51,9 @@ chacha20poly1305 = { version = "0.10", optional = true }
 sha2 = "0.10.9"
 rand_core = { version = "0.9.3", optional = true, features = ["os_rng"] }
 argon2 = { version = "0.5.3", optional = true }
-secrecy = { version = "0.10.3", optional = true }
+secrecy = { version = "0.10.3", optional = true, features = ["serde"] }
 zeroize = { version = "1.8.1", features = ["derive"] }
+hkdf = "0.12.4"
 
 # 异步与并发
 tokio = { version = "1", features = ["full"], optional = true }

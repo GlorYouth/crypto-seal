@@ -1,307 +1,250 @@
 //! 对称加密引擎 `SymmetricQSealEngine`
-use std::sync::Arc;
-use std::io::{Read, Write};
-use std::path::Path;
 use crate::common::errors::Error;
-use crate::common::config::ConfigManager;
 use crate::common::streaming::{StreamingConfig, StreamingResult};
-use crate::storage::KeyFileStorage;
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
+use secrecy::SecretString;
+use std::io::{Read, Write};
+use std::marker::PhantomData;
 
-/// `SymmetricQSealEngine`：一个使用对称加密算法并支持密钥自动轮换的用户友好引擎。
+/// `SymmetricQSealEngine`：一个支持密钥轮换的用户友好对称加密引擎。
 ///
-/// 该引擎泛型于一个 `SymmetricCryptographicSystem`，负责处理所有的密钥管理、
-/// 加密和解密操作，为上层应用提供一个简单统一的接口。
+/// 该引擎通过 `Seal` 结构进行实例化，并由 `SymmetricKeyRotationManager` 在后台管理密钥。
+/// 它能够自动使用最新的主密钥进行加密，并能解密由旧密钥加密的数据。
 pub struct SymmetricQSealEngine<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem>
 where
     T::Error: std::error::Error + 'static,
     Error: From<T::Error>,
 {
-    config: Arc<ConfigManager>,
-    pub(crate) key_manager: SymmetricKeyRotationManager<T>,
+    key_manager: SymmetricKeyRotationManager,
+    password: SecretString, // 需要密码来提交密钥轮换或使用计数更新
+    _phantom: PhantomData<T>,
 }
 
 impl<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem> SymmetricQSealEngine<T>
 where
     T::Error: std::error::Error + 'static,
     Error: From<T::Error>,
+    T::Key: Clone,
 {
-    /// 使用指定的配置管理器创建一个新的引擎实例。
-    pub fn new(config_manager: Arc<ConfigManager>, key_prefix: &str) -> Result<Self, Error> {
-        let storage_config = config_manager.get_storage_config();
-        let key_storage = Arc::new(KeyFileStorage::new(&storage_config.key_storage_dir)?);
-        let rotation_policy = config_manager.get_rotation_policy();
-        
-        let mut key_manager = SymmetricKeyRotationManager::<T>::new(
-            key_storage,
-            rotation_policy,
-            key_prefix
-        );
-        key_manager.initialize(&config_manager.get_crypto_config())?;
-        
-        Ok(Self {
-            config: config_manager,
+    /// 使用密钥管理器创建一个新的引擎实例。
+    /// 这个方法是 crate-internal 的，只能通过 `Seal` 结构调用。
+    pub(crate) fn new(
+        key_manager: SymmetricKeyRotationManager,
+        password: SecretString,
+    ) -> Self {
+        Self {
             key_manager,
-        })
-    }
-    
-    /// 从配置文件路径创建一个新的引擎实例
-    pub fn from_file<P: AsRef<Path>>(path: P, key_prefix: &str) -> Result<Self, Error> {
-        let config_manager = Arc::new(ConfigManager::from_file(path)?);
-        Self::new(config_manager, key_prefix)
-    }
-
-    /// 使用默认配置创建一个新的引擎实例
-    pub fn with_defaults(key_prefix: &str) -> Result<Self, Error> {
-        let config_manager = Arc::new(ConfigManager::new());
-        Self::new(config_manager, key_prefix)
-    }
-    
-    /// 返回一个构造器以创建引擎
-    pub fn builder() -> SymmetricQSealEngineBuilder<T> {
-        SymmetricQSealEngineBuilder::new()
+            password,
+            _phantom: PhantomData,
+        }
     }
 
     /// 加密一段明文。
+    ///
+    /// 密文将包含用于加密的密钥ID，格式为 `key_id:ciphertext`。
     pub fn encrypt(&mut self, plaintext: &[u8], additional_data: Option<&[u8]>) -> Result<String, Error> {
-        let manager = &mut self.key_manager;
-        if manager.needs_rotation() {
-            manager.start_rotation(&self.config.get_crypto_config())?;
-        }
+        // 1. 获取主密钥进行加密
+        let primary_key = self.key_manager.get_primary_key::<T>()?
+            .ok_or_else(|| Error::KeyManagement("No primary key available for encryption.".to_string()))?;
+        let key_metadata = self.key_manager.get_primary_key_metadata()
+            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
 
-        let key = manager.get_primary_key()
-            .map(|k| k.clone())
-            .ok_or_else(|| Error::Key("没有可用的主密钥进行加密".to_string()))?;
+        // 2. 加密数据
+        let ciphertext_b64 = T::encrypt(&primary_key, plaintext, additional_data).map_err(Error::from)?;
+        let output = format!("{}:{}", key_metadata.id, ciphertext_b64);
 
-        manager.increment_usage_count()?;
+        // 3. 增加使用计数（这是一个原子操作）
+        self.key_manager.increment_usage_count(&self.password)?;
 
-        let ciphertext = T::encrypt(&key, plaintext, additional_data)
-            .map_err(|e| Error::Operation(format!("加密失败: {}", e)))?;
-
-        Ok(ciphertext.to_string())
+        Ok(output)
     }
 
     /// 解密一段密文。
-    pub fn decrypt(&mut self, ciphertext: &str, additional_data: Option<&[u8]>) -> Result<Vec<u8>, Error> {
-        let manager = &mut self.key_manager;
-        
-        let keys = manager.get_all_keys();
-        if keys.is_empty() {
-            return Err(Error::Operation("没有可用的密钥进行解密".to_string()));
+    ///
+    /// 期望的密文格式为 `key_id:ciphertext`。
+    pub fn decrypt(&self, ciphertext: &str, additional_data: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+        // 1. 从密文中解析出 key_id
+        let parts: Vec<&str> = ciphertext.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(Error::Format("Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string()));
         }
+        let key_id = parts[0];
+        let actual_ciphertext = parts[1];
 
-        for key_ref in keys {
-            let key = key_ref.clone(); // 克隆以避免生命周期问题
-            if let Ok(plaintext) = T::decrypt(&key, ciphertext, additional_data) {
-                return Ok(plaintext);
-            }
-        }
+        // 2. 根据 key_id 派生解密密钥
+        let key = self.key_manager.derive_key_by_id::<T>(key_id)?
+            .ok_or_else(|| Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id)))?;
 
-        Err(Error::Operation("解密失败，所有可用密钥都无法解密该密文".to_string()))
+        // 3. 解密数据
+        T::decrypt(&key, actual_ciphertext, additional_data).map_err(Error::from)
     }
 
     /// 同步流式加密
     pub fn encrypt_stream<R: Read, W: Write>(
         &mut self,
-        reader: R,
-        writer: W,
+        mut reader: R,
+        mut writer: W,
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
-        let manager = &mut self.key_manager;
-        if manager.needs_rotation() {
-            manager.start_rotation(&self.config.get_crypto_config())?;
-        }
+        // 1. 获取主密钥
+        let primary_key = self.key_manager.get_primary_key::<T>()?
+            .ok_or_else(|| Error::KeyManagement("No primary key available for encryption.".to_string()))?;
+        let key_metadata = self.key_manager.get_primary_key_metadata()
+            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?;
 
-        let key = manager.get_primary_key()
-            .map(|k| k.clone())
-            .ok_or_else(|| Error::Key("没有可用的主密钥进行加密".to_string()))?;
-        
-        manager.increment_usage_count()?;
-        
-        T::encrypt_stream(&key, reader, writer, config, None)
+        // 2. 将 key_id 写入流的开头
+        writer.write_all(key_metadata.id.as_bytes())?;
+        writer.write_all(b":")?;
+
+        // 3. 流式加密剩余数据
+        let result = T::encrypt_stream(&primary_key, &mut reader, &mut writer, config, None)?;
+
+        // 4. 增加使用计数
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(result)
     }
 
     /// 同步流式解密
     pub fn decrypt_stream<R: Read, W: Write>(
-        &mut self,
-        reader: R,
-        writer: W,
+        &self,
+        mut reader: R,
+        mut writer: W,
         config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
-        let manager = &mut self.key_manager;
-
-        let key = manager.get_primary_key()
-            .map(|k| k.clone())
-            .ok_or_else(|| Error::Key("没有可用的主密钥进行解密".to_string()))?;
-        
-        T::decrypt_stream(&key, reader, writer, config, None)
-    }
-
-    /// 获取当前的配置管理器
-    pub fn config(&self) -> Arc<ConfigManager> {
-        Arc::clone(&self.config)
-    }
-}
-
-/// `SymmetricQSealEngine` 的构造器
-pub struct SymmetricQSealEngineBuilder<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem>
-where
-    T::Error: std::error::Error + 'static,
-    Error: From<T::Error>,
-{
-    config_manager: Option<Arc<ConfigManager>>,
-    key_prefix: Option<String>,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem> SymmetricQSealEngineBuilder<T>
-where
-    T::Error: std::error::Error + 'static,
-    Error: From<T::Error>,
-{
-    /// 创建一个新的构造器
-    pub fn new() -> Self {
-        Self {
-            config_manager: None,
-            key_prefix: None,
-            _phantom: std::marker::PhantomData,
+        // 1. 从流中读取 key_id
+        let mut key_id_buf = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            reader.read_exact(&mut byte)?;
+            if byte[0] == b':' {
+                break;
+            }
+            key_id_buf.push(byte[0]);
         }
-    }
+        let key_id = String::from_utf8(key_id_buf)
+            .map_err(|_| Error::Format("Key ID in stream is not valid UTF-8.".to_string()))?;
 
-    /// 使用现有的 `ConfigManager`
-    pub fn with_config_manager(mut self, config_manager: Arc<ConfigManager>) -> Self {
-        self.config_manager = Some(config_manager);
-        self
-    }
+        // 2. 根据 key_id 派生密钥
+        let key = self.key_manager.derive_key_by_id::<T>(&key_id)?
+            .ok_or_else(|| Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id)))?;
 
-    /// 从配置文件加载配置
-    pub fn with_config_file<P: AsRef<Path>>(mut self, path: P) -> Result<Self, Error> {
-        let config_manager = Arc::new(ConfigManager::from_file(path)?);
-        self.config_manager = Some(config_manager);
-        Ok(self)
-    }
-
-    /// 设置密钥前缀
-    pub fn with_key_prefix(mut self, prefix: &str) -> Self {
-        self.key_prefix = Some(prefix.to_string());
-        self
-    }
-    
-    /// 构建 `SymmetricQSealEngine`
-    pub fn build(self) -> Result<SymmetricQSealEngine<T>, Error> {
-        let cm = self.config_manager.unwrap_or_else(|| Arc::new(ConfigManager::new()));
-        let prefix = self.key_prefix.ok_or_else(|| Error::Operation("Key prefix must be set".to_string()))?;
-        SymmetricQSealEngine::new(cm, &prefix)
+        // 3. 解密剩余的流数据
+        T::decrypt_stream(&key, &mut reader, &mut writer, config, None)
     }
 }
 
 #[cfg(all(test, feature = "aes-gcm-feature"))]
 mod tests {
     use super::*;
-    use crate::common::config::{ConfigFile, StorageConfig};
-    use crate::rotation::RotationPolicy;
+    use crate::seal::Seal;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+    use secrecy::SecretString;
     use std::io::Cursor;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
-    type TestEngine = SymmetricQSealEngine<AesGcmSystem>;
-
-    fn setup_test_engine(dir: &Path, key_prefix: &str) -> TestEngine {
-        let storage_config = StorageConfig {
-            key_storage_dir: dir.to_path_buf().to_str().unwrap().to_string(),
-            ..Default::default()
-        };
-        let rotation_policy = RotationPolicy {
-            max_usage_count: Some(10), // Rotate after 10 operations
-            ..Default::default()
-        };
-        let config = ConfigFile {
-            storage: storage_config,
-            rotation: rotation_policy,
-            crypto: Default::default(),
-        };
-        let config_manager = Arc::new(ConfigManager::from_config_file(config));
-        TestEngine::new(config_manager, key_prefix).unwrap()
+    // 辅助函数：设置一个全新的 Seal 和密码
+    fn setup() -> (Arc<Seal>, SecretString) {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("my.seal");
+        let password = SecretString::new("a-very-secret-password".into());
+        let seal = Seal::create(seal_path, &password).unwrap();
+        (seal, password)
     }
 
     #[test]
     fn test_engine_encrypt_decrypt_roundtrip() {
+        let (seal, password) = setup();
+        let mut engine = seal.symmetric_sync_engine::<AesGcmSystem>(password).unwrap();
+
+        let plaintext = b"some secret data";
+        let encrypted = engine.encrypt(plaintext, None).unwrap();
+        let decrypted = engine.decrypt(&encrypted, None).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_decryption_after_reopening_seal() {
         let dir = tempdir().unwrap();
-        let mut engine = setup_test_engine(dir.path(), "test_roundtrip");
-        let plaintext = b"top secret data";
+        let seal_path = dir.path().join("my.seal");
+        let password = SecretString::new("a-very-secret-password".into());
+
+        // 1. 创建 Seal，获取引擎，加密数据
+        let seal1 = Seal::create(&seal_path, &password).unwrap();
+        let mut engine1 = seal1
+            .symmetric_sync_engine::<AesGcmSystem>(password.clone())
+            .unwrap();
+        let plaintext = b"some secret data";
+        let encrypted = engine1.encrypt(plaintext, None).unwrap();
+
+        // 2. 重新打开同一个 Seal，获取新引擎
+        let seal2 = Seal::open(&seal_path, &password).unwrap();
+        let engine2 = seal2.symmetric_sync_engine::<AesGcmSystem>(password).unwrap();
+
+        // 3. 用新引擎解密旧数据，应该成功
+        let decrypted = engine2.decrypt(&encrypted, None).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_decryption_with_rotated_key() {
+        let (seal, password) = setup();
+        let mut engine = seal
+            .symmetric_sync_engine::<AesGcmSystem>(password.clone())
+            .unwrap();
+
+        // 1. 使用初始密钥加密数据
+        let plaintext1 = b"data before rotation";
+        let encrypted1 = engine.encrypt(plaintext1, None).unwrap();
+
+        // 2. 手动触发密钥轮换
+        let algorithm_name = std::any::type_name::<AesGcmSystem>().to_string();
+        engine
+            .key_manager
+            .start_rotation(&password, &algorithm_name)
+            .unwrap();
+
+        // 3. 使用新的主密钥加密数据
+        let plaintext2 = b"data after rotation";
+        let encrypted2 = engine.encrypt(plaintext2, None).unwrap();
         
-        let ciphertext = engine.encrypt(plaintext, None).unwrap();
-        let decrypted = engine.decrypt(&ciphertext, None).unwrap();
-        
-        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
+        // 确保两个密文不同 (因为密钥不同)
+        assert_ne!(encrypted1, encrypted2);
+
+        // 4. 引擎应该能解密两个密文
+        let decrypted1 = engine.decrypt(&encrypted1, None).unwrap();
+        let decrypted2 = engine.decrypt(&encrypted2, None).unwrap();
+
+        assert_eq!(decrypted1, plaintext1);
+        assert_eq!(decrypted2, plaintext2);
     }
 
     #[test]
     fn test_engine_streaming_roundtrip() {
-        let dir = tempdir().unwrap();
-        let mut engine = setup_test_engine(dir.path(), "test_streaming");
-        let original_data = b"some streaming data to be encrypted";
+        let (seal, password) = setup();
+        let mut engine = seal.symmetric_sync_engine::<AesGcmSystem>(password).unwrap();
 
-        let mut source = Cursor::new(original_data);
-        let mut encrypted_dest = Cursor::new(Vec::new());
-        let streaming_config = StreamingConfig::default();
+        let plaintext = b"some very long secret data that should be streamed";
+        let mut reader = Cursor::new(plaintext);
+        let mut encrypted_writer = Cursor::new(Vec::new());
 
-        engine.encrypt_stream(&mut source, &mut encrypted_dest, &streaming_config).unwrap();
+        let config = StreamingConfig::default();
 
-        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
-        let mut decrypted_dest = Cursor::new(Vec::new());
+        // 加密
+        engine
+            .encrypt_stream(&mut reader, &mut encrypted_writer, &config)
+            .unwrap();
 
-        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &streaming_config).unwrap();
+        // 解密
+        let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
+        let mut decrypted_writer = Cursor::new(Vec::new());
+        engine
+            .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer, &config)
+            .unwrap();
 
-        assert_eq!(original_data.as_ref(), decrypted_dest.into_inner().as_slice());
-    }
-
-    #[test]
-    fn test_decrypt_with_rotated_key() {
-        let dir = tempdir().unwrap();
-        let mut engine = setup_test_engine(dir.path(), "test_rotation");
-        let plaintext1 = b"data encrypted with key v1";
-
-        // Encrypt with the first key
-        let ciphertext1 = engine.encrypt(plaintext1, None).unwrap();
-
-        // Force key rotation by exceeding usage count
-        engine.key_manager.set_usage_count(11);
-        
-        // This encryption will trigger rotation, creating key v2
-        let plaintext2 = b"data encrypted with key v2";
-        let ciphertext2 = engine.encrypt(plaintext2, None).unwrap();
-        
-        // Now, the primary key is v2. Decrypting data encrypted with v1 should still work.
-        let decrypted1 = engine.decrypt(&ciphertext1, None).unwrap();
-        assert_eq!(plaintext1.as_ref(), decrypted1.as_slice());
-
-        // And data with v2 should also work.
-        let decrypted2 = engine.decrypt(&ciphertext2, None).unwrap();
-        assert_eq!(plaintext2.as_ref(), decrypted2.as_slice());
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_streaming_decrypt_with_rotated_key_fails() {
-        let dir = tempdir().unwrap();
-        let mut engine = setup_test_engine(dir.path(), "test_streaming_rotation_fail");
-        let streaming_config = StreamingConfig::default();
-
-        // Encrypt a stream with key v1
-        let original_data = b"this stream was encrypted with key v1";
-        let mut source = Cursor::new(original_data);
-        let mut encrypted_dest = Cursor::new(Vec::new());
-        engine.encrypt_stream(&mut source, &mut encrypted_dest, &streaming_config).unwrap();
-
-        // Force rotation to key v2
-        engine.key_manager.set_usage_count(11); // Exceed max_operations
-        engine.encrypt(b"trigger rotation", None).unwrap(); // This will create v2 and set it as primary
-
-        // Try to decrypt the stream. This should fail because decrypt_stream only uses the primary key (v2).
-        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
-        let mut decrypted_dest = Cursor::new(Vec::new());
-        engine.decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &streaming_config).unwrap();
+        assert_eq!(decrypted_writer.into_inner(), plaintext);
     }
 } 

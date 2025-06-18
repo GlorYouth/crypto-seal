@@ -61,7 +61,7 @@ impl Default for StorageConfig {
 }
 
 /// 完整配置文件
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct ConfigFile {
     /// 加密配置
     pub crypto: CryptoConfig,

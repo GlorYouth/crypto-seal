@@ -1,13 +1,14 @@
 //! AES-GCM 对称加密实现
-use rand_core::{OsRng, TryRngCore};
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
-use aes_gcm::aead::{Aead, Payload};
+use rsa::rand_core::RngCore;
+use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::{Aead, rand_core::OsRng};
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
-use crate::common::errors::Error;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::fmt::Debug;
 use crate::common::utils::{Base64String, CryptoConfig};
+use crate::common::to_base64;
+use crate::Error;
 
 const KEY_SIZE: usize = 32; // AES-256 需要 32 字节的密钥
 const NONCE_SIZE: usize = 12; // GCM 标准的 Nonce 大小是 12 字节
@@ -17,7 +18,7 @@ pub struct AesGcmSystem;
 
 /// AES-GCM 密钥的包装，以支持序列化和调试
 #[derive(Clone, Serialize, Deserialize)]
-pub struct AesGcmKey(Vec<u8>);
+pub struct AesGcmKey(pub Vec<u8>);
 
 impl Debug for AesGcmKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -26,6 +27,7 @@ impl Debug for AesGcmKey {
 }
 
 impl SymmetricCryptographicSystem for AesGcmSystem {
+    const KEY_SIZE: usize = KEY_SIZE; // Use the module-level constant
     type Key = AesGcmKey;
     type CiphertextOutput = Base64String;
     type Error = Error;
@@ -36,7 +38,6 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         OsRng.try_fill_bytes(&mut key_bytes)
             .map_err(|e| Error::Operation(e.to_string()))?;
         Ok(AesGcmKey(key_bytes))
-
     }
 
     /// 使用 AES-256-GCM 加密数据
@@ -44,68 +45,66 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     fn encrypt(
         key: &Self::Key,
         plaintext: &[u8],
-        additional_data: Option<&[u8]>,
-    ) -> Result<Self::CiphertextOutput, Self::Error> {
-        let key = Key::<Aes256Gcm>::from_slice(&key.0);
-        let cipher = Aes256Gcm::new(key);
+        _additional_data: Option<&[u8]>,
+    ) -> Result<String, Self::Error> {
+        let cipher = Aes256Gcm::new_from_slice(&key.0).map_err(|e| Error::Key(e.to_string()))?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        // let aad = additional_data.unwrap_or(&[]);
 
-        let mut nonce_bytes = vec![0u8; NONCE_SIZE];
-        OsRng.try_fill_bytes(&mut nonce_bytes)
-            .map_err(|e| Error::Operation(e.to_string()))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        
-        let aad = additional_data.unwrap_or_default();
+        let ciphertext = cipher
+            .encrypt(&nonce, plaintext.as_ref())
+            .map_err(|_| Error::EncryptionFailed("AEAD encryption failed".to_string()))?;
 
-        let ciphertext = cipher.encrypt(nonce, Payload { msg: plaintext, aad })
-            .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
-
-        let mut result = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
-        result.extend_from_slice(nonce.as_slice());
+        let mut result = nonce.to_vec();
         result.extend_from_slice(&ciphertext);
 
-        Ok(Base64String::from(result))
+        Ok(to_base64(&result))
     }
 
     /// 解密 AES-256-GCM 加密的数据
     /// 输入是 Base64 编码的字符串，其中包含了 Nonce 和密文
     fn decrypt(
         key: &Self::Key,
-        ciphertext_b64: &str,
-        additional_data: Option<&[u8]>,
+        ciphertext: &str,
+        _additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
-        let key = Key::<Aes256Gcm>::from_slice(&key.0);
-        let cipher = Aes256Gcm::new(key);
-        
-        let decoded_data = general_purpose::STANDARD.decode(ciphertext_b64)
-            .map_err(|e| Error::DecryptionFailed(format!("Base64 decoding failed: {}", e)))?;
+        let decoded_data = general_purpose::STANDARD
+            .decode(ciphertext)
+            .map_err(|e| Error::Format(format!("Base64 decoding failed: {}", e)))?;
 
         if decoded_data.len() < NONCE_SIZE {
-            return Err(Error::DecryptionFailed("Ciphertext is too short to contain a nonce".to_string()));
+            return Err(Error::DecryptionFailed(
+                "Ciphertext is too short to contain a nonce.".to_string(),
+            ));
         }
 
-        let (nonce_bytes, ciphertext) = decoded_data.split_at(NONCE_SIZE);
+        let (nonce_bytes, ciphertext_bytes) = decoded_data.split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
+        let cipher = Aes256Gcm::new_from_slice(&key.0).map_err(|e| Error::Key(e.to_string()))?;
+        // let aad = additional_data.unwrap_or(&[]);
 
-        let aad = additional_data.unwrap_or_default();
-
-        cipher.decrypt(nonce, Payload { msg: ciphertext, aad })
-            .map_err(|e| Error::DecryptionFailed(e.to_string()))
+        cipher
+            .decrypt(nonce, ciphertext_bytes.as_ref())
+            .map_err(|_| Error::DecryptionFailed("AEAD authentication failed.".to_string()))
     }
 
     /// 将密钥导出为 Base64 字符串
     fn export_key(key: &Self::Key) -> Result<String, Self::Error> {
-        Ok(general_purpose::STANDARD.encode(&key.0))
+        Ok(to_base64(&key.0))
     }
 
     /// 从 Base64 字符串导入密钥
-    fn import_key(key_data: &str) -> Result<Self::Key, Self::Error> {
-        let key_bytes = general_purpose::STANDARD.decode(key_data)
+    fn import_key(encoded_key: &str) -> Result<Self::Key, Self::Error> {
+        let key_bytes = general_purpose::STANDARD
+            .decode(encoded_key)
             .map_err(|e| Error::KeyImportFailed(format!("Base64 decoding failed: {}", e)))?;
-        
         if key_bytes.len() != KEY_SIZE {
-            return Err(Error::KeyImportFailed(format!("Invalid key size: expected {}, got {}", KEY_SIZE, key_bytes.len())));
+            return Err(Error::KeyImportFailed(format!(
+                "Invalid key size: expected {}, got {}",
+                KEY_SIZE,
+                key_bytes.len()
+            )));
         }
-
         Ok(AesGcmKey(key_bytes))
     }
 }
@@ -169,18 +168,25 @@ mod tests {
         let key = AesGcmSystem::generate_key(&config).unwrap();
         let plaintext = b"secret message, do not tamper";
 
-        let ciphertext_obj = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
-        let mut raw_data = ciphertext_obj.0.clone();
-        
-        // Tamper with the ciphertext part
-        let len = raw_data.len();
-        raw_data[len - 1] ^= 0xff; // Flip the last byte
+        // 1. 加密并获得base64字符串
+        let ciphertext_b64 = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
 
+        // 2. 从base64解码为原始字节(nonce || 密文)
+        let mut raw_data = general_purpose::STANDARD.decode(&ciphertext_b64).unwrap();
+
+        // 3. 篡改密文部分
+        let len = raw_data.len();
+        if len > 0 {
+            raw_data[len - 1] ^= 0xff; // 翻转最后一个字节
+        }
+
+        // 4. 将篡改后的数据重新编码为base64
         let tampered_ciphertext_b64 = general_purpose::STANDARD.encode(&raw_data);
-        
+
+        // 5. 解密应该失败
         let result = AesGcmSystem::decrypt(&key, &tampered_ciphertext_b64, None);
 
-        assert!(result.is_err());
+        assert!(result.is_err(), "对被篡改的密文进行解密应该失败");
     }
 
     #[test]

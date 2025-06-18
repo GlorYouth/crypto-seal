@@ -9,6 +9,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 /// 对称加密系统的公共特征
 pub trait SymmetricCryptographicSystem: Sized {
+    /// 密钥的期望长度（以字节为单位）。
+    const KEY_SIZE: usize;
+    
     /// 用于加密和解密的单一密钥。
     type Key: Clone + Debug; 
     
@@ -26,7 +29,7 @@ pub trait SymmetricCryptographicSystem: Sized {
         key: &Self::Key,
         plaintext: &[u8],
         additional_data: Option<&[u8]>
-    ) -> Result<Self::CiphertextOutput, Self::Error>;
+    ) -> Result<String, Self::Error>;
     
     /// 使用密钥解密数据。
     fn decrypt(

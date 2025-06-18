@@ -12,6 +12,8 @@ pub mod rotation;
 pub mod asymmetric;
 #[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
 pub mod symmetric;
+#[cfg(feature = "secure-storage")]
+pub mod seal;
 
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::traits::AsymmetricCryptographicSystem;
@@ -48,6 +50,8 @@ pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRs
 // 导出密钥存储
 #[cfg(feature = "secure-storage")]
 pub use storage::container::EncryptedKeyContainer;
+#[cfg(feature = "secure-storage")]
+pub use seal::Seal;
 
 /// 库版本信息
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
