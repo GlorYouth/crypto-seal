@@ -9,4 +9,7 @@ pub mod traditional;
 pub mod post_quantum;
 
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-pub mod hybrid; 
+pub mod hybrid;
+
+/// 对称加密系统
+pub mod symmetric; 

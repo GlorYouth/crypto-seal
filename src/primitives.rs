@@ -7,6 +7,8 @@ pub mod async_streaming;
 #[cfg(feature = "async-engine")]
 pub use async_streaming::{AsyncStreamingConfig, AsyncStreamingEncryptor, AsyncStreamingDecryptor};
 
+pub mod symmetric_streaming;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use std::ops::{Deref, DerefMut};
