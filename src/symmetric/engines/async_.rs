@@ -157,23 +157,23 @@ mod tests {
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
     // --- END Test-specific imports ---
 
 
     // 辅助函数：设置一个全新的 Seal 和密码
-    async fn setup() -> (Arc<Seal>, SecretString) {
+    async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
         let dir = tempdir().unwrap();
         let seal_path = dir.path().join("my.seal");
         // 注意这里修正了 SecretString 的创建方式
         let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
         let seal = Seal::create(&seal_path, &password).unwrap();
-        (seal, password)
+        (seal, password, dir)
     }
 
     #[tokio::test]
     async fn test_engine_encrypt_decrypt_roundtrip() {
-        let (seal, password) = setup().await;
+        let (seal, password, _dir) = setup().await;
         let mut engine = seal
             .symmetric_async_engine::<AesGcmSystem>(password)
             .await
@@ -217,7 +217,7 @@ mod tests {
     // ... （其他测试保持不变） ...
     #[tokio::test]
     async fn test_engine_streaming_roundtrip() {
-        let (seal, password) = setup().await;
+        let (seal, password, _dir) = setup().await;
         let mut engine = seal
             .symmetric_async_engine::<AesGcmSystem>(password)
             .await

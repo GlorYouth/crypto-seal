@@ -1,7 +1,7 @@
 //! AES-GCM 对称加密实现
 use rsa::rand_core::RngCore;
 use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce};
-use aes_gcm::aead::{Aead, rand_core::OsRng};
+use aes_gcm::aead::{Aead, rand_core::OsRng, Payload};
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use crate::symmetric::traits::SymmetricCryptographicSystem;
@@ -45,14 +45,15 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     fn encrypt(
         key: &Self::Key,
         plaintext: &[u8],
-        _additional_data: Option<&[u8]>,
+        additional_data: Option<&[u8]>,
     ) -> Result<String, Self::Error> {
         let cipher = Aes256Gcm::new_from_slice(&key.0).map_err(|e| Error::Key(e.to_string()))?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        // let aad = additional_data.unwrap_or(&[]);
+        let aad = additional_data.unwrap_or(&[]);
 
+        let payload = Payload { msg: plaintext, aad };
         let ciphertext = cipher
-            .encrypt(&nonce, plaintext.as_ref())
+            .encrypt(&nonce, payload)
             .map_err(|_| Error::EncryptionFailed("AEAD encryption failed".to_string()))?;
 
         let mut result = nonce.to_vec();
@@ -66,7 +67,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     fn decrypt(
         key: &Self::Key,
         ciphertext: &str,
-        _additional_data: Option<&[u8]>,
+        additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
         let decoded_data = general_purpose::STANDARD
             .decode(ciphertext)
@@ -81,10 +82,11 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let (nonce_bytes, ciphertext_bytes) = decoded_data.split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
         let cipher = Aes256Gcm::new_from_slice(&key.0).map_err(|e| Error::Key(e.to_string()))?;
-        // let aad = additional_data.unwrap_or(&[]);
+        let aad = additional_data.unwrap_or(&[]);
 
+        let payload = Payload { msg: ciphertext_bytes, aad };
         cipher
-            .decrypt(nonce, ciphertext_bytes.as_ref())
+            .decrypt(nonce, payload)
             .map_err(|_| Error::DecryptionFailed("AEAD authentication failed.".to_string()))
     }
 

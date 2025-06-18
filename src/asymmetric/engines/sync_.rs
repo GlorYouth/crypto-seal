@@ -6,6 +6,7 @@ use crate::common::streaming::{StreamingConfig, StreamingResult};
 use secrecy::SecretString;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use tempfile::{tempdir, TempDir};
 
 /// `AsymmetricQSealEngine`：一个支持密钥轮换的用户友好型非对称加密引擎。
 ///
@@ -155,21 +156,21 @@ mod tests {
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     type TestEngine = AsymmetricQSealEngine<RsaKyberCryptoSystem>;
 
-    fn setup() -> (Arc<Seal>, SecretString) {
+    fn setup() -> (Arc<Seal>, SecretString, TempDir) {
         let dir = tempdir().unwrap();
         let seal_path = dir.path().join("my.seal");
         let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
         let seal = Seal::create(&seal_path, &password).unwrap();
-        (seal, password)
+        (seal, password, dir)
     }
 
     #[test]
     fn test_engine_encrypt_decrypt_roundtrip() {
-        let (seal, password) = setup();
+        let (seal, password, _dir) = setup();
         let mut engine = seal.asymmetric_sync_engine::<RsaKyberCryptoSystem>(password).unwrap();
 
         let plaintext = b"some very secret data";
@@ -203,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_decryption_with_rotated_key() {
-        let (seal, password) = setup();
+        let (seal, password, _dir) = setup();
         let mut engine = seal
             .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password.clone())
             .unwrap();
@@ -227,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_engine_streaming_roundtrip() {
-        let (seal, password) = setup();
+        let (seal, password, _dir) = setup();
         let mut engine = seal.asymmetric_sync_engine::<RsaKyberCryptoSystem>(password).unwrap();
 
         let plaintext = b"some very long secret data for streaming";

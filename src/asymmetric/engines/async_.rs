@@ -197,22 +197,21 @@ mod tests {
     use crate::seal::Seal;
     use secrecy::SecretString;
     use std::sync::Arc;
-    use tempfile::tempdir;
-    use std::io::Cursor;
+    use tempfile::{tempdir, TempDir};
 
     type TestEngine = AsymmetricQSealAsyncEngine<RsaKyberCryptoSystem>;
 
-    async fn setup() -> (Arc<Seal>, SecretString) {
+    async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
         let dir = tempdir().unwrap();
         let seal_path = dir.path().join("my.seal");
         let password = SecretString::new("a-very-secret-password".to_string().into_boxed_str());
         let seal = Seal::create(&seal_path, &password).unwrap();
-        (seal, password)
+        (seal, password, dir)
     }
 
     #[tokio::test]
     async fn test_engine_encrypt_decrypt_roundtrip() {
-        let (seal, password) = setup().await;
+        let (seal, password, _dir) = setup().await;
         let mut engine = seal
             .asymmetric_async_engine::<RsaKyberCryptoSystem>(password)
             .await
@@ -227,29 +226,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_streaming_roundtrip() {
-        let (seal, password) = setup().await;
+        let (seal, password, _dir) = setup().await;
         let mut engine = seal
             .asymmetric_async_engine::<RsaKyberCryptoSystem>(password)
             .await
             .unwrap();
 
         let plaintext = b"some very long secret data for streaming";
-        let mut reader = Cursor::new(plaintext);
-        let mut encrypted_writer = Cursor::new(Vec::new());
+        let mut reader = tokio::io::BufReader::new(plaintext.as_ref());
+        let mut encrypted_writer = tokio::io::BufWriter::new(Vec::new());
 
         let config = StreamingConfig::default();
         engine
             .encrypt_stream(&mut reader, &mut encrypted_writer, &config)
             .await
             .unwrap();
+        
+        // Use into_inner to get the underlying Vec<u8> from the writer.
+        let encrypted_data = encrypted_writer.into_inner();
 
-        let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
-        let mut decrypted_writer = Cursor::new(Vec::new());
+        let mut encrypted_reader = tokio::io::BufReader::new(encrypted_data.as_slice());
+        let mut decrypted_writer = tokio::io::BufWriter::new(Vec::new());
         engine
             .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer, &config)
             .await
             .unwrap();
+        
+        let decrypted_data = decrypted_writer.into_inner();
 
-        assert_eq!(decrypted_writer.into_inner(), plaintext.to_vec());
+        assert_eq!(decrypted_data, plaintext.to_vec());
     }
 }

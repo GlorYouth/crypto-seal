@@ -81,7 +81,7 @@ where
                 .write_all(ciphertext_slice)
                 .await
                 .map_err(Error::Io)?;
-            
+
             if let Some(buf) = output_buffer.as_mut() {
                 buf.extend_from_slice(ciphertext_slice);
             }
@@ -172,16 +172,16 @@ where
 
             let ciphertext = String::from_utf8(ciphertext_buffer)
                 .map_err(|e| Error::Format(format!("Invalid UTF-8 ciphertext: {}", e)))?;
-                
+
             let plaintext =
                 C::decrypt(self.private_key, &ciphertext, self.additional_data.as_deref())?;
-            
+
             self.writer.write_all(&plaintext).await.map_err(Error::Io)?;
 
             if let Some(buf) = output_buffer.as_mut() {
                 buf.extend_from_slice(&plaintext);
             }
-            
+
             bytes_processed += length as u64;
 
             if let Some(cb) = &self.config.progress_callback {
@@ -207,12 +207,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsyncStreamingSystem};
+    use crate::common::errors::Error;
+    use crate::common::streaming::{StreamingConfig, StreamingResult};
     use crate::common::utils::CryptoConfig;
-    use tokio::io::BufReader;
     use std::io::Cursor;
+    use tokio::io::BufReader;
 
     // Helper function to get keys and config
     fn get_test_keys_and_config() -> (
@@ -243,9 +244,15 @@ mod tests {
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::decrypt_stream_async(&sk, encrypted_source, &mut decrypted_dest, &config, None)
-            .await
-            .unwrap();
+        RsaKyberCryptoSystem::decrypt_stream_async(
+            &sk,
+            encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(original_data, decrypted_dest);
     }
@@ -253,22 +260,34 @@ mod tests {
     #[tokio::test]
     async fn test_async_streaming_with_aad() {
         let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"Async streaming with AAD.".to_vec();
-        let aad = b"additional_data";
+        let original_data = b"Test async streaming with AAD.".to_vec();
+        let aad = b"additional_authenticated_data";
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(&pk, source, &mut encrypted_dest, &config, Some(aad))
-            .await
-            .unwrap();
+        RsaKyberCryptoSystem::encrypt_stream_async(
+            &pk,
+            source,
+            &mut encrypted_dest,
+            &config,
+            Some(aad),
+        )
+        .await
+        .unwrap();
 
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::decrypt_stream_async(&sk, encrypted_source, &mut decrypted_dest, &config, Some(aad))
-            .await
-            .unwrap();
+        RsaKyberCryptoSystem::decrypt_stream_async(
+            &sk,
+            encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            Some(aad),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(original_data, decrypted_dest);
     }
@@ -276,20 +295,26 @@ mod tests {
     #[tokio::test]
     async fn test_async_streaming_tampered_data_fails() {
         let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"This data will be tampered.".to_vec();
-        let aad = b"aad_for_tamper_test";
+        let original_data = b"This data should not be decryptable if tampered.".to_vec();
+        let aad = b"authentication_tag";
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(&pk, source, &mut encrypted_dest, &config, Some(aad))
-            .await
-            .unwrap();
+        RsaKyberCryptoSystem::encrypt_stream_async(
+            &pk,
+            source,
+            &mut encrypted_dest,
+            &config,
+            Some(aad),
+        )
+        .await
+        .unwrap();
 
-        // Tamper with data
+        // Tamper with the ciphertext
         if !encrypted_dest.is_empty() {
-            let len = encrypted_dest.len();
-            encrypted_dest[len / 2] ^= 0xff;
+            let last_byte_index = encrypted_dest.len() - 1;
+            encrypted_dest[last_byte_index] ^= 0x01;
         }
 
         // Decrypt
@@ -310,16 +335,22 @@ mod tests {
     #[tokio::test]
     async fn test_async_streaming_wrong_aad_fails() {
         let (pk, sk, config) = get_test_keys_and_config();
-        let original_data = b"Test wrong AAD.".to_vec();
+        let original_data = b"This data is protected by AAD.".to_vec();
         let correct_aad = b"correct_aad";
         let wrong_aad = b"wrong_aad";
 
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        RsaKyberCryptoSystem::encrypt_stream_async(&pk, source, &mut encrypted_dest, &config, Some(correct_aad))
-            .await
-            .unwrap();
+        RsaKyberCryptoSystem::encrypt_stream_async(
+            &pk,
+            source,
+            &mut encrypted_dest,
+            &config,
+            Some(correct_aad),
+        )
+        .await
+        .unwrap();
 
         // Decrypt with wrong AAD
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
@@ -344,19 +375,32 @@ mod tests {
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        let enc_result = RsaKyberCryptoSystem::encrypt_stream_async(&pk, source, &mut encrypted_dest, &config, None)
-            .await
-            .unwrap();
+        let enc_result = RsaKyberCryptoSystem::encrypt_stream_async(
+            &pk,
+            source,
+            &mut encrypted_dest,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
+
         assert_eq!(enc_result.bytes_processed, 0);
-        
+
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        let dec_result = RsaKyberCryptoSystem::decrypt_stream_async(&sk, encrypted_source, &mut decrypted_dest, &config, None)
-            .await
-            .unwrap();
+        let dec_result = RsaKyberCryptoSystem::decrypt_stream_async(
+            &sk,
+            encrypted_source,
+            &mut decrypted_dest,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(dec_result.bytes_processed, 0);
-        assert!(decrypted_dest.is_empty());
+        assert_eq!(original_data, decrypted_dest);
     }
 } 

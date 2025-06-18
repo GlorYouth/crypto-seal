@@ -51,7 +51,7 @@ where
             
             let plaintext = &buffer[..read_bytes];
             let ciphertext_obj = C::encrypt(self.key, plaintext, self.additional_data)?;
-            let ciphertext_bytes = utils::to_base64(ciphertext_obj.as_ref()).into_bytes();
+            let ciphertext_bytes = ciphertext_obj.to_string().into_bytes();
             
             let len = (ciphertext_bytes.len() as u32).to_le_bytes();
             self.writer.write_all(&len).await.map_err(Error::Io)?;

@@ -17,9 +17,6 @@ pub use self::traits::AuthenticatedCryptoSystem;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use crate::asymmetric::primitives::streaming::*;
 
-#[cfg(all(feature = "async-engine", any(feature = "traditional", feature = "post-quantum")))]
-pub use crate::asymmetric::primitives::async_streaming::{AsyncStreamingDecryptor, AsyncStreamingEncryptor};
-
 #[cfg(feature = "async-engine")]
 pub use streaming::StreamingConfig;
 
