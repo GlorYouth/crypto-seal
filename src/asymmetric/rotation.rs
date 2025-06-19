@@ -1,11 +1,12 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::ConfigFile;
 use crate::common::errors::Error;
-use crate::common::to_base64;
 use crate::common::traits::SecString;
 use crate::common::traits::{KeyMetadata, KeyStatus, SecureKeyStorage};
 use crate::rotation::RotationPolicy;
 use crate::seal::Seal;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::BTreeMap;
@@ -105,7 +106,7 @@ impl AsymmetricKeyRotationManager {
                 self.seal
                     .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
             let container = crate::storage::EncryptedKeyContainer::encrypt_key(
-                &SecretString::new(to_base64(&key_derivation_key).into_boxed_str()),
+                &SecretString::new(BASE64.encode(&key_derivation_key).into_boxed_str()),
                 private_key_b64.as_bytes(),
                 "asymmetric-private-key",
             )?;
@@ -167,7 +168,7 @@ impl AsymmetricKeyRotationManager {
                 self.seal
                     .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
             let container = crate::storage::EncryptedKeyContainer::encrypt_key(
-                &SecretString::new(to_base64(&key_derivation_key).into_boxed_str()),
+                &SecretString::new(BASE64.encode(&key_derivation_key).into_boxed_str()),
                 private_key_b64.as_bytes(),
                 "asymmetric-private-key",
             )?;
@@ -280,30 +281,34 @@ impl AsymmetricKeyRotationManager {
         T: AsymmetricCryptographicSystem,
         Error: From<T::Error>,
     {
-        let payload = self.seal.payload();
-        if let Some(metadata) = payload.key_registry.get(key_id) {
-            let public_key_b64 = metadata.public_key.as_ref().ok_or_else(|| {
-                Error::KeyManagement("Public key not found in metadata".to_string())
-            })?;
+        let metadata = self.find_key_metadata_by_id(key_id);
 
-            let encrypted_private_key =
-                metadata.encrypted_private_key.as_ref().ok_or_else(|| {
-                    Error::KeyManagement("Encrypted private key not found in metadata".to_string())
-                })?;
+        if let Some(metadata) = metadata {
+            let public_key_b64 = metadata
+                .public_key
+                .as_ref()
+                .ok_or_else(|| Error::KeyManagement("公钥不存在".to_string()))?;
 
-            let key_derivation_key =
-                self.seal
-                    .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
+            let encrypted_private_key = metadata
+                .encrypted_private_key
+                .as_ref()
+                .ok_or_else(|| Error::KeyManagement("加密的私钥不存在".to_string()))?;
 
             let container = crate::storage::EncryptedKeyContainer::from_json(
                 encrypted_private_key.expose_secret().0.as_str(),
             )?;
+
+            let payload = self.seal.payload();
+            let key_derivation_key =
+                self.seal
+                    .derive_key(&payload.master_seed, b"private-key-encryption", 32)?;
+
             let private_key_b64_bytes = container.decrypt_key(&SecretString::new(
-                to_base64(&key_derivation_key).into_boxed_str(),
+                BASE64.encode(&key_derivation_key).into_boxed_str(),
             ))?;
-            let private_key_b64 = String::from_utf8(private_key_b64_bytes).map_err(|_| {
-                Error::Format("Decrypted private key is not valid UTF-8".to_string())
-            })?;
+
+            let private_key_b64 = String::from_utf8(private_key_b64_bytes)
+                .map_err(|_| Error::Format("解密的私钥不是有效的UTF-8".to_string()))?;
 
             let pk = T::import_public_key(public_key_b64)?;
             let sk = T::import_private_key(&private_key_b64)?;
@@ -311,6 +316,11 @@ impl AsymmetricKeyRotationManager {
             return Ok(Some((pk, sk)));
         }
         Ok(None)
+    }
+
+    fn find_key_metadata_by_id(&self, key_id: &str) -> Option<KeyMetadata> {
+        let payload = self.seal.payload();
+        payload.key_registry.get(key_id).cloned()
     }
 
     /// 获取下一个可用的密钥版本号。

@@ -53,7 +53,7 @@ pub struct KeyMetadata {
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub trait AuthenticatedCryptoSystem: AsymmetricCryptographicSystem {
     /// 认证加密输出类型
-    type AuthenticatedOutput: AsRef<[u8]> + From<Vec<u8>> + ToString;
+    type AuthenticatedOutput: AsRef<[u8]> + From<Vec<u8>>;
 
     /// 生成签名
     fn sign(private_key: &Self::PrivateKey, data: &[u8]) -> Result<Vec<u8>, Self::Error>;
@@ -76,7 +76,7 @@ pub trait AuthenticatedCryptoSystem: AsymmetricCryptographicSystem {
     /// 带认证的解密
     fn decrypt_authenticated(
         private_key: &Self::PrivateKey,
-        ciphertext: &str,
+        ciphertext: &[u8],
         additional_data: Option<&[u8]>,
         verifier_key: Option<&Self::PublicKey>,
     ) -> Result<Vec<u8>, Self::Error>;

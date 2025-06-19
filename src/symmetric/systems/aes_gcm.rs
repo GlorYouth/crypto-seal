@@ -1,24 +1,19 @@
 //! AES-GCM 对称加密实现
-use crate::common::config::{CryptoConfig, ParallelismConfig, StreamingConfig};
+use crate::common::config::{CryptoConfig, ParallelismConfig};
 use crate::common::errors::Error;
-use crate::common::streaming::StreamingResult;
-use crate::common::to_base64;
-use crate::symmetric::traits::{
-    SymmetricCryptographicSystem, SymmetricParallelStreamingSystem, SymmetricParallelSystem,
-    SymmetricSyncStreamingSystem,
-};
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
-use base64::engine::general_purpose;
-use base64::Engine;
+use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelSystem};
+use aes_gcm::aead::{AeadInPlace, KeyInit, OsRng};
+use aes_gcm::{AeadCore, Aes256Gcm, Nonce, Tag};
+use base64::{Engine, engine::general_purpose};
 use rayon::prelude::*;
+use rsa::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::io::{Cursor, Read, Write};
-use rsa::rand_core::RngCore;
+use std::io::{Cursor, Read};
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
+const TAG_SIZE: usize = 16; // AES-GCM's tag is 16 bytes
 const PARALLEL_CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB
 
 /// AES-GCM 对称加密系统
@@ -33,8 +28,9 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     const KEY_SIZE: usize = KEY_SIZE;
     type Key = AesGcmKey;
     type Error = Error;
+    type CiphertextOutput = Vec<u8>;
 
-    fn generate_key(config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
+    fn generate_key(_config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
         let mut key_bytes = vec![0u8; Self::KEY_SIZE];
         OsRng
             .try_fill_bytes(&mut key_bytes)
@@ -45,36 +41,53 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     fn encrypt(
         key: &Self::Key,
         plaintext: &[u8],
-        _additional_data: Option<&[u8]>,
+        additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key.0);
         let cipher = Aes256Gcm::new(key);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let ciphertext = cipher
-            .encrypt(&nonce, plaintext)
-            .map_err(|e| Error::Key(e.to_string()))?;
-        Ok([nonce.as_slice(), &ciphertext].concat())
+
+        let mut buffer = plaintext.to_vec();
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce, additional_data.unwrap_or(&[]), &mut buffer)
+            .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
+
+        let mut ciphertext = Vec::with_capacity(NONCE_SIZE + buffer.len() + TAG_SIZE);
+        ciphertext.extend_from_slice(nonce.as_slice());
+        ciphertext.extend_from_slice(&tag);
+        ciphertext.extend_from_slice(&buffer);
+
+        Ok(ciphertext)
     }
 
     fn decrypt(
         key: &Self::Key,
         ciphertext: &[u8],
-        _additional_data: Option<&[u8]>,
+        additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
-        if ciphertext.len() < NONCE_SIZE {
-            return Err(Error::Key("Ciphertext is too short".to_string()));
+        if ciphertext.len() < NONCE_SIZE + TAG_SIZE {
+            return Err(Error::DecryptionFailed(
+                "Ciphertext is too short".to_string(),
+            ));
         }
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key.0);
         let cipher = Aes256Gcm::new(key);
-        let (nonce_bytes, ct) = ciphertext.split_at(NONCE_SIZE);
-        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let (nonce_slice, rest) = ciphertext.split_at(NONCE_SIZE);
+        let (tag_slice, ct_slice) = rest.split_at(TAG_SIZE);
+        let nonce = Nonce::from_slice(nonce_slice);
+        let tag = Tag::from_slice(tag_slice);
+
+        let mut buffer = ct_slice.to_vec();
         cipher
-            .decrypt(nonce, ct)
-            .map_err(|e| Error::Key(e.to_string()))
+            .decrypt_in_place_detached(nonce, additional_data.unwrap_or(&[]), &mut buffer, tag)
+            .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
+
+        Ok(buffer)
     }
 
     fn export_key(key: &Self::Key) -> Result<String, Self::Error> {
-        Ok(to_base64(&key.0))
+        Ok(general_purpose::STANDARD.encode(&key.0))
     }
 
     fn import_key(encoded_key: &str) -> Result<Self::Key, Self::Error> {

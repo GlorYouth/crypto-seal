@@ -1,7 +1,7 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
-use crate::common::utils::{Base64String, ZeroizingVec, from_base64};
+use crate::common::utils::ZeroizingVec;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::pss::{SigningKey, VerifyingKey};
 use rsa::rand_core::OsRng as RsaOsRng;
@@ -99,7 +99,7 @@ impl RsaCryptoSystem {
 impl AsymmetricCryptographicSystem for RsaCryptoSystem {
     type PublicKey = RsaPublicKeyWrapper;
     type PrivateKey = RsaPrivateKeyWrapper;
-    type CiphertextOutput = Base64String;
+    type CiphertextOutput = Vec<u8>;
     type Error = Error;
 
     fn generate_keypair(
@@ -141,23 +141,20 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
             .encrypt(&mut rng, Pkcs1v15Encrypt, plaintext)
             .map_err(|e| Error::Traditional(format!("RSA加密失败: {}", e)))?;
 
-        Ok(Base64String::from(ciphertext))
+        Ok(ciphertext)
     }
 
     fn decrypt(
         private_key: &Self::PrivateKey,
-        ciphertext: &str,
+        ciphertext: &[u8],
         _additional_data: Option<&[u8]>, // RSA PKCS#1 v1.5不使用附加数据
     ) -> Result<Vec<u8>, Self::Error> {
         // 从DER数据恢复私钥
         let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)
             .map_err(|e| Error::Traditional(format!("解析RSA私钥失败: {}", e)))?;
 
-        // 使用公共函数解码Base64
-        let ciphertext_bytes = from_base64(ciphertext)?;
-
         private_key
-            .decrypt(Pkcs1v15Encrypt, &ciphertext_bytes)
+            .decrypt(Pkcs1v15Encrypt, ciphertext)
             .map_err(|e| Error::Traditional(format!("RSA解密失败: {}", e)))
     }
 
@@ -225,8 +222,7 @@ mod tests {
         let plaintext = b"some secret data";
 
         let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let decrypted =
-            RsaCryptoSystem::decrypt(&private_key, &ciphertext.to_string(), None).unwrap();
+        let decrypted = RsaCryptoSystem::decrypt(&private_key, &ciphertext, None).unwrap();
 
         assert_eq!(plaintext, decrypted.as_slice());
     }
@@ -275,7 +271,7 @@ mod tests {
         let plaintext = b"top secret";
 
         let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let result = RsaCryptoSystem::decrypt(&wrong_private_key, &ciphertext.to_string(), None);
+        let result = RsaCryptoSystem::decrypt(&wrong_private_key, &ciphertext, None);
 
         assert!(result.is_err());
     }
@@ -285,16 +281,15 @@ mod tests {
         let (public_key, private_key) = setup_keys();
         let plaintext = b"another secret";
 
-        let ciphertext_b64 = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let mut ciphertext_bytes = from_base64(&ciphertext_b64.to_string()).unwrap();
+        let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let mut ciphertext_bytes = ciphertext;
 
         // Tamper
         let len = ciphertext_bytes.len();
         ciphertext_bytes[len / 2] ^= 0xff;
-        let tampered_ciphertext_b64 = Base64String::from(ciphertext_bytes);
+        let tampered_ciphertext = ciphertext_bytes;
 
-        let result =
-            RsaCryptoSystem::decrypt(&private_key, &tampered_ciphertext_b64.to_string(), None);
+        let result = RsaCryptoSystem::decrypt(&private_key, &tampered_ciphertext, None);
         assert!(result.is_err());
     }
 
@@ -349,8 +344,7 @@ mod tests {
         let plaintext = b""; // 空数据
 
         let encrypted = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let decrypted =
-            RsaCryptoSystem::decrypt(&private_key, &encrypted.to_string(), None).unwrap();
+        let decrypted = RsaCryptoSystem::decrypt(&private_key, &encrypted, None).unwrap();
 
         assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }
@@ -380,8 +374,7 @@ mod tests {
 
         let plaintext = b"data for 4096-bit key";
         let encrypted = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let decrypted =
-            RsaCryptoSystem::decrypt(&private_key, &encrypted.to_string(), None).unwrap();
+        let decrypted = RsaCryptoSystem::decrypt(&private_key, &encrypted, None).unwrap();
 
         assert_eq!(plaintext.as_ref(), decrypted.as_slice());
     }

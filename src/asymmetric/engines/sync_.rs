@@ -4,10 +4,10 @@ use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStr
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricSyncStreamingSystem;
+use memchr::memchr;
 use secrecy::SecretString;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use memchr::memchr;
 
 /// `AsymmetricQSealEngine`：一个支持密钥轮换的用户友好型非对称加密引擎。
 ///
@@ -43,8 +43,8 @@ where
     /// 加密数据。
     ///
     /// 自动处理密钥选择、使用计数更新和必要的密钥轮换。
-    /// 密文将包含用于加密的密钥ID，格式为 `key_id:ciphertext`。
-    pub fn encrypt(&mut self, data: &[u8]) -> Result<String, Error> {
+    /// 密文将以字节形式返回，格式为 `key_id:ciphertext`。
+    pub fn encrypt(&mut self, data: &[u8]) -> Result<Vec<u8>, Error> {
         // 1. 检查是否需要轮换
         if self.key_manager.needs_rotation() {
             self.key_manager.start_rotation::<T>(&self.password)?;
@@ -61,9 +61,13 @@ where
 
         // 3. 加密数据
         let ciphertext = T::encrypt(&public_key, data, None)?;
-        let output = format!("{}:{}", key_metadata.id, ciphertext.to_string());
 
-        // 4. 增加使用计数
+        // 4. 组合 key_id 和密文
+        let mut output = key_metadata.id.as_bytes().to_vec();
+        output.push(b':');
+        output.extend_from_slice(ciphertext.as_ref());
+
+        // 5. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
 
         Ok(output)
@@ -71,17 +75,16 @@ where
 
     /// 解密数据。
     ///
-    /// 期望的密文格式为 `key_id:ciphertext`。
-    pub fn decrypt(&self, ciphertext: &str) -> Result<Vec<u8>, Error> {
+    /// 期望的密文格式为 `key_id:ciphertext` 的字节流。
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
         // 1. 从密文中解析出 key_id
-        let parts: Vec<&str> = ciphertext.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(Error::Format(
-                "Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string(),
-            ));
-        }
-        let key_id = parts[0];
-        let actual_ciphertext = parts[1];
+        let separator_pos = memchr(b':', ciphertext).ok_or_else(|| {
+            Error::Format("Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string())
+        })?;
+
+        let key_id = std::str::from_utf8(&ciphertext[..separator_pos])
+            .map_err(|_| Error::Format("Invalid UTF-8 for key_id".to_string()))?;
+        let actual_ciphertext = &ciphertext[separator_pos + 1..];
 
         // 2. 根据 key_id 获取密钥对
         let (_, private_key) = self
@@ -260,80 +263,51 @@ where
         )
     }
 
-    /// 解密一段密文。
-    pub fn decrypt_bytes(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error>
-    where
-        T: crate::asymmetric::traits::AsymmetricCryptographicSystem,
-    {
-        let separator_pos = memchr(b':', ciphertext)
-            .ok_or_else(|| Error::Format("Invalid ciphertext format. Missing ':' separator.".to_string()))?;
-
-        let key_id_bytes = &ciphertext[..separator_pos];
-        let actual_ciphertext_bytes = &ciphertext[separator_pos + 1..];
-
-        let key_id = std::str::from_utf8(key_id_bytes)
-            .map_err(|_| Error::Format("Key ID is not valid UTF-8.".to_string()))?;
-        
-        let actual_ciphertext_str = std::str::from_utf8(actual_ciphertext_bytes)
-            .map_err(|_| Error::Format("Ciphertext is not valid UTF-8.".to_string()))?;
-
-        // 2. 根据 key_id 获取密钥对
-        let (_, private_key) = self
-            .key_manager
-            .get_keypair_by_id::<T>(key_id)?
-            .ok_or_else(|| {
-                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
-            })?;
-
-        // 3. 解密数据
-        T::decrypt(&private_key, actual_ciphertext_str, None).map_err(Error::from)
-    }
-
     #[cfg(feature = "parallel")]
-    /// [并行] 加密一段明文。
+    /// [并行] 加密数据
     pub fn par_encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error>
     where
         T: crate::asymmetric::traits::AsymmetricParallelSystem,
     {
-        let key_metadata = self
-            .key_manager
-            .get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?
-            .clone();
+        if self.key_manager.needs_rotation() {
+            self.key_manager.start_rotation::<T>(&self.password)?;
+        }
 
+        let key_metadata = self.key_manager.get_primary_key_metadata().ok_or_else(|| {
+            Error::KeyManagement("No primary key metadata available.".to_string())
+        })?;
         let public_key = self
             .key_manager
             .get_public_key_by_id::<T>(&key_metadata.id)?
-            .ok_or_else(|| {
-                Error::KeyManagement(format!(
-                    "Could not find public key for ID: {}",
-                    key_metadata.id
-                ))
-            })?;
+            .ok_or_else(|| Error::Key("Could not find or derive public key.".to_string()))?;
 
-        let parallelism_config = self.key_manager.config().parallelism;
-        let ciphertext_bytes =
-            T::par_encrypt(&public_key, plaintext, &parallelism_config).map_err(Error::from)?;
+        let ciphertext = T::par_encrypt(
+            &public_key,
+            plaintext,
+            &self.key_manager.config().parallelism,
+        )?;
 
         let mut output = key_metadata.id.as_bytes().to_vec();
         output.push(b':');
-        output.extend_from_slice(&ciphertext_bytes);
+        output.extend_from_slice(&ciphertext);
 
         self.key_manager.increment_usage_count(&self.password)?;
+
         Ok(output)
     }
 
     #[cfg(feature = "parallel")]
-    /// [并行] 解密一段密文。
+    /// [并行] 解密数据
     pub fn par_decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error>
     where
         T: crate::asymmetric::traits::AsymmetricParallelSystem,
     {
-        let separator_pos = memchr(b':', ciphertext)
-            .ok_or_else(|| Error::Format("Invalid format: missing ':' separator.".to_string()))?;
+        let separator_pos = memchr(b':', ciphertext).ok_or_else(|| {
+            Error::Format("Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string())
+        })?;
 
         let key_id = std::str::from_utf8(&ciphertext[..separator_pos])
-            .map_err(|e| Error::Format(format!("Key ID is not valid UTF-8: {}", e)))?;
+            .map_err(|_| Error::Format("Invalid UTF-8 for key_id".to_string()))?;
         let actual_ciphertext = &ciphertext[separator_pos + 1..];
 
         let (_, private_key) = self
@@ -343,8 +317,12 @@ where
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
 
-        let parallelism_config = self.key_manager.config().parallelism;
-        T::par_decrypt(&private_key, actual_ciphertext, &parallelism_config).map_err(Error::from)
+        T::par_decrypt(
+            &private_key,
+            actual_ciphertext,
+            &self.key_manager.config().parallelism,
+        )
+        .map_err(Error::from)
     }
 }
 

@@ -4,6 +4,8 @@ use argon2::{
     Argon2, ParamsBuilder,
     password_hash::{PasswordHasher, SaltString},
 };
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -11,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::traits::SecureKeyStorage;
-use crate::common::utils::{from_base64, to_base64};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
@@ -130,8 +131,8 @@ impl EncryptedKeyContainer {
             .map_err(|e| Error::KeyStorage(format!("加密密钥失败: {}", e)))?;
 
         Ok(Self {
-            encrypted_data: to_base64(&ciphertext),
-            nonce: to_base64(&nonce_bytes),
+            encrypted_data: BASE64.encode(&ciphertext),
+            nonce: BASE64.encode(&nonce_bytes),
             salt: salt.as_str().to_string(),
             algorithm_id: algorithm_id.to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -189,8 +190,8 @@ impl SecureKeyStorage for EncryptedKeyContainer {
             .map_err(|e| Error::KeyStorage(format!("创建解密器失败: {}", e)))?;
 
         // 解码nonce和密文
-        let nonce_bytes = from_base64(&self.nonce)?;
-        let ciphertext = from_base64(&self.encrypted_data)?;
+        let nonce_bytes = BASE64.decode(&self.nonce)?;
+        let ciphertext = BASE64.decode(&self.encrypted_data)?;
 
         // 解密密钥数据
         let nonce = Nonce::from_slice(&nonce_bytes);

@@ -31,6 +31,8 @@ pub enum Error {
     EncryptionFailed(String),
     /// 解密失败
     DecryptionFailed(String),
+    /// 签名验证失败
+    Verification(String),
     /// 密钥导入失败
     KeyImportFailed(String),
     /// 密钥导出失败
@@ -39,6 +41,8 @@ pub enum Error {
     KeyManagement(String),
     /// 配置错误
     Configuration(String),
+    /// AAD 不匹配错误
+    AadMismatch,
 }
 
 impl fmt::Display for Error {
@@ -54,10 +58,12 @@ impl fmt::Display for Error {
             Error::Operation(msg) => write!(f, "操作失败: {}", msg),
             Error::EncryptionFailed(msg) => write!(f, "加密失败: {}", msg),
             Error::DecryptionFailed(msg) => write!(f, "解密失败: {}", msg),
+            Error::Verification(msg) => write!(f, "签名验证失败: {}", msg),
             Error::KeyImportFailed(msg) => write!(f, "密钥导入失败: {}", msg),
             Error::KeyExportFailed(msg) => write!(f, "密钥导出失败: {}", msg),
             Error::KeyManagement(msg) => write!(f, "密钥管理错误: {}", msg),
             Error::Configuration(msg) => write!(f, "配置错误: {}", msg),
+            Error::AadMismatch => write!(f, "AAD 不匹配"),
         }
     }
 }

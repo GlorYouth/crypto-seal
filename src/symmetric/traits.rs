@@ -13,11 +13,14 @@ pub trait SymmetricCryptographicSystem: Sized {
     /// 密钥的期望长度（以字节为单位）。
     const KEY_SIZE: usize;
 
+    /// 密文类型，现在是原始字节
+    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + Send + Sync;
+
     /// 用于加密和解密的单一密钥。
     type Key: Clone + Debug;
 
     /// 该系统的错误类型。
-    type Error: std::error::Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     /// 生成一个新的密钥。
     fn generate_key(config: &CryptoConfig) -> Result<Self::Key, Self::Error>;
@@ -27,7 +30,7 @@ pub trait SymmetricCryptographicSystem: Sized {
         key: &Self::Key,
         plaintext: &[u8],
         additional_data: Option<&[u8]>,
-    ) -> Result<Vec<u8>, Self::Error>;
+    ) -> Result<Self::CiphertextOutput, Self::Error>;
 
     /// 使用密钥解密数据。
     fn decrypt(

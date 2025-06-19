@@ -67,11 +67,12 @@ where
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
-            let ciphertext_bytes = C::encrypt(self.key, plaintext, Some(&aad))?;
+            let ciphertext = C::encrypt(self.key, plaintext, Some(&aad))?;
+            let ciphertext_bytes = ciphertext.as_ref();
 
             let len = ciphertext_bytes.len() as u32;
             self.writer.write_all(&len.to_le_bytes())?;
-            self.writer.write_all(&ciphertext_bytes)?;
+            self.writer.write_all(ciphertext_bytes)?;
 
             total_written += read_bytes as u64;
             self.chunk_index += 1;

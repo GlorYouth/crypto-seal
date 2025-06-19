@@ -60,7 +60,7 @@ where
 
         let mut output = key_metadata.id.as_bytes().to_vec();
         output.push(b':');
-        output.extend_from_slice(&ciphertext_bytes);
+        output.extend_from_slice(ciphertext_bytes.as_ref());
 
         self.key_manager
             .increment_usage_count_async(&self.password)

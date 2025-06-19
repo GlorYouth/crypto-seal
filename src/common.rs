@@ -9,7 +9,7 @@ pub mod utils;
 pub use self::config::ConfigFile;
 pub use self::errors::Error;
 pub use self::traits::{KeyMetadata, KeyStatus, SecureKeyStorage};
-pub use self::utils::{constant_time_eq, from_base64, to_base64};
+pub use self::utils::constant_time_eq;
 
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use self::traits::AuthenticatedCryptoSystem;

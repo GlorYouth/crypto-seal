@@ -17,11 +17,11 @@ pub trait AsymmetricCryptographicSystem: Sized {
     /// 私钥类型
     type PrivateKey: Clone + Serialize + for<'de> Deserialize<'de> + Debug;
 
-    /// 密文类型，可能是字符串或二进制数据
-    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + ToString + Send + Sync;
+    /// 密文类型，现在是原始字节
+    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + Send + Sync;
 
     /// 错误类型
-    type Error: std::error::Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     /// 生成密钥对
     fn generate_keypair(
@@ -38,7 +38,7 @@ pub trait AsymmetricCryptographicSystem: Sized {
     /// 使用私钥解密数据
     fn decrypt(
         private_key: &Self::PrivateKey,
-        ciphertext: &str,
+        ciphertext: &[u8],
         additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error>;
 

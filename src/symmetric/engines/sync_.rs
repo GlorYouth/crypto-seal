@@ -61,7 +61,7 @@ where
         // 3. 构造输出: key_id:ciphertext
         let mut output = key_metadata.id.as_bytes().to_vec();
         output.push(b':');
-        output.extend_from_slice(&ciphertext_bytes);
+        output.extend_from_slice(ciphertext_bytes.as_ref());
 
         // 4. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
@@ -181,13 +181,17 @@ where
         })?;
 
         let parallelism_config = self.key_manager.config().parallelism;
-        let ciphertext_bytes =
-            T::par_encrypt(&primary_key, plaintext, additional_data, &parallelism_config)
-                .map_err(Error::from)?;
+        let ciphertext_bytes = T::par_encrypt(
+            &primary_key,
+            plaintext,
+            additional_data,
+            &parallelism_config,
+        )
+        .map_err(Error::from)?;
 
         let mut output = key_metadata.id.as_bytes().to_vec();
         output.push(b':');
-        output.extend_from_slice(&ciphertext_bytes);
+        output.extend_from_slice(ciphertext_bytes.as_ref());
 
         self.key_manager.increment_usage_count(&self.password)?;
 
@@ -223,8 +227,13 @@ where
             })?;
 
         let parallelism_config = self.key_manager.config().parallelism;
-        T::par_decrypt(&key, actual_ciphertext, additional_data, &parallelism_config)
-            .map_err(Error::from)
+        T::par_decrypt(
+            &key,
+            actual_ciphertext,
+            additional_data,
+            &parallelism_config,
+        )
+        .map_err(Error::from)
     }
 
     #[cfg(feature = "parallel")]

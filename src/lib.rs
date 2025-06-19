@@ -77,8 +77,7 @@ mod tests {
                 "traditional" => {
                     let (pub_key, priv_key) = TraditionalRsa::generate_keypair(&config).unwrap();
                     let encrypted = TraditionalRsa::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted =
-                        TraditionalRsa::decrypt(&priv_key, &encrypted.to_string(), None).unwrap();
+                    let decrypted = TraditionalRsa::decrypt(&priv_key, &encrypted, None).unwrap();
                     // 使用常量时间比较，提高安全性
                     constant_time_eq(&decrypted, test_message)
                 }
@@ -86,16 +85,14 @@ mod tests {
                     let (pub_key, priv_key) = PostQuantumKyber::generate_keypair(&config).unwrap();
                     let encrypted =
                         PostQuantumKyber::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted =
-                        PostQuantumKyber::decrypt(&priv_key, &encrypted.to_string(), None).unwrap();
+                    let decrypted = PostQuantumKyber::decrypt(&priv_key, &encrypted, None).unwrap();
                     // 使用常量时间比较，提高安全性
                     constant_time_eq(&decrypted, test_message)
                 }
                 "hybrid" => {
                     let (pub_key, priv_key) = HybridRsaKyber::generate_keypair(&config).unwrap();
                     let encrypted = HybridRsaKyber::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted =
-                        HybridRsaKyber::decrypt(&priv_key, &encrypted.to_string(), None).unwrap();
+                    let decrypted = HybridRsaKyber::decrypt(&priv_key, &encrypted, None).unwrap();
                     // 使用常量时间比较，提高安全性
                     constant_time_eq(&decrypted, test_message)
                 }

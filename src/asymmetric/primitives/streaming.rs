@@ -68,10 +68,10 @@ where
         )?;
 
         // 3. 写入头部: [封装密钥的长度 (u32)][封装的密钥]
-        let encrypted_key_bytes = encrypted_symmetric_key.to_string().into_bytes();
+        let encrypted_key_bytes = encrypted_symmetric_key.as_ref();
         let key_len = encrypted_key_bytes.len() as u32;
         self.writer.write_all(&key_len.to_le_bytes())?;
-        self.writer.write_all(&encrypted_key_bytes)?;
+        self.writer.write_all(encrypted_key_bytes)?;
 
         // 4. 使用对称流加密器处理剩余的数据流
         let symmetric_encryptor = SymmetricStreamingEncryptor::<S, _, _>::new(
@@ -141,11 +141,8 @@ where
         let mut encrypted_key_buf = vec![0u8; key_len];
         self.reader.read_exact(&mut encrypted_key_buf)?;
 
-        let encrypted_key_str = String::from_utf8(encrypted_key_buf)
-            .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;
-
         // 2. 使用非对称私钥解密对称密钥 (密钥恢复)
-        let decrypted_key_bytes = C::decrypt(self.private_key, &encrypted_key_str, None)?;
+        let decrypted_key_bytes = C::decrypt(self.private_key, &encrypted_key_buf, None)?;
 
         let key_str = String::from_utf8(decrypted_key_bytes)
             .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;

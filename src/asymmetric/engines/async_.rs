@@ -49,8 +49,8 @@ where
     /// 异步加密数据。
     ///
     /// 自动处理密钥选择、使用计数更新和必要的密钥轮换（异步）。
-    /// 密文将包含用于加密的密钥ID，格式为 `key_id:ciphertext`。
-    pub async fn encrypt(&mut self, data: &[u8]) -> Result<String, Error> {
+    /// 密文将以字节形式返回，格式为 `key_id:ciphertext`。
+    pub async fn encrypt(&mut self, data: &[u8]) -> Result<Vec<u8>, Error> {
         // 1. 检查是否需要轮换
         if self.key_manager.needs_rotation() {
             self.key_manager
@@ -69,9 +69,13 @@ where
 
         // 3. 加密数据
         let ciphertext = T::encrypt(&public_key, data, None)?;
-        let output = format!("{}:{}", key_metadata.id, ciphertext.to_string());
 
-        // 4. 增加使用计数
+        // 4. 组合 key_id 和密文
+        let mut output = key_metadata.id.as_bytes().to_vec();
+        output.push(b':');
+        output.extend_from_slice(ciphertext.as_ref());
+
+        // 5. 增加使用计数
         self.key_manager
             .increment_usage_count_async(&self.password)
             .await?;
@@ -81,18 +85,17 @@ where
 
     /// 异步解密数据。
     ///
-    /// 期望的密文格式为 `key_id:ciphertext`。
+    /// 期望的密文格式为 `key_id:ciphertext` 的字节流。
     /// 此操作不涉及I/O，因此在异步上下文中可以阻塞执行，但为保持API一致性，我们返回一个Future。
-    pub async fn decrypt(&self, ciphertext: &str) -> Result<Vec<u8>, Error> {
+    pub async fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
         // 1. 从密文中解析出 key_id
-        let parts: Vec<&str> = ciphertext.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(Error::Format(
-                "Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string(),
-            ));
-        }
-        let key_id = parts[0];
-        let actual_ciphertext = parts[1];
+        let separator_pos = memchr::memchr(b':', ciphertext).ok_or_else(|| {
+            Error::Format("Invalid ciphertext format. Expected 'key_id:ciphertext'".to_string())
+        })?;
+
+        let key_id = std::str::from_utf8(&ciphertext[..separator_pos])
+            .map_err(|_| Error::Format("Invalid UTF-8 for key_id".to_string()))?;
+        let actual_ciphertext = &ciphertext[separator_pos + 1..];
 
         // 2. 根据 key_id 获取密钥对
         let (_, private_key) = self

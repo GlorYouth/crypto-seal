@@ -40,10 +40,10 @@ where
         let encrypted_symmetric_key = T::encrypt(public_key, exported_key.as_bytes(), None)?;
 
         // 3. 写入头部
-        let encrypted_key_bytes = encrypted_symmetric_key.to_string().into_bytes();
+        let encrypted_key_bytes = encrypted_symmetric_key.as_ref();
         let key_len = encrypted_key_bytes.len() as u32;
         writer.write_all(&key_len.to_le_bytes())?;
-        writer.write_all(&encrypted_key_bytes)?;
+        writer.write_all(encrypted_key_bytes)?;
 
         // 4. **关键**: 使用对称并行流加密器处理剩余的数据流
         S::par_encrypt_stream(
@@ -79,11 +79,8 @@ where
         let mut encrypted_key_buf = vec![0u8; key_len];
         reader.read_exact(&mut encrypted_key_buf)?;
 
-        let encrypted_key_str = String::from_utf8(encrypted_key_buf)
-            .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;
-
         // 2. 解密对称密钥
-        let decrypted_key_bytes = T::decrypt(private_key, &encrypted_key_str, None)?;
+        let decrypted_key_bytes = T::decrypt(private_key, &encrypted_key_buf, None)?;
         let key_str = String::from_utf8(decrypted_key_bytes)
             .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;
         let symmetric_key = S::import_key(&key_str)?;
@@ -136,10 +133,10 @@ mod async_impl {
             let exported_key = S::export_key(&symmetric_key)?;
             let encrypted_symmetric_key = T::encrypt(public_key, exported_key.as_bytes(), None)?;
 
-            let encrypted_key_bytes = encrypted_symmetric_key.to_string().into_bytes();
+            let encrypted_key_bytes = encrypted_symmetric_key.as_ref();
             let key_len = (encrypted_key_bytes.len() as u32).to_le_bytes();
             writer.write_all(&key_len).await?;
-            writer.write_all(&encrypted_key_bytes).await?;
+            writer.write_all(encrypted_key_bytes).await?;
 
             S::par_encrypt_stream_async(
                 &symmetric_key,
@@ -175,8 +172,7 @@ mod async_impl {
             let mut encrypted_key_buf = vec![0u8; key_len];
             reader.read_exact(&mut encrypted_key_buf).await?;
 
-            let encrypted_key_str = String::from_utf8(encrypted_key_buf)?;
-            let decrypted_key_bytes = T::decrypt(private_key, &encrypted_key_str, None)?;
+            let decrypted_key_bytes = T::decrypt(private_key, &encrypted_key_buf, None)?;
 
             let key_str = String::from_utf8(decrypted_key_bytes)?;
             let symmetric_key = S::import_key(&key_str)?;

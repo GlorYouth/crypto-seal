@@ -4,6 +4,8 @@ use crate::common::traits::{KeyMetadata, KeyStatus};
 use crate::rotation::RotationPolicy;
 use crate::seal::Seal;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::SecretString;
 use std::collections::BTreeMap;
@@ -278,11 +280,11 @@ impl SymmetricKeyRotationManager {
         T: SymmetricCryptographicSystem,
         Error: From<T::Error>,
     {
-        let payload = self.seal.payload();
-        let derived_material =
-            self.seal
-                .derive_key(&payload.master_seed, metadata.id.as_bytes(), T::KEY_SIZE)?;
-        T::import_key(&crate::common::to_base64(&derived_material)).map_err(Error::from)
+        let salt = metadata.id.as_bytes();
+        let derived_material = self
+            .seal
+            .derive_key(&self.seal.payload().master_seed, salt, 32)?;
+        T::import_key(&BASE64.encode(&derived_material)).map_err(Error::from)
     }
 
     /// 获取下一个可用的密钥版本号。

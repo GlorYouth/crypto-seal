@@ -67,10 +67,10 @@ where
         let encrypted_symmetric_key = C::encrypt(self.public_key, exported_key.as_bytes(), None)?;
 
         // 3. 写入头部
-        let encrypted_key_bytes = encrypted_symmetric_key.to_string().into_bytes();
+        let encrypted_key_bytes = encrypted_symmetric_key.as_ref();
         let key_len = encrypted_key_bytes.len() as u32;
         self.writer.write_all(&key_len.to_le_bytes()).await?;
-        self.writer.write_all(&encrypted_key_bytes).await?;
+        self.writer.write_all(encrypted_key_bytes).await?;
 
         // 4. 委托给对称异步流加密器
         let symmetric_encryptor = SymmetricAsyncEncryptor::<S, _, _>::new(
@@ -137,11 +137,8 @@ where
         let mut encrypted_key_buf = vec![0u8; key_len];
         self.reader.read_exact(&mut encrypted_key_buf).await?;
 
-        let encrypted_key_str = String::from_utf8(encrypted_key_buf)
-            .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;
-
         // 2. 恢复对称密钥
-        let decrypted_key_bytes = C::decrypt(self.private_key, &encrypted_key_str, None)?;
+        let decrypted_key_bytes = C::decrypt(self.private_key, &encrypted_key_buf, None)?;
 
         let key_str = String::from_utf8(decrypted_key_bytes)
             .map_err(|e| Error::Format(format!("无效的UTF-8密钥: {}", e)))?;

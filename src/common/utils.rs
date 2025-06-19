@@ -1,46 +1,6 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 use zeroize::{Zeroize, ZeroizeOnDrop};
-
-/// 将字节数组转换为Base64字符串
-pub fn to_base64(data: &[u8]) -> String {
-    BASE64.encode(data)
-}
-
-/// 从Base64字符串解码为字节数组
-pub fn from_base64(encoded: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    BASE64.decode(encoded)
-}
-
-/// Base64编码的字符串类型
-#[derive(Debug, Clone)]
-pub struct Base64String(pub Vec<u8>);
-
-impl Base64String {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl AsRef<[u8]> for Base64String {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<Vec<u8>> for Base64String {
-    fn from(data: Vec<u8>) -> Self {
-        Self(data)
-    }
-}
-
-impl ToString for Base64String {
-    fn to_string(&self) -> String {
-        to_base64(&self.0)
-    }
-}
 
 /// 安全地比较两个字节序列，防止时序攻击
 ///
@@ -70,17 +30,6 @@ impl SecureBytes {
     /// 创建新的安全字节容器
     pub fn new(data: impl Into<Vec<u8>>) -> Self {
         Self { bytes: data.into() }
-    }
-
-    /// 将内容转换为Base64编码的字符串
-    pub fn to_base64(&self) -> String {
-        to_base64(&self.bytes)
-    }
-
-    /// 从Base64字符串创建SecureBytes
-    pub fn from_base64(encoded: &str) -> Result<Self, base64::DecodeError> {
-        let bytes = from_base64(encoded)?;
-        Ok(Self::new(bytes))
     }
 
     /// 安全地比较两个SecureBytes实例
@@ -143,32 +92,7 @@ impl AsRef<[u8]> for ZeroizingVec {
 #[cfg(test)]
 mod tests {
     use crate::common::config::CryptoConfig;
-    use crate::common::utils::{
-        Base64String, SecureBytes, constant_time_eq, from_base64, to_base64,
-    };
-
-    #[test]
-    fn test_base64_roundtrip() {
-        let original = b"Hello, crypto world!";
-        let encoded = to_base64(original);
-        let decoded = from_base64(&encoded).unwrap();
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn test_base64string_traits() {
-        let data = vec![1, 2, 3, 4, 5];
-        let b64_string = Base64String::from(data.clone());
-
-        // 测试From<Vec<u8>>
-        assert_eq!(from_base64(&b64_string.to_string()).unwrap(), data);
-
-        // 测试AsRef<[u8]>
-        assert_eq!(b64_string.as_ref(), b64_string.0.as_slice());
-
-        // 测试ToString
-        assert_eq!(b64_string.to_string(), to_base64(&b64_string.0));
-    }
+    use crate::common::utils::{SecureBytes, constant_time_eq};
 
     #[test]
     fn test_constant_time_eq() {
@@ -184,15 +108,14 @@ mod tests {
     #[test]
     fn test_secure_bytes() {
         let data = b"sensitive information";
-        let secure = SecureBytes::new(data.to_vec());
+        let mut secure = SecureBytes::new(data.to_vec());
 
         // 测试内容是否正确
         assert_eq!(&*secure, data);
 
-        // 测试Base64转换
-        let b64 = secure.to_base64();
-        let recovered = SecureBytes::from_base64(&b64).unwrap();
-        assert!(secure.constant_time_eq(&recovered));
+        // 使用可变引用来模拟一些操作
+        secure[0] = b'S';
+        assert_eq!(secure[0], b'S');
 
         // 注：内存擦除功能在离开作用域时自动触发，无法直接测试
     }

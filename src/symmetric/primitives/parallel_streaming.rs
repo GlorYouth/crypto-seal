@@ -144,10 +144,11 @@ where
                     aad.extend_from_slice(&index.to_le_bytes());
 
                     let result = C::encrypt(key, &plaintext, Some(&aad));
+                    let mapped_result = result.map(|d| d.as_ref().to_vec());
 
                     let original_size = plaintext.len();
                     if result_tx
-                        .send((index, original_size, result.map_err(Error::from)))
+                        .send((index, original_size, mapped_result.map_err(Error::from)))
                         .is_err()
                     {
                         // 如果结果通道关闭，说明写入线程已终止，我们无需继续处理
