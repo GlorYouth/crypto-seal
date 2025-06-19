@@ -1,99 +1,161 @@
-#![cfg(all(feature = "traditional", feature = "post-quantum"))]
+//!
+//! 集成测试
+//!
+//! 这个模块包含了 `seal-kit` 的端到端集成测试。
+//! 它验证了从创建保险库到加密、解密、密钥轮换以及不同模式间兼容性的完整流程。
+//!
 
-use seal_kit::Seal;
-use seal_kit::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
+#![cfg(feature = "secure-storage")]
+
+use seal_kit::{Seal, SealMode};
 use secrecy::SecretString;
 use std::io::Cursor;
 use tempfile::tempdir;
 
-#[test]
-fn integration_sync_engine() {
-    // Setup
+// 辅助函数：创建一个临时的 Seal 实例并返回一个解锁的 engine
+fn setup_engine() -> seal_kit::SealEngine {
     let dir = tempdir().unwrap();
-    let seal_path = dir.path().join("sync.seal");
-    let password = SecretString::new("sync-password".into());
+    let seal_path = dir.path().join("my_seal.seal");
+    let password = SecretString::from("test-password".to_string());
+
     let seal = Seal::create(&seal_path, &password).unwrap();
-
-    // Test one-shot encryption/decryption
-    let mut engine = seal
-        .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password.clone())
-        .unwrap();
-    let data = b"Integration test for sync engine";
-    let cipher = engine.encrypt(data).unwrap();
-    let plain = engine.decrypt(&cipher).unwrap();
-    assert_eq!(plain, data);
-
-    // Test reopening and decryption
-    let seal2 = Seal::open(&seal_path, &password).unwrap();
-    let engine2 = seal2
-        .asymmetric_sync_engine::<RsaKyberCryptoSystem>(password.clone())
-        .unwrap();
-    let plain_after_reopen = engine2.decrypt(&cipher).unwrap();
-    assert_eq!(plain_after_reopen, data);
-
-    // Test streaming encryption/decryption
-    let stream_data = b"Some very long data for sync streaming";
-    let mut reader = Cursor::new(stream_data);
-    let mut encrypted_writer = Cursor::new(Vec::new());
-
-    engine
-        .encrypt_stream::<AesGcmSystem, _, _>(&mut reader, &mut encrypted_writer)
-        .unwrap();
-
-    let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
-    let mut decrypted_writer = Cursor::new(Vec::new());
-    engine2
-        .decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_reader, &mut decrypted_writer)
-        .unwrap();
-
-    assert_eq!(decrypted_writer.into_inner(), stream_data.to_vec());
+    seal.engine(SealMode::Hybrid, &password).unwrap()
 }
 
-#[cfg(feature = "async-engine")]
+// === 核心功能测试 ===
+
+#[test]
+fn test_seal_engine_bytes_roundtrip() {
+    let mut engine = setup_engine();
+    let data = b"some important data to seal".to_vec();
+    let aad = b"additional authenticated data";
+
+    // 加密
+    let ciphertext = engine.seal_bytes(&data, Some(aad)).unwrap();
+
+    // 使用同一个引擎解密
+    let decrypted = engine.unseal_bytes(&ciphertext, Some(aad)).unwrap();
+    assert_eq!(data, decrypted);
+}
+
 #[tokio::test]
-async fn integration_async_engine() {
-    // Setup
-    let dir = tempdir().unwrap();
-    let seal_path = dir.path().join("async.seal");
-    let password = SecretString::new("async-password".into());
-    let seal = Seal::create(&seal_path, &password).unwrap();
+async fn test_seal_engine_stream_roundtrip() {
+    let mut engine = setup_engine();
+    let data = b"some long streaming data to seal".to_vec();
+    let aad = b"streaming aad";
 
-    // Test one-shot encryption/decryption
-    let mut engine = seal
-        .asymmetric_async_engine::<RsaKyberCryptoSystem>(password.clone())
-        .await
-        .unwrap();
-    let data = b"Async integration test";
-    let cipher = engine.encrypt(data).await.unwrap();
-    let plain = engine.decrypt(&cipher).await.unwrap();
-    assert_eq!(plain, data);
+    // 同步流式加密
+    let mut source = Cursor::new(data.clone());
+    let mut dest = Cursor::new(Vec::new());
+    engine.seal_stream(&mut source, &mut dest, Some(aad)).unwrap();
+    let ciphertext = dest.into_inner();
 
-    // Test reopening and decryption
-    let seal2 = Seal::open(&seal_path, &password).unwrap();
-    let engine2 = seal2
-        .asymmetric_async_engine::<RsaKyberCryptoSystem>(password.clone())
-        .await
-        .unwrap();
-    let plain_after_reopen = engine2.decrypt(&cipher).await.unwrap();
-    assert_eq!(plain_after_reopen, data);
+    // 同步流式解密
+    let mut source = Cursor::new(ciphertext.clone());
+    let mut dest = Cursor::new(Vec::new());
+    engine.unseal_stream(&mut source, &mut dest, Some(aad)).unwrap();
+    assert_eq!(data, dest.into_inner());
 
-    // Test streaming encryption/decryption
-    let stream_data = b"Some very long data for async streaming";
-    let mut reader = Cursor::new(stream_data);
-    let mut encrypted_writer = Cursor::new(Vec::new());
+    // 异步流式解密
+    let source = Cursor::new(ciphertext);
+    let dest = Cursor::new(Vec::new());
+    let final_dest = engine.unseal_stream_async(source, dest, Some(aad)).await.unwrap();
+    assert_eq!(data, final_dest.into_inner());
+}
 
-    engine
-        .encrypt_stream::<AesGcmSystem, _, _>(&mut reader, &mut encrypted_writer)
-        .await
-        .unwrap();
+#[cfg(feature = "parallel")]
+#[tokio::test]
+async fn test_seal_engine_parallel_roundtrip() {
+    let mut engine = setup_engine();
+    let data = vec![0xAB; 1024 * 1024]; // 1MB of data
+    let aad = b"parallel aad";
 
-    let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
-    let mut decrypted_writer = Cursor::new(Vec::new());
-    engine2
-        .decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_reader, &mut decrypted_writer)
-        .await
-        .unwrap();
+    // 并行加密
+    let ciphertext = engine.par_seal_bytes(&data, Some(aad)).unwrap();
 
-    assert_eq!(decrypted_writer.into_inner(), stream_data.to_vec());
+    // 并行解密
+    let decrypted = engine.par_unseal_bytes(&ciphertext, Some(aad)).unwrap();
+    assert_eq!(data, decrypted);
+
+    // 异步并行流式解密
+    let source = Cursor::new(ciphertext);
+    let dest = Cursor::new(Vec::new());
+    let final_dest = engine.par_unseal_stream_async(source, dest, Some(aad)).await.unwrap();
+    let decrypted_from_stream = final_dest.into_inner();
+
+    // 注意：并行加密（par_seal_bytes）的输出格式与并行流（par_unseal_stream）的格式不兼容。
+    // par_seal_bytes 直接加密 payload，而 par_seal_stream 会将 payload 分块加密。
+    // 因此，这里我们只验证 par_unseal_bytes 和 par_unseal_stream_async 的兼容性。
+    // 我们需要一个单独的测试来验证 par_seal_stream 和 par_unseal_stream_async 的兼容性。
+    // 实际上，par_unseal_bytes 内部可以被视为一个特殊的流，所以它能解密 par_seal_bytes 的输出是合理的。
+    // 但是 par_unseal_stream_async 期望的是分块的流。
+    // 为了简单起见，我们在这里只验证对称的 roundtrip。更复杂的交叉兼容性测试如下。
+    assert_eq!(data, decrypted_from_stream);
+}
+
+
+// === 兼容性矩阵测试 ===
+// 验证不同实现方式（同步/异步）的相同模式之间是兼容的。
+
+#[cfg(feature = "parallel")]
+#[tokio::test]
+async fn test_matrix_par_seal_stream_compatibility() {
+    let mut engine = setup_engine();
+    let data = vec![0xBC; 1024 * 1024]; // 1MB
+    let aad = Some(b"matrix_par_stream".as_slice());
+
+    // 1. 使用同步并行流加密
+    let ciphertext = {
+        let mut source = Cursor::new(data.clone());
+        let mut dest = Cursor::new(Vec::new());
+        engine.par_seal_stream(&mut source, &mut dest, aad).unwrap();
+        dest.into_inner()
+    };
+
+    // 2. 使用同步并行流解密
+    {
+        let mut source = Cursor::new(ciphertext.clone());
+        let mut dest = Cursor::new(Vec::new());
+        engine.par_unseal_stream(&mut source, &mut dest, aad).unwrap();
+        assert_eq!(data, dest.into_inner(), "par_seal_stream -> par_unseal_stream failed");
+    }
+
+    // 3. 使用异步并行流解密
+    {
+        let source = Cursor::new(ciphertext);
+        let dest = Cursor::new(Vec::new());
+        let final_dest = engine.par_unseal_stream_async(source, dest, aad).await.unwrap();
+        assert_eq!(data, final_dest.into_inner(), "par_seal_stream -> par_unseal_stream_async failed");
+    }
+}
+
+#[tokio::test]
+async fn test_matrix_async_seal_stream_compatibility() {
+    let mut engine = setup_engine();
+    let data = vec![0xCD; 1024 * 256]; // 256KB
+    let aad = Some(b"matrix_async_stream".as_slice());
+
+    // 1. 使用异步流加密
+    let ciphertext = {
+        let source = Cursor::new(data.clone());
+        let dest = Cursor::new(Vec::new());
+        let final_dest = engine.seal_stream_async(source, dest, aad).await.unwrap();
+        final_dest.into_inner()
+    };
+
+    // 2. 使用同步流解密
+    {
+        let mut source = Cursor::new(ciphertext.clone());
+        let mut dest = Cursor::new(Vec::new());
+        engine.unseal_stream(&mut source, &mut dest, aad).unwrap();
+        assert_eq!(data, dest.into_inner(), "seal_stream_async -> unseal_stream failed");
+    }
+
+    // 3. 使用异步流解密
+    {
+        let source = Cursor::new(ciphertext);
+        let dest = Cursor::new(Vec::new());
+        let final_dest = engine.unseal_stream_async(source, dest, aad).await.unwrap();
+        assert_eq!(data, final_dest.into_inner(), "seal_stream_async -> unseal_stream_async failed");
+    }
 }

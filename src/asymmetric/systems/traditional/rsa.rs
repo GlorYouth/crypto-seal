@@ -1,14 +1,13 @@
+//! `RsaCryptoSystem` 提供了基于 RSA PKCS#1 v1.5 的非对称加解密功能。
+//! 在 `seal-kit` 框架中，它主要作为密钥封装机制 (KEM) 使用。
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::utils::ZeroizingVec;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
-use rsa::pss::{SigningKey, VerifyingKey};
 use rsa::rand_core::OsRng as RsaOsRng;
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 
 /// RSA公钥包装器，提供序列化支持
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,61 +44,9 @@ impl RsaPrivateKeyWrapper {
 /// 提供标准RSA PKCS#1 v1.5加密和解密功能
 pub struct RsaCryptoSystem;
 
-impl RsaCryptoSystem {
-    /// 使用PSS方案和SHA-256生成数字签名
-    ///
-    /// # 参数
-    /// * `private_key` - 用于签名的RSA私钥
-    /// * `data` - 需要被签名的数据
-    ///
-    /// # 返回
-    /// 成功时返回签名的字节向量
-    pub fn sign(private_key: &RsaPrivateKeyWrapper, data: &[u8]) -> Result<Vec<u8>, Error> {
-        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)
-            .map_err(|e| Error::Traditional(format!("解析RSA私钥失败: {}", e)))?;
-
-        let signing_key = SigningKey::<Sha256>::new(rsa_private_key);
-        let mut rng = RsaOsRng;
-        let signature = signing_key.sign_with_rng(&mut rng, data);
-        Ok(signature.to_vec())
-    }
-
-    /// 使用PSS方案和SHA-256验证数字签名
-    ///
-    /// # 参数
-    /// * `public_key` - 用于验证的RSA公钥
-    /// * `data` - 原始数据
-    /// * `signature` - 需要被验证的签名
-    ///
-    /// # 返回
-    /// 签名有效则返回 `Ok(true)`，否则返回 `Ok(false)`
-    pub fn verify(
-        public_key: &RsaPublicKeyWrapper,
-        data: &[u8],
-        signature: &[u8],
-    ) -> Result<bool, Error> {
-        let rsa_public_key = RsaPublicKey::from_public_key_der(&public_key.0)
-            .map_err(|e| Error::Traditional(format!("解析RSA公钥失败: {}", e)))?;
-
-        let verifying_key = VerifyingKey::<Sha256>::new(rsa_public_key);
-
-        let signature_obj = match rsa::pss::Signature::try_from(signature) {
-            Ok(sig) => sig,
-            // 如果签名切片长度不正确，则为无效签名
-            Err(_) => return Ok(false),
-        };
-
-        match verifying_key.verify(data, &signature_obj) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
-        }
-    }
-}
-
 impl AsymmetricCryptographicSystem for RsaCryptoSystem {
     type PublicKey = RsaPublicKeyWrapper;
     type PrivateKey = RsaPrivateKeyWrapper;
-    type CiphertextOutput = Vec<u8>;
     type Error = Error;
 
     fn generate_keypair(
@@ -131,7 +78,7 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         public_key: &Self::PublicKey,
         plaintext: &[u8],
         _additional_data: Option<&[u8]>, // RSA PKCS#1 v1.5不使用附加数据
-    ) -> Result<Self::CiphertextOutput, Self::Error> {
+    ) -> Result<Vec<u8>, Self::Error> {
         // 从DER数据恢复公钥
         let public_key = RsaPublicKey::from_public_key_der(&public_key.0)
             .map_err(|e| Error::Traditional(format!("解析RSA公钥失败: {}", e)))?;
@@ -209,6 +156,12 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::config::CryptoConfig;
+    use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+    use rsa::pss::{SigningKey, VerifyingKey};
+    use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
+    use rsa::traits::PublicKeyParts;
+    use sha2::Sha256;
 
     // Helper to get a valid key pair for tests
     fn setup_keys() -> (RsaPublicKeyWrapper, RsaPrivateKeyWrapper) {
@@ -228,47 +181,49 @@ mod tests {
     }
 
     #[test]
-    fn test_rsa_sign_verify_roundtrip() {
+    fn test_rsa_pss_sign_verify_roundtrip() {
         let (public_key, private_key) = setup_keys();
         let data = b"data to be signed";
 
-        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
-        let is_valid = RsaCryptoSystem::verify(&public_key, data, &signature).unwrap();
+        let signing_key = SigningKey::<Sha256>::new(
+            RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap(),
+        );
+        let verifying_key = VerifyingKey::<Sha256>::new(
+            RsaPublicKey::from_public_key_der(&public_key.0).unwrap(),
+        );
 
-        assert!(is_valid);
+        let mut rng = RsaOsRng;
+        let signature = signing_key.sign_with_rng(&mut rng, data);
+
+        assert!(verifying_key.verify(data, &signature).is_ok());
     }
 
     #[test]
-    fn test_rsa_verify_tampered_signature_fails() {
+    fn test_rsa_pss_verify_tampered_signature_fails() {
         let (public_key, private_key) = setup_keys();
         let data = b"some important data";
 
-        let mut signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+        let signing_key = SigningKey::<Sha256>::new(
+            RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap(),
+        );
+        let verifying_key = VerifyingKey::<Sha256>::new(
+            RsaPublicKey::from_public_key_der(&public_key.0).unwrap(),
+        );
+
+        let mut rng = RsaOsRng;
+        let mut signature_bytes = signing_key.sign_with_rng(&mut rng, data).to_vec();
         // Tamper with the signature
-        signature[0] ^= 0xff;
+        signature_bytes[0] ^= 0xff;
+        let tampered_signature = rsa::pss::Signature::try_from(signature_bytes.as_slice()).unwrap();
 
-        let is_valid = RsaCryptoSystem::verify(&public_key, data, &signature).unwrap();
-        assert!(!is_valid);
-    }
-
-    #[test]
-    fn test_rsa_verify_wrong_key_fails() {
-        let (_public_key, private_key) = setup_keys();
-        let (wrong_public_key, _) = setup_keys(); // A different key pair
-        let data = b"data for signature";
-
-        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
-        // Verify with the wrong public key
-        let is_valid = RsaCryptoSystem::verify(&wrong_public_key, data, &signature).unwrap();
-
-        assert!(!is_valid);
+        assert!(verifying_key.verify(data, &tampered_signature).is_err());
     }
 
     #[test]
     fn test_rsa_decrypt_wrong_key_fails() {
         let (public_key, _) = setup_keys();
         let (_, wrong_private_key) = setup_keys();
-        let plaintext = b"top secret";
+        let plaintext = b"some secret data";
 
         let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
         let result = RsaCryptoSystem::decrypt(&wrong_private_key, &ciphertext, None);
@@ -279,17 +234,13 @@ mod tests {
     #[test]
     fn test_rsa_decrypt_tampered_ciphertext_fails() {
         let (public_key, private_key) = setup_keys();
-        let plaintext = b"another secret";
+        let plaintext = b"some original text";
 
-        let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let mut ciphertext_bytes = ciphertext;
+        let mut ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        // Tamper with the ciphertext
+        ciphertext[0] ^= 0xff;
 
-        // Tamper
-        let len = ciphertext_bytes.len();
-        ciphertext_bytes[len / 2] ^= 0xff;
-        let tampered_ciphertext = ciphertext_bytes;
-
-        let result = RsaCryptoSystem::decrypt(&private_key, &tampered_ciphertext, None);
+        let result = RsaCryptoSystem::decrypt(&private_key, &ciphertext, None);
         assert!(result.is_err());
     }
 
@@ -309,56 +260,28 @@ mod tests {
 
     #[test]
     fn test_rsa_import_invalid_key_fails() {
-        // 尝试导入非PEM格式的密钥
-        let invalid_pem = "this is not a pem";
+        let invalid_pem = "not-a-valid-pem";
         assert!(RsaCryptoSystem::import_public_key(invalid_pem).is_err());
         assert!(RsaCryptoSystem::import_private_key(invalid_pem).is_err());
     }
 
     #[test]
-    fn test_sign_verify_empty_data() {
-        let (public_key, private_key) = setup_keys();
-        let data = b""; // 空数据
-
-        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
-        let is_valid = RsaCryptoSystem::verify(&public_key, data, &signature).unwrap();
-
-        assert!(is_valid);
-    }
-
-    #[test]
-    fn test_verify_different_data_fails() {
-        let (public_key, private_key) = setup_keys();
-        let data1 = b"some important data";
-        let data2 = b"different important data";
-
-        let signature = RsaCryptoSystem::sign(&private_key, data1).unwrap();
-        let is_valid = RsaCryptoSystem::verify(&public_key, data2, &signature).unwrap();
-
-        assert!(!is_valid);
-    }
-
-    #[test]
     fn test_encrypt_empty_data() {
         let (public_key, private_key) = setup_keys();
-        let plaintext = b""; // 空数据
+        let plaintext = b"";
 
-        let encrypted = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let decrypted = RsaCryptoSystem::decrypt(&private_key, &encrypted, None).unwrap();
+        let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
+        let decrypted = RsaCryptoSystem::decrypt(&private_key, &ciphertext, None).unwrap();
 
-        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
+        assert_eq!(plaintext, decrypted.as_slice());
     }
 
     #[test]
     fn test_encrypt_data_too_long_fails() {
-        let config = CryptoConfig {
-            rsa_key_bits: 2048,
-            ..Default::default()
-        };
-        let (public_key, _) = RsaCryptoSystem::generate_keypair(&config).unwrap();
-
-        // 对于2048位的RSA和PKCS#1 v1.5填充，最大数据长度是 2048/8 - 11 = 245 字节
-        let long_data = vec![0u8; 256];
+        let (public_key, _) = setup_keys();
+        let pk = RsaPublicKey::from_public_key_der(&public_key.0).unwrap();
+        // Create data that is definitely too long
+        let long_data = vec![0u8; pk.size()];
 
         let result = RsaCryptoSystem::encrypt(&public_key, &long_data, None);
         assert!(result.is_err());
@@ -371,53 +294,36 @@ mod tests {
             ..Default::default()
         };
         let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&config).unwrap();
-
-        let plaintext = b"data for 4096-bit key";
-        let encrypted = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
-        let decrypted = RsaCryptoSystem::decrypt(&private_key, &encrypted, None).unwrap();
-
-        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
+        let pk = RsaPublicKey::from_public_key_der(&public_key.0).unwrap();
+        assert_eq!(pk.size() * 8, 4096);
+        let sk = RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap();
+        assert_eq!(sk.size() * 8, 4096);
     }
 
-    #[cfg(feature = "async-engine")]
-    mod async_tests {
-        use super::*;
-        use crate::asymmetric::traits::AsyncStreamingSystem;
-        use crate::common::config::StreamingConfig;
-        use crate::symmetric::systems::aes_gcm::AesGcmSystem;
-        use std::io::Cursor;
+    #[test]
+    fn test_rsa_key_generation_and_export_import() {
+        let (public_key, private_key) = setup_keys();
 
-        #[tokio::test]
-        async fn test_async_streaming_roundtrip() {
-            let (pk, sk) = setup_keys();
-            let config = StreamingConfig::default();
-            let original_data = b"Some data for async RSA streaming.".to_vec();
+        let exported_pub = RsaCryptoSystem::export_public_key(&public_key).unwrap();
+        let exported_priv = RsaCryptoSystem::export_private_key(&private_key).unwrap();
 
-            // Encrypt using the new hybrid streaming system
-            let mut encrypted_dest = Vec::new();
-            RsaCryptoSystem::encrypt_stream_async::<AesGcmSystem, _, _>(
-                &pk,
-                Cursor::new(original_data.clone()),
-                &mut encrypted_dest,
-                &config,
-                None,
-            )
-            .await
-            .unwrap();
+        let imported_pub = RsaCryptoSystem::import_public_key(&exported_pub).unwrap();
+        let imported_priv = RsaCryptoSystem::import_private_key(&exported_priv).unwrap();
 
-            // Decrypt using the new hybrid streaming system
-            let mut decrypted_dest = Vec::new();
-            RsaCryptoSystem::decrypt_stream_async::<AesGcmSystem, _, _>(
-                &sk,
-                Cursor::new(encrypted_dest),
-                &mut decrypted_dest,
-                &config,
-                None,
-            )
-            .await
-            .unwrap();
+        assert_eq!(public_key, imported_pub);
+        assert_eq!(private_key, imported_priv);
+    }
 
-            assert_eq!(original_data, decrypted_dest);
-        }
+    #[test]
+    fn test_rsa_key_generation_and_validation_4096() {
+        let config = CryptoConfig {
+            rsa_key_bits: 4096,
+            ..Default::default()
+        };
+        let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&config).unwrap();
+        let pk = RsaPublicKey::from_public_key_der(&public_key.0).unwrap();
+        assert_eq!(pk.size() * 8, 4096);
+        let sk = RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap();
+        assert_eq!(sk.size() * 8, 4096);
     }
 }

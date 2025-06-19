@@ -15,8 +15,6 @@ pub use self::utils::constant_time_eq;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use self::traits::AuthenticatedCryptoSystem;
 
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use crate::asymmetric::primitives::streaming::*;
 
 pub use self::config::CryptoConfig;
 #[cfg(feature = "async-engine")]

@@ -3,7 +3,7 @@ use crate::common::config::ConfigFile;
 use crate::common::errors::Error;
 use crate::common::header::SealMode;
 use crate::common::traits::{
-    Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecString, SecureKeyStorage,
+    Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage,
     SymmetricAlgorithm,
 };
 use crate::rotation::RotationPolicy;

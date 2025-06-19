@@ -85,7 +85,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
+    ) -> Result<(StreamingResult, W), Error>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send;
@@ -97,7 +97,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
+    ) -> Result<(StreamingResult, W), Error>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send;

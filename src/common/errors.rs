@@ -45,6 +45,12 @@ pub enum Error {
     AadMismatch,
     /// Bincode 序列化/反序列化错误
     Bincode(String),
+    /// PKCS#8 格式错误
+    Pkcs8(rsa::pkcs8::Error),
+    /// SPKI 格式错误
+    Spki(rsa::pkcs8::spki::Error),
+    /// 异步任务错误
+    AsyncTask(String),
 }
 
 impl fmt::Display for Error {
@@ -67,6 +73,9 @@ impl fmt::Display for Error {
             Error::Configuration(msg) => write!(f, "配置错误: {}", msg),
             Error::AadMismatch => write!(f, "AAD 不匹配"),
             Error::Bincode(msg) => write!(f, "Bincode 错误: {}", msg),
+            Error::Pkcs8(e) => write!(f, "PKCS#8 错误: {}", e),
+            Error::Spki(e) => write!(f, "SPKI 错误: {}", e),
+            Error::AsyncTask(msg) => write!(f, "异步任务错误: {}", msg),
         }
     }
 }
@@ -75,6 +84,8 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Error::Io(e) => Some(e),
+            Error::Pkcs8(e) => Some(e),
+            Error::Spki(e) => Some(e),
             _ => None,
         }
     }
@@ -107,6 +118,25 @@ impl From<config::ConfigError> for Error {
 impl From<Box<bincode::ErrorKind>> for Error {
     fn from(err: Box<bincode::ErrorKind>) -> Self {
         Error::Bincode(err.to_string())
+    }
+}
+
+impl From<rsa::pkcs8::Error> for Error {
+    fn from(err: rsa::pkcs8::Error) -> Self {
+        Error::Pkcs8(err)
+    }
+}
+
+impl From<rsa::pkcs8::spki::Error> for Error {
+    fn from(err: rsa::pkcs8::spki::Error) -> Self {
+        Error::Spki(err)
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl From<tokio::task::JoinError> for Error {
+    fn from(err: tokio::task::JoinError) -> Self {
+        Error::AsyncTask(err.to_string())
     }
 }
 

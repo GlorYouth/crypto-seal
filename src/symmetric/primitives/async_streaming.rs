@@ -49,7 +49,7 @@ where
         }
     }
 
-    pub async fn process(mut self) -> Result<StreamingResult, Error> {
+    pub async fn process(mut self) -> Result<(StreamingResult, W), Error> {
         let mut buffer = vec![0u8; self.config.buffer_size];
         let mut total_written = 0;
         let mut bytes_processed = 0;
@@ -69,8 +69,8 @@ where
             let ciphertext = C::encrypt(self.key, plaintext, Some(&aad))?;
             let ciphertext_bytes = ciphertext.as_ref();
 
-            let len = (ciphertext_bytes.len() as u32).to_le_bytes();
-            self.writer.write_all(&len).await.map_err(Error::Io)?;
+            // C::encrypt 返回的 ciphertext_bytes 已经包含了长度前缀,
+            // 我们只需要直接将其写入流中。
             self.writer
                 .write_all(ciphertext_bytes)
                 .await
@@ -84,10 +84,13 @@ where
             }
         }
         self.writer.flush().await.map_err(Error::Io)?;
-        Ok(StreamingResult {
-            bytes_processed: total_written,
-            buffer: None,
-        })
+        Ok((
+            StreamingResult {
+                bytes_processed: total_written,
+                buffer: None,
+            },
+            self.writer,
+        ))
     }
 }
 
@@ -133,7 +136,7 @@ where
         }
     }
 
-    pub async fn process(mut self) -> Result<StreamingResult, Error> {
+    pub async fn process(mut self) -> Result<(StreamingResult, W), Error> {
         let mut total_written = 0;
         let mut bytes_processed = 0;
         let mut len_buf = [0u8; 4];
@@ -151,7 +154,11 @@ where
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
-            let plaintext = C::decrypt(self.key, &ciphertext_buffer, Some(&aad))?;
+            // C::decrypt 需要一个完整的、带有长度前缀的块
+            let mut block_with_len = len_buf.to_vec();
+            block_with_len.extend_from_slice(&ciphertext_buffer);
+
+            let plaintext = C::decrypt(self.key, &block_with_len, Some(&aad))?;
             self.chunk_index += 1;
 
             self.writer.write_all(&plaintext).await.map_err(Error::Io)?;
@@ -162,10 +169,13 @@ where
             }
         }
         self.writer.flush().await.map_err(Error::Io)?;
-        Ok(StreamingResult {
-            bytes_processed: total_written,
-            buffer: None,
-        })
+        Ok((
+            StreamingResult {
+                bytes_processed: total_written,
+                buffer: None,
+            },
+            self.writer,
+        ))
     }
 }
 
@@ -184,7 +194,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
+    ) -> Result<(StreamingResult, W), Error>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
@@ -206,7 +216,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
+    ) -> Result<(StreamingResult, W), Error>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
@@ -251,14 +261,15 @@ mod tests {
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
-            .await
-            .unwrap();
+        let (_, encrypted_dest) =
+            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+                .await
+                .unwrap();
 
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        AesGcmSystem::decrypt_stream_async(
+        let (_, decrypted_dest) = AesGcmSystem::decrypt_stream_async(
             &key,
             encrypted_source,
             &mut decrypted_dest,
@@ -268,7 +279,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(original_data, decrypted_dest);
+        assert_eq!(original_data, *decrypted_dest);
     }
 
     #[tokio::test]
@@ -280,14 +291,15 @@ mod tests {
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, Some(aad))
-            .await
-            .unwrap();
+        let (_, encrypted_dest) =
+            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, Some(aad))
+                .await
+                .unwrap();
 
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        AesGcmSystem::decrypt_stream_async(
+        let (_, decrypted_dest) = AesGcmSystem::decrypt_stream_async(
             &key,
             encrypted_source,
             &mut decrypted_dest,
@@ -297,7 +309,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(original_data, decrypted_dest);
+        assert_eq!(original_data, *decrypted_dest);
     }
 
     #[tokio::test]
@@ -308,9 +320,10 @@ mod tests {
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
-            .await
-            .unwrap();
+        let (_, _) =
+            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+                .await
+                .unwrap();
 
         // Tamper
         let len = encrypted_dest.len();
@@ -340,13 +353,14 @@ mod tests {
 
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
-            .await
-            .unwrap();
+        let (_, encrypted_dest) =
+            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+                .await
+                .unwrap();
 
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
         let mut decrypted_dest = Vec::new();
-        AesGcmSystem::decrypt_stream_async(
+        let (_, decrypted_dest) = AesGcmSystem::decrypt_stream_async(
             &key,
             encrypted_source,
             &mut decrypted_dest,
@@ -356,7 +370,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(original_data, decrypted_dest);
+        assert_eq!(original_data, *decrypted_dest);
     }
 
     #[tokio::test]
@@ -369,13 +383,14 @@ mod tests {
         for original_data in data_cases {
             let source = BufReader::new(Cursor::new(original_data.clone()));
             let mut encrypted_dest = Vec::new();
-            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
-                .await
-                .unwrap();
+            let (_, encrypted_dest) =
+                AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+                    .await
+                    .unwrap();
 
             let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
             let mut decrypted_dest = Vec::new();
-            AesGcmSystem::decrypt_stream_async(
+            let (_, decrypted_dest) = AesGcmSystem::decrypt_stream_async(
                 &key,
                 encrypted_source,
                 &mut decrypted_dest,
@@ -385,7 +400,7 @@ mod tests {
             .await
             .unwrap();
 
-            assert_eq!(original_data, decrypted_dest);
+            assert_eq!(original_data, *decrypted_dest);
         }
     }
 
@@ -410,9 +425,10 @@ mod tests {
 
         let source = BufReader::new(Cursor::new(original_data));
         let mut encrypted_dest = Vec::new();
-        AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
-            .await
-            .unwrap();
+        let (_, _) =
+            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
+                .await
+                .unwrap();
 
         let calls = progress_calls.lock().unwrap();
         assert_eq!(calls.len(), 4);
@@ -502,7 +518,7 @@ mod tests {
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        AesGcmSystem::encrypt_stream_async(
+        let (_, encrypted_dest) = AesGcmSystem::encrypt_stream_async(
             &key,
             source,
             &mut encrypted_dest,

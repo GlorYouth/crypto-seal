@@ -1,234 +1,152 @@
-# seal-kit
+# seal-kit: Modern & Unified Hybrid Cryptography Framework
 
-[![Crates.io](https://img.shields.io/crates/v/seal-kit.svg)](https://crates.io/crates/seal-kit)  [![Docs.rs](https://docs.rs/seal-kit/badge.svg)](https://docs.rs/seal-kit)  ![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-brightgreen)
+[中文版本 (Chinese Version)](./README_CN.md)
 
-`seal-kit` 是一个功能齐全且灵活的 Rust 加密库，提供统一的框架来处理非对称和对称加密。
+[![crates.io](https://img.shields.io/crates/v/seal-kit.svg)](https://crates.io/crates/seal-kit)
+[![docs.rs](https://docs.rs/seal-kit/badge.svg)](https://docs.rs/seal-kit)
 
-- **非对称加密**:
-  - 传统加密 (RSA)
-  - 后量子加密 (Kyber)
-  - 混合加密 (RSA + Kyber)
-- **对称加密**:
-  - AES-256-GCM
-  - ChaCha20-Poly1305 (通过 `chacha` 特性)
-- **核心功能**:
-  - 自动密钥管理与轮换
-  - 安全的密钥存储 (基于 Argon2 & AES-GCM)
-  - 统一的同步/异步引擎 API
-  - 高效的流式加解密
-  - 灵活的配置 (JSON 文件或环境变量)
+`seal-kit` is a modern, robust, and extensible cryptographic library for Rust, designed to provide a seamless and unified interface for both traditional (RSA) and post-quantum (Kyber) cryptography. It abstracts away the complexities of underlying cryptographic primitives, offering a simple, stateful engine that handles various encryption modes, automated key rotation, and a unified ciphertext format.
 
----
+This library is ideal for applications requiring forward-thinking security, providing an easy migration path to post-quantum cryptography while maintaining compatibility with established standards.
 
-## 主要特性
+## Core Features
 
-- **统一接口**: 通过 `AsymmetricCryptographicSystem` 和 `SymmetricCryptographicSystem` 特征，支持多种加密系统。
-- **高级引擎**:
-  - `AsymmetricQSealEngine`: 用于非对称加密，自动处理密钥对管理、轮换、签名和验证。
-  - `SymmetricQSealEngine`: 用于对称加密，简化密钥管理和数据保护。
-  - 异步版本 (`AsymmetricQSealEngineAsync` / `SymmetricQSealEngineAsync`) 支持高并发场景。
-- **混合加密**: `HybridRsaKyber` 结合了 RSA 和 Kyber 的优点，提供双重安全保障。
-- **流式处理**: 支持对大文件或数据流进行分块加解密，内存占用低，并可报告进度。
-- **安全密钥存储**: 使用 `EncryptedKeyContainer` 和 `KeyFileStorage`，通过强密码派生函数 Argon2 和 AES-GCM 加密来保护磁盘上的密钥。
-- **自动密钥轮换**: 可根据使用次数或时间有效期自动轮换密钥，提高安全性。
-- **内存安全**: 使用 `secrecy` 和 `zeroize` crate 在敏感数据（如私钥）离开作用域时自动从内存中清除。
-- **高度可配置**: 通过 `ConfigManager` 从 JSON 文件或环境变量加载配置。
-- **模块化特性**: 通过 Cargo features 可以按需启用功能，减小最终二进制文件大小。
+- **Unified Stateful Engine**: A single `SealEngine` handles all cryptographic operations, maintaining state for efficiency and enabling features like automated key rotation.
+- **Hybrid Cryptography**: Natively supports **RSA-2048**, **Kyber-768**, and a hybrid **RSA+Kyber** mode for dual-layer security. The hybrid mode with RSA signatures provides robust authenticated encryption.
+- **Multiple Operation Modes**:
+    - **In-Memory**: Simple encryption/decryption of byte slices.
+    - **Streaming**: Efficiently handle large files and data streams without high memory consumption.
+    - **Parallel Streaming**: High-throughput stream encryption leveraging multiple CPU cores.
+    - **Parallel In-Memory**: High-throughput in-memory encryption using data parallelism.
+- **Automated Key Rotation**: The engine automatically manages the lifecycle of encryption keys based on usage or time, transparently ensuring cryptographic hygiene.
+- **Type-Safe Algorithm Selection**: Utilizes enums (`SymmetricAlgorithm`, `AsymmetricAlgorithm`) instead of strings to specify cryptographic algorithms, preventing runtime errors from typos.
+- **Unified Ciphertext Format**: All encryption modes and algorithms produce a single, interoperable ciphertext format (`[Header Length][Serialized Header][Encrypted Payload]`), ensuring that data encrypted with one mode can be decrypted with another.
 
----
+## Architecture Overview
 
-## 安装
+The library is designed with a clean, modular architecture:
 
-在 `Cargo.toml` 中添加依赖：
+- `Seal`: The main entry point. It manages a secure vault which contains the master seed, key metadata, and configuration. It acts as a factory for creating `SealEngine` instances.
+- `SealEngine`: A stateful engine that performs the actual encryption and decryption. It is instantiated for a specific `SealMode` (Symmetric or Hybrid) and holds the necessary key management state.
+- `KeyManager`: A unified manager responsible for the entire lifecycle of both symmetric and asymmetric keys, including generation, derivation, rotation, and retrieval.
+- `Asymmetric` & `Symmetric` Systems: Pluggable cryptographic algorithm implementations. `seal-kit` uses the asymmetric systems as Key Encapsulation Mechanisms (KEMs) to encrypt a Data Encryption Key (DEK), which is then used by a symmetric system (e.g., AES-GCM) for the actual data encryption.
 
+## Quick Start
+
+Here's a simple example of how to create a vault, get an engine, and perform in-memory encryption and decryption.
+
+First, add `seal-kit` to your `Cargo.toml`:
 ```toml
 [dependencies]
-seal-kit = { version = "0.1.0", features = ["asymmetric", "symmetric", "secure-storage", "async-engine"] }
+seal-kit = { version = "0.1.0", features = ["traditional", "post-quantum"] }
+# You'll also need a password management library like `secrecy`
+secrecy = { version = "0.8", features = ["serde"] }
 ```
 
-默认情况下，`asymmetric` 和 `symmetric` 都被启用。您可以根据需要选择特性。
-
----
-
-## 示例
-
-### 非对称加密引擎 (`AsymmetricQSealEngine`)
-
-本示例展示了如何使用 `AsymmetricQSealEngine` 进行混合加密。
+Now, you can use it in your code:
 
 ```rust
+use seal_kit::{Seal, common::header::SealMode, common::traits::AsymmetricAlgorithm};
+use secrecy::SecretString;
 use std::sync::Arc;
-use seal_kit::{AsymmetricQSealEngine, HybridRsaKyber, ConfigManager};
-
-fn main() -> anyhow::Result<()> {
-    // 使用默认配置初始化引擎
-    let config = Arc::new(ConfigManager::new());
-    let mut engine = AsymmetricQSealEngine::<HybridRsaKyber>::new(config, "my_asymmetric_keys")?;
-
-    let data = b"这是一条需要非对称加密的机密信息";
-    
-    // 加密
-    let cipher = engine.encrypt(data)?;
-    println!("加密后的数据: {}", cipher);
-    
-    // 解密
-    let plain = engine.decrypt(&cipher)?;
-    println!("解密后的数据: {}", String::from_utf8_lossy(&plain));
-
-    assert_eq!(plain, data);
-
-    Ok(())
-}
-```
-
-### 对称加密引擎 (`SymmetricQSealEngine`)
-
-本示例展示了如何使用 `SymmetricQSealEngine` 和 `AesGcmSystem` 进行流式加密。
-
-```rust
-use std::io::Cursor;
-use std::sync::Arc;
-use seal_kit::{SymmetricQSealEngine, ConfigManager};
-use seal_kit::common::streaming::StreamingConfig;
-use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
+use std::fs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 准备数据
-    let data = b"这是一长段需要通过对称加密流式处理的数据...".repeat(100);
+    let vault_path = "my_secure_vault.seal";
+    let password = SecretString::new("my-super-secret-password".to_string());
 
-    // 1. 初始化引擎
-    let config = Arc::new(ConfigManager::new());
-    let mut engine = SymmetricQSealEngine::<AesGcmSystem>::new(config, "my_symmetric_keys")?;
+    // 1. Create a new Seal vault.
+    // This will generate a master seed and store it securely.
+    let seal = Seal::create(vault_path, &password)?;
 
-    // 2. 配置流式处理
-    let sc = StreamingConfig::default()
-        .with_buffer_size(1024) // 1KB 缓冲区
-        .with_show_progress(true);
+    // You can also open an existing vault with:
+    // let seal = Seal::open(vault_path, &password)?;
 
-    // 3. 流式加密到内存
-    let mut encrypted_buf = Vec::new();
-    engine.encrypt_stream(Cursor::new(&data), &mut encrypted_buf, &sc)?;
-    println!("\n加密完成!");
+    // 2. Create a key for the hybrid mode using a specific algorithm.
+    // The key manager will automatically handle key creation on first use.
+    seal.config().set_primary_asymmetric_algorithm(AsymmetricAlgorithm::RsaKyber768)?;
 
-    // 4. 流式解密
-    let mut decrypted_buf = Vec::new();
-    engine.decrypt_stream(Cursor::new(&encrypted_buf), &mut decrypted_buf, &sc)?;
-    println!("\n解密完成!");
+    // 3. Get a stateful engine for hybrid encryption.
+    let mut engine = seal.engine(SealMode::Hybrid, &password)?;
 
-    // 5. 验证数据
-    assert_eq!(decrypted_buf, data);
-    println!("\n数据验证成功！");
-    
+    // 4. Encrypt some data.
+    let plaintext = b"This is a highly confidential message.";
+    let ciphertext = engine.seal_bytes(plaintext)?;
+
+    println!("Plaintext: {:?}", plaintext);
+    println!("Ciphertext: {:?}", ciphertext);
+
+    // 5. Decrypt the data.
+    // Note that `unseal_bytes` can be called on an immutable engine reference.
+    let decrypted_text = engine.unseal_bytes(&ciphertext)?;
+
+    assert_eq!(plaintext, decrypted_text.as_slice());
+    println!("Successfully decrypted!");
+
+    // Clean up the vault file
+    fs::remove_file(vault_path)?;
+
     Ok(())
 }
 ```
 
-### 底层接口 (`AsymmetricCryptographicSystem`)
+## Usage Examples
 
-直接使用加密系统接口，绕过引擎层。
+### Streaming Encryption for Large Files
+
+`seal-kit` excels at handling large files by streaming data, which keeps memory usage low and constant.
 
 ```rust
-use seal_kit::{AsymmetricCryptographicSystem, TraditionalRsa, common::utils::CryptoConfig};
+# use seal_kit::{Seal, common::header::SealMode, common::traits::AsymmetricAlgorithm};
+# use secrecy::SecretString;
+# use std::sync::Arc;
+# use std::fs::{self, File};
+# use std::io::{Cursor, Read, Write};
+#
+# fn run() -> Result<(), Box<dyn std::error::Error>> {
+#     let vault_path = "my_secure_vault.seal";
+#     let password = SecretString::new("my-super-secret-password".to_string());
+#     let seal = Seal::create(vault_path, &password)?;
+#     seal.config().set_primary_asymmetric_algorithm(AsymmetricAlgorithm::Rsa2048)?;
+#     let mut engine = seal.engine(SealMode::Hybrid, &password)?;
+#
+let source_data = "This is a very large amount of data that should be streamed.".repeat(1000);
+let mut source_reader = Cursor::new(source_data.as_bytes());
+let mut encrypted_writer = Vec::new();
 
-fn main() {
-    let config = CryptoConfig::default();
-    let (pk, sk) = TraditionalRsa::generate_keypair(&config).unwrap();
-    let cipher = TraditionalRsa::encrypt(&pk, b"raw data", None).unwrap();
-    let plain = TraditionalRsa::decrypt(&sk, &cipher.to_string(), None).unwrap();
-    assert_eq!(plain, b"raw data");
-}
+// Encrypt a stream
+engine.seal_stream(&mut source_reader, &mut encrypted_writer)?;
+
+println!("Encrypted stream size: {} bytes", encrypted_writer.len());
+
+let mut encrypted_reader = Cursor::new(encrypted_writer);
+let mut decrypted_writer = Vec::new();
+
+// Decrypt a stream
+engine.unseal_stream(&mut encrypted_reader, &mut decrypted_writer)?;
+
+assert_eq!(source_data.as_bytes(), decrypted_writer.as_slice());
+println!("Stream decrypted successfully!");
+#
+#     fs::remove_file(vault_path)?;
+#     Ok(())
+# }
+# run().unwrap();
 ```
 
----
+## Crate Features
 
-## 特性标志 (Features)
+`seal-kit` uses feature flags to keep the compiled library small and relevant to your needs.
 
-`seal-kit` 被设计为模块化的，您可以通过特性标志来选择需要的功能。
+- `traditional`: Enables **RSA-2048** support.
+- `post-quantum`: Enables **Kyber-768** support.
 
-### 默认特性
+To use the hybrid `RsaKyber768` algorithm, both features must be enabled.
 
-`default = ["asymmetric", "symmetric", "secure-storage", "async-engine", "parallel"]`
+## Contributing
 
-### 功能类别
-
-- **`asymmetric`**: 启用所有非对称加密功能。
-  - **`traditional`**: 启用 RSA 加密 (`RsaCryptoSystem`)。
-  - **`post-quantum`**: 启用 Kyber 加密 (`KyberCryptoSystem`)。
-
-- **`symmetric`**: 启用所有对称加密功能。
-  - **`aes-gcm-feature`**: 启用 AES-256-GCM (`AesGcmSystem`)。
-  - **`chacha`**: 启用 ChaCha20-Poly1305。
-
-- **`secure-storage`**: 启用安全的密钥磁盘存储功能 (`EncryptedKeyContainer`)。
-- **`async-engine`**: 启用所有异步 API (`...Async`)。
-- **`parallel`**: 在异步引擎中启用批量操作的并行处理。
+Contributions are welcome! If you find a bug or have a feature request, please open an issue on our GitHub repository.
 
 ---
 
-## 配置
-
-### JSON 配置文件
-
-`seal-kit` 的行为可以通过 `config.json` 文件进行配置。对称加密目前不需要特定配置。
-
-```json
-{
-  "crypto": {
-    "use_traditional": true,
-    "use_post_quantum": true,
-    "rsa_key_bits": 3072,
-    "kyber_parameter_k": 768,
-    "use_authenticated_encryption": true,
-    "auto_verify_signatures": true,
-    "default_signature_algorithm": "RSA-PSS-SHA256",
-    "argon2_memory_cost": 19456,
-    "argon2_time_cost": 2
-  },
-  "rotation": {
-    "validity_period_days": 90,
-    "max_usage_count": 1000000,
-    "rotation_start_days": 7
-  },
-  "storage": {
-    "key_storage_dir": "./seal_keys",
-    "use_metadata_cache": true,
-    "secure_delete": true,
-    "file_permissions": 384
-  }
-}
-```
-
-### 环境变量
-
-您可以使用环境变量来覆盖 JSON 配置。
-
-- `Q_SEAL_USE_TRADITIONAL` (true/false)
-- `Q_SEAL_USE_PQ` (true/false)
-- `Q_SEAL_RSA_BITS` (整数)
-- `Q_SEAL_KEYBER_PARAMETER_K` (整数)
-- ...等等。
-
----
-
-## 性能基准测试 (Benchmarks)
-
-本库集成了基于 `criterion` 的性能基准测试。
-
-执行基准测试：
-```sh
-cargo bench
-```
-
----
-
-## 文档与支持
-
-- 文档：https://docs.rs/seal-kit
-- 源码：https://github.com/GlorYouth/seal-kit
-- 许可证：MPL-2.0
-
----
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！ 
+_This README was generated based on the modernized, refactored `seal-kit` architecture._ 

@@ -14,16 +14,8 @@ pub mod seal;
 pub mod storage;
 #[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
 pub mod symmetric;
-
-#[cfg(all(
-    feature = "async-engine",
-    any(feature = "traditional", feature = "post-quantum")
-))]
-pub use asymmetric::engines::AsymmetricQSealAsyncEngine;
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::engines::AsymmetricQSealEngine;
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::rotation::AsymmetricKeyRotationManager;
+pub mod vault;
+pub mod engine;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
@@ -33,9 +25,6 @@ pub use common::errors::Error;
 pub use common::traits::AuthenticatedCryptoSystem;
 #[cfg(feature = "secure-storage")]
 pub use common::traits::SecureKeyStorage;
-#[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
-pub use symmetric::engines::SymmetricQSealEngine;
-
 // 条件编译特性
 /// 传统RSA加密系统别名
 #[cfg(feature = "traditional")]
@@ -57,6 +46,11 @@ pub use storage::container::EncryptedKeyContainer;
 
 /// 库版本信息
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// 公开核心 API
+pub use common::config::ConfigFile;
+pub use common::header::SealMode;
+pub use engine::SealEngine;
 
 #[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
 mod tests {

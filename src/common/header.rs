@@ -1,7 +1,6 @@
 //! 定义 seal-kit 的统一头部格式，用于支持对称和混合加密模式。
 
 use serde::{Deserialize, Serialize};
-use crate::common::header::SealMode::Symmetric;
 use crate::common::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 
 /// 定义加密操作的模式。
@@ -47,5 +46,8 @@ pub enum HeaderPayload {
         dek_algorithm: SymmetricAlgorithm,
         /// 被KEK加密后的数据加密密钥 (DEK)。
         encrypted_dek: Vec<u8>,
+        /// (可选) 对 `encrypted_dek` 的签名，用于认证加密。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<Vec<u8>>,
     },
 } 

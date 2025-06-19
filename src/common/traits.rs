@@ -4,8 +4,6 @@ use secrecy::{CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use zeroize::Zeroize;
-use crate::common::errors::Error;
-use secrecy::{ExposeSecret, SecretString};
 
 /// 对称加密算法枚举
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -19,8 +17,9 @@ pub enum SymmetricAlgorithm {
 #[serde(rename_all = "kebab-case")]
 pub enum AsymmetricAlgorithm {
     Rsa2048,
+    RsaKyber768,
     // 未来可以轻松扩展，例如:
-    // Kyber768,
+    Kyber768,
 }
 
 /// 算法的统一表示

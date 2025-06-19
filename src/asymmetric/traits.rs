@@ -1,24 +1,18 @@
-use crate::Error;
-use crate::common::config::ParallelismConfig;
-use crate::common::config::{CryptoConfig, StreamingConfig};
-use crate::common::streaming::StreamingResult;
-use crate::symmetric::traits::SymmetricParallelStreamingSystem;
+//! 定义了非对称加密系统的核心 Trait。
+use crate::common::config::CryptoConfig;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::io::{Read, Write};
-#[cfg(feature = "async-engine")]
-use tokio::io::{AsyncRead, AsyncWrite};
 
-/// 加密系统的公共特征，统一各种加密算法的接口
+/// `AsymmetricCryptographicSystem` 定义了非对称加密算法必须实现的核心功能。
+///
+/// 在 `seal-kit` 框架中，非对称加密主要用作密钥封装机制 (Key Encapsulation Mechanism, KEM)，
+/// 即安全地加密和解密数据加密密钥 (DEK)。
 pub trait AsymmetricCryptographicSystem: Sized {
     /// 公钥类型
     type PublicKey: Clone + Serialize + for<'de> Deserialize<'de> + Debug;
 
     /// 私钥类型
     type PrivateKey: Clone + Serialize + for<'de> Deserialize<'de> + Debug;
-
-    /// 密文类型，现在是原始字节
-    type CiphertextOutput: AsRef<[u8]> + From<Vec<u8>> + Send + Sync;
 
     /// 错误类型
     type Error: std::error::Error + Send + Sync + 'static;
@@ -28,14 +22,14 @@ pub trait AsymmetricCryptographicSystem: Sized {
         config: &CryptoConfig,
     ) -> Result<(Self::PublicKey, Self::PrivateKey), Self::Error>;
 
-    /// 使用公钥加密数据
+    /// 使用公钥加密单个数据块（通常是DEK）。
     fn encrypt(
         public_key: &Self::PublicKey,
         plaintext: &[u8],
         additional_data: Option<&[u8]>,
-    ) -> Result<Self::CiphertextOutput, Self::Error>;
+    ) -> Result<Vec<u8>, Self::Error>;
 
-    /// 使用私钥解密数据
+    /// 使用私钥解密单个数据块（通常是DEK）。
     fn decrypt(
         private_key: &Self::PrivateKey,
         ciphertext: &[u8],
@@ -53,179 +47,4 @@ pub trait AsymmetricCryptographicSystem: Sized {
 
     /// 从标准格式导入私钥
     fn import_private_key(key_data: &str) -> Result<Self::PrivateKey, Self::Error>;
-}
-
-/// 同步流式加密系统扩展
-pub trait AsymmetricSyncStreamingSystem: AsymmetricCryptographicSystem
-where
-    Error: From<Self::Error>,
-{
-    /// 同步流式加密
-    fn encrypt_stream<S, R, W>(
-        public_key: &Self::PublicKey,
-        reader: R,
-        writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        S: crate::symmetric::traits::SymmetricCryptographicSystem,
-        Error: From<S::Error>,
-        R: Read,
-        W: Write;
-
-    /// 同步流式解密
-    fn decrypt_stream<S, R, W>(
-        private_key: &Self::PrivateKey,
-        reader: R,
-        writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        S: crate::symmetric::traits::SymmetricCryptographicSystem,
-        Error: From<S::Error>,
-        R: Read,
-        W: Write;
-}
-
-/// 异步流式加密系统扩展
-#[cfg(feature = "async-engine")]
-#[async_trait::async_trait]
-pub trait AsyncStreamingSystem: AsymmetricCryptographicSystem + Send + Sync
-where
-    Self::Error: Send,
-    Error: From<Self::Error>,
-{
-    /// 异步流式加密
-    async fn encrypt_stream_async<S, R, W>(
-        public_key: &Self::PublicKey,
-        reader: R,
-        writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        S: crate::symmetric::traits::SymmetricAsyncStreamingSystem + 'static,
-        S::Key: Send + Sync,
-        S::Error: Send,
-        Error: From<S::Error>,
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send;
-
-    /// 异步流式解密
-    async fn decrypt_stream_async<S, R, W>(
-        private_key: &Self::PrivateKey,
-        reader: R,
-        writer: W,
-        config: &StreamingConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        S: crate::symmetric::traits::SymmetricAsyncStreamingSystem + 'static,
-        S::Key: Send + Sync,
-        S::Error: Send,
-        Error: From<S::Error>,
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send;
-}
-
-/// 并行流式非对称加密系统
-#[cfg(feature = "parallel")]
-pub trait AsymmetricParallelStreamingSystem: AsymmetricCryptographicSystem {
-    /// 执行混合并行流式加密操作
-    fn par_encrypt_stream<S, R, W>(
-        public_key: &Self::PublicKey,
-        reader: R,
-        writer: W,
-        stream_config: &StreamingConfig,
-        parallel_config: &ParallelismConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        S: SymmetricParallelStreamingSystem,
-        Error: From<S::Error>,
-        R: Read + Send,
-        W: Write + Send;
-
-    /// 并行流式解密
-    fn par_decrypt_stream<S, R, W>(
-        private_key: &Self::PrivateKey,
-        reader: R,
-        writer: W,
-        stream_config: &StreamingConfig,
-        parallel_config: &ParallelismConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>
-    where
-        S: SymmetricParallelStreamingSystem,
-        Error: From<S::Error>,
-        R: Read + Send,
-        W: Write + Send;
-}
-
-#[async_trait::async_trait]
-/// 异步并行流式加密系统扩展
-pub trait AsymmetricAsyncParallelStreamingSystem:
-    AsymmetricCryptographicSystem + Send + Sync
-where
-    Self::Error: Send,
-    Self::PublicKey: 'static,
-    Self::PrivateKey: 'static,
-    Error: From<Self::Error>,
-{
-    /// 异步并行流式加密
-    async fn par_encrypt_stream_async<S, R, W>(
-        public_key: &Self::PublicKey,
-        reader: R,
-        writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
-    where
-        S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + 'static,
-        S::Key: Send + Sync,
-        S::Error: Send,
-        Error: From<S::Error>,
-        R: AsyncRead + Unpin + Send + 'static,
-        W: AsyncWrite + Unpin + Send + 'static;
-
-    /// 异步并行流式解密
-    async fn par_decrypt_stream_async<S, R, W>(
-        private_key: &Self::PrivateKey,
-        reader: R,
-        writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
-    where
-        S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + 'static,
-        S::Key: Send + Sync,
-        S::Error: Send,
-        Error: From<S::Error>,
-        R: AsyncRead + Unpin + Send + 'static,
-        W: AsyncWrite + Unpin + Send + 'static;
-}
-
-/// `AsymmetricParallelSystem` 为支持并行处理的非对称加密系统提供了扩展。
-/// 这主要适用于混合加密方案，其中对称加密部分可以从并行化中受益。
-#[cfg(feature = "parallel")]
-pub trait AsymmetricParallelSystem: AsymmetricCryptographicSystem {
-    /// 并行加密
-    fn par_encrypt(
-        key: &Self::PublicKey,
-        plaintext: &[u8],
-        parallelism_config: &ParallelismConfig,
-        aad: Option<&[u8]>,
-    ) -> Result<Vec<u8>, Self::Error>;
-
-    /// 并行解密
-    fn par_decrypt(
-        key: &Self::PrivateKey,
-        ciphertext: &[u8],
-        parallelism_config: &ParallelismConfig,
-        aad: Option<&[u8]>,
-    ) -> Result<Vec<u8>, Self::Error>;
 }
