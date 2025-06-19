@@ -4,7 +4,6 @@ use crate::engine::SealEngine;
 use crate::rotation::manager::KeyManager;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use crate::{AsymmetricCryptographicSystem, Error};
-use rsa::signature::SignatureEncoding;
 use std::sync::Arc;
 
 impl SealEngine {
@@ -19,7 +18,7 @@ impl SealEngine {
 
         let mut header_bytes = vec![0u8; header_len];
         reader.read_exact(&mut header_bytes)?;
-        let header: Header = bincode::deserialize(&header_bytes)?;
+        let (header, _): (Header, _) = Header::decode_from_vec(&header_bytes)?;
 
         Ok(header)
     }

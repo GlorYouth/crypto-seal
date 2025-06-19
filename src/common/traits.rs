@@ -1,19 +1,20 @@
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use bincode::{Decode, Encode};
 use secrecy::{CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use zeroize::Zeroize;
 
 /// 对称加密算法枚举
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Decode, Encode)]
 #[serde(rename_all = "kebab-case")]
 pub enum SymmetricAlgorithm {
     Aes256Gcm,
 }
 
 /// 非对称加密算法枚举
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Decode, Encode)]
 #[serde(rename_all = "kebab-case")]
 pub enum AsymmetricAlgorithm {
     Rsa2048,

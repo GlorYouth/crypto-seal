@@ -1,5 +1,6 @@
 mod private;
 
+use crate::common::header::Header;
 use crate::rotation::manager::KeyManager;
 use crate::{Error, Seal};
 use secrecy::SecretString;
@@ -42,8 +43,8 @@ impl SealEngine {
         // 2. 构建 Header 和 DEK
         let (header, dek) = self.build_header_and_dek()?;
 
-        // 3. 序列化 Header
-        let header_bytes = bincode::serialize(&header)?;
+        // 3. 序列化
+        let header_bytes = header.encode_to_vec()?;
 
         // 4. 调用底层的并行加密原语
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
@@ -86,7 +87,7 @@ impl SealEngine {
         let (header, dek) = self.build_header_and_dek()?;
 
         // 3. 序列化并写入 Header
-        let header_bytes = bincode::serialize(&header)?;
+        let header_bytes = header.encode_to_vec()?;
         writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
         writer.write_all(&header_bytes)?;
 
@@ -135,7 +136,7 @@ impl SealEngine {
         let (header, dek) = self.build_header_and_dek()?;
 
         // 3. 序列化并写入 Header
-        let header_bytes = bincode::serialize(&header)?; // 使用 bincode 以获得更紧凑的输出
+        let header_bytes = header.encode_to_vec()?;
         writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
         writer.write_all(&header_bytes)?;
 
@@ -301,7 +302,7 @@ mod async_engine_impls {
             }
             let (header, dek) = self.build_header_and_dek()?;
 
-            let mut header_bytes = bincode::serialize(&header)?;
+            let mut header_bytes = header.encode_to_vec()?;
             let mut final_header = Vec::with_capacity(4 + header_bytes.len());
             final_header.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
             final_header.append(&mut header_bytes);
@@ -366,7 +367,7 @@ mod async_engine_impls {
             }
             let (header, dek) = self.build_header_and_dek()?;
 
-            let mut header_bytes = bincode::serialize(&header)?;
+            let mut header_bytes = header.encode_to_vec()?;
             let mut final_header = Vec::with_capacity(4 + header_bytes.len());
             final_header.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
             final_header.append(&mut header_bytes);
@@ -433,14 +434,14 @@ impl SealEngine {
     pub(crate) async fn read_and_parse_header_async<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         mut reader: R,
-    ) -> Result<crate::common::header::Header, Error> {
+    ) -> Result<Header, Error> {
         let mut len_buf = [0u8; 4];
         tokio::io::AsyncReadExt::read_exact(&mut reader, &mut len_buf).await?;
         let header_len = u32::from_le_bytes(len_buf) as usize;
 
         let mut header_bytes = vec![0u8; header_len];
         tokio::io::AsyncReadExt::read_exact(&mut reader, &mut header_bytes).await?;
-        let header: crate::common::header::Header = bincode::deserialize(&header_bytes)?;
+        let (header, _): (Header, _) = Header::decode_from_vec(&header_bytes)?;
 
         Ok(header)
     }

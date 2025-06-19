@@ -1,9 +1,11 @@
 //! `RsaCryptoSystem` 提供了基于 RSA PKCS#1 v1.5 的非对称加解密功能。
 //! 在 `seal-kit` 框架中，它主要作为密钥封装机制 (KEM) 使用。
+
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::utils::ZeroizingVec;
+use bincode::{Decode, Encode};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::pss::{Signature as PssSignature, SigningKey, VerifyingKey};
 use rsa::rand_core::OsRng as RsaOsRng;
@@ -43,7 +45,7 @@ impl RsaPrivateKeyWrapper {
 }
 
 /// RSA 签名包装器
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Decode, Encode)]
 pub struct RsaSignature(pub Vec<u8>);
 
 impl AsRef<[u8]> for RsaSignature {

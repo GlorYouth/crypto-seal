@@ -13,13 +13,14 @@ use std::io::Cursor;
 use tempfile::tempdir;
 
 // 辅助函数：创建一个临时的 Seal 实例并返回一个解锁的 engine
-fn setup_engine() -> seal_kit::SealEngine {
+fn setup_engine() -> (seal_kit::SealEngine, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let seal_path = dir.path().join("my_seal.seal");
     let password = SecretString::from("test-password".to_string());
 
     let seal = Seal::create(&seal_path, &password).unwrap();
-    seal.engine(SealMode::Hybrid, &password).unwrap()
+    let engine = seal.engine(SealMode::Hybrid, &password).unwrap();
+    (engine, dir)
 }
 
 // === 同步模式不兼容性测试 ===
@@ -27,7 +28,7 @@ fn setup_engine() -> seal_kit::SealEngine {
 #[test]
 #[cfg(feature = "parallel")]
 fn test_par_seal_bytes_incompatible_with_par_unseal_stream() {
-    let mut engine = setup_engine();
+    let (mut engine, _tmpdir) = setup_engine();
     let plaintext = vec![0xAB; 4096];
 
     // 1. 使用内存并行加密 (par_seal_bytes)
@@ -47,7 +48,7 @@ fn test_par_seal_bytes_incompatible_with_par_unseal_stream() {
 #[test]
 #[cfg(feature = "parallel")]
 fn test_par_seal_stream_incompatible_with_par_unseal_bytes() {
-    let mut engine = setup_engine();
+    let (mut engine, _tmpdir) = setup_engine();
     let plaintext = vec![0xCD; 4096];
 
     // 1. 使用流式并行加密 (par_seal_stream)
@@ -71,7 +72,7 @@ fn test_par_seal_stream_incompatible_with_par_unseal_bytes() {
 
 #[test]
 fn test_seal_bytes_incompatible_with_unseal_stream() {
-    let mut engine = setup_engine();
+    let (mut engine, _tmpdir) = setup_engine();
     let plaintext = vec![0xEF; 1024];
 
     // 1. 使用内存加密 (seal_bytes)
@@ -90,7 +91,7 @@ fn test_seal_bytes_incompatible_with_unseal_stream() {
 
 #[test]
 fn test_seal_stream_incompatible_with_unseal_bytes() {
-    let mut engine = setup_engine();
+    let (mut engine, _tmpdir) = setup_engine();
     let plaintext = vec![0x12; 1024];
 
     // 1. 使用流式加密 (seal_stream)
@@ -115,7 +116,7 @@ fn test_seal_stream_incompatible_with_unseal_bytes() {
 #[tokio::test]
 #[cfg(all(feature = "async-engine", feature = "parallel"))]
 async fn test_par_seal_bytes_incompatible_with_par_unseal_stream_async() {
-    let mut engine = setup_engine();
+    let (mut engine, _tmpdir) = setup_engine();
     let plaintext = vec![0x34; 4096];
 
     // 1. 使用同步内存并行加密
@@ -134,7 +135,7 @@ async fn test_par_seal_bytes_incompatible_with_par_unseal_stream_async() {
 
 #[cfg(all(feature = "async-engine", feature = "parallel"))]
 async fn test_par_seal_stream_async_incompatible_with_par_unseal_bytes() {
-    let mut engine = setup_engine();
+    let (mut engine, _tmpdir) = setup_engine();
     let plaintext = vec![0x56; 4096];
 
     // 1. 使用异步并行流式加密

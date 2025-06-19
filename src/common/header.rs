@@ -2,10 +2,12 @@
 
 use crate::asymmetric::systems::traditional::rsa::RsaSignature;
 use crate::common::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
+use bincode::config::Configuration;
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 /// 定义加密操作的模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Decode, Encode)]
 pub enum SealMode {
     /// 纯对称加密模式，使用预共享或管理的对称密钥。
     Symmetric,
@@ -15,7 +17,7 @@ pub enum SealMode {
 
 /// `Header` 是所有加密数据流的元数据信封。
 /// 它位于加密数据的前面，提供了足够的信息来解密后续的载荷。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Decode, Encode)]
 pub struct Header {
     /// 协议版本号，用于未来的兼容性升级。
     pub version: u16,
@@ -26,8 +28,20 @@ pub struct Header {
     pub payload: HeaderPayload,
 }
 
+impl Header {
+    pub fn encode_to_vec(&self) -> Result<Vec<u8>, crate::Error> {
+        static CONFIG: Configuration = bincode::config::standard();
+        Ok(bincode::encode_to_vec(self, CONFIG)?)
+    }
+
+    pub fn decode_from_vec(data: &[u8]) -> Result<(Self, usize), crate::Error> {
+        static CONFIG: Configuration = bincode::config::standard();
+        Ok(bincode::decode_from_slice(data, CONFIG)?)
+    }
+}
+
 /// `HeaderPayload` 包含了特定于加密模式的元数据。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "kebab-case")]
 pub enum HeaderPayload {
     /// 对称加密模式的元数据。
