@@ -7,6 +7,7 @@ use crate::symmetric::traits::SymmetricSyncStreamingSystem;
 use secrecy::SecretString;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use memchr::memchr;
 
 /// `AsymmetricQSealEngine`：一个支持密钥轮换的用户友好型非对称加密引擎。
 ///
@@ -258,6 +259,93 @@ where
             None,
         )
     }
+
+    /// 解密一段密文。
+    pub fn decrypt_bytes(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error>
+    where
+        T: crate::asymmetric::traits::AsymmetricCryptographicSystem,
+    {
+        let separator_pos = memchr(b':', ciphertext)
+            .ok_or_else(|| Error::Format("Invalid ciphertext format. Missing ':' separator.".to_string()))?;
+
+        let key_id_bytes = &ciphertext[..separator_pos];
+        let actual_ciphertext_bytes = &ciphertext[separator_pos + 1..];
+
+        let key_id = std::str::from_utf8(key_id_bytes)
+            .map_err(|_| Error::Format("Key ID is not valid UTF-8.".to_string()))?;
+        
+        let actual_ciphertext_str = std::str::from_utf8(actual_ciphertext_bytes)
+            .map_err(|_| Error::Format("Ciphertext is not valid UTF-8.".to_string()))?;
+
+        // 2. 根据 key_id 获取密钥对
+        let (_, private_key) = self
+            .key_manager
+            .get_keypair_by_id::<T>(key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
+        // 3. 解密数据
+        T::decrypt(&private_key, actual_ciphertext_str, None).map_err(Error::from)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 加密一段明文。
+    pub fn par_encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error>
+    where
+        T: crate::asymmetric::traits::AsymmetricParallelSystem,
+    {
+        let key_metadata = self
+            .key_manager
+            .get_primary_key_metadata()
+            .ok_or_else(|| Error::KeyManagement("No primary key metadata available.".to_string()))?
+            .clone();
+
+        let public_key = self
+            .key_manager
+            .get_public_key_by_id::<T>(&key_metadata.id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!(
+                    "Could not find public key for ID: {}",
+                    key_metadata.id
+                ))
+            })?;
+
+        let parallelism_config = self.key_manager.config().parallelism;
+        let ciphertext_bytes =
+            T::par_encrypt(&public_key, plaintext, &parallelism_config).map_err(Error::from)?;
+
+        let mut output = key_metadata.id.as_bytes().to_vec();
+        output.push(b':');
+        output.extend_from_slice(&ciphertext_bytes);
+
+        self.key_manager.increment_usage_count(&self.password)?;
+        Ok(output)
+    }
+
+    #[cfg(feature = "parallel")]
+    /// [并行] 解密一段密文。
+    pub fn par_decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error>
+    where
+        T: crate::asymmetric::traits::AsymmetricParallelSystem,
+    {
+        let separator_pos = memchr(b':', ciphertext)
+            .ok_or_else(|| Error::Format("Invalid format: missing ':' separator.".to_string()))?;
+
+        let key_id = std::str::from_utf8(&ciphertext[..separator_pos])
+            .map_err(|e| Error::Format(format!("Key ID is not valid UTF-8: {}", e)))?;
+        let actual_ciphertext = &ciphertext[separator_pos + 1..];
+
+        let (_, private_key) = self
+            .key_manager
+            .get_keypair_by_id::<T>(key_id)?
+            .ok_or_else(|| {
+                Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
+            })?;
+
+        let parallelism_config = self.key_manager.config().parallelism;
+        T::par_decrypt(&private_key, actual_ciphertext, &parallelism_config).map_err(Error::from)
+    }
 }
 
 #[cfg(all(
@@ -309,5 +397,23 @@ mod tests {
 
         let decrypted = decrypted_dest.into_inner();
         assert_eq!(decrypted, data);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_engine_parallel_encrypt_decrypt_roundtrip() {
+        let (seal, password, _temp_dir) = setup();
+        let mut engine = seal
+            .asymmetric_sync_engine::<
+                crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem,
+            >(password)
+            .unwrap();
+
+        let source_data = b"This is a test for parallel asymmetric encryption.";
+
+        let encrypted = engine.par_encrypt(source_data).unwrap();
+        let decrypted = engine.par_decrypt(&encrypted).unwrap();
+
+        assert_eq!(decrypted, source_data);
     }
 }

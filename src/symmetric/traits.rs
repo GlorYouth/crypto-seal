@@ -100,29 +100,33 @@ where
         W: AsyncWrite + Unpin + Send;
 }
 
+/// `SymmetricParallelSystem` 提供了使用数据并行性（例如通过 Rayon）进行对称加解密的接口。
+/// 它适用于可以被分解成独立块进行并行处理的加密算法。
 #[cfg(feature = "parallel")]
-/// 同步对称并行加密系统扩展
 pub trait SymmetricParallelSystem: SymmetricCryptographicSystem
 where
     Error: From<Self::Error>,
 {
-    /// 并行加密
+    /// [并行] 加密一段明文。
     fn par_encrypt(
         key: &Self::Key,
         plaintext: &[u8],
         additional_data: Option<&[u8]>,
+        parallelism_config: &crate::common::config::ParallelismConfig,
     ) -> Result<Vec<u8>, Self::Error>;
 
-    /// 并行解密
+    /// [并行] 解密一段密文。
     fn par_decrypt(
         key: &Self::Key,
         ciphertext: &[u8],
         additional_data: Option<&[u8]>,
+        parallelism_config: &crate::common::config::ParallelismConfig,
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
+/// `SymmetricParallelStreamingSystem` 结合了并行和流式处理，用于高效处理大型数据流。
+/// 数据流被分割成块，这些块被并行地进行加密或解密。
 #[cfg(feature = "parallel")]
-/// 同步对称并行流式加密系统扩展
 pub trait SymmetricParallelStreamingSystem: SymmetricCryptographicSystem
 where
     Error: From<Self::Error>,

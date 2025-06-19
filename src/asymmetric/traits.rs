@@ -208,3 +208,22 @@ where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static;
 }
+
+/// `AsymmetricParallelSystem` 为支持并行处理的非对称加密系统提供了扩展。
+/// 这主要适用于混合加密方案，其中对称加密部分可以从并行化中受益。
+#[cfg(feature = "parallel")]
+pub trait AsymmetricParallelSystem: AsymmetricCryptographicSystem {
+    /// [并行] 加密数据。
+    fn par_encrypt(
+        key: &Self::PublicKey,
+        plaintext: &[u8],
+        parallelism_config: &crate::common::config::ParallelismConfig,
+    ) -> Result<Vec<u8>, Self::Error>;
+
+    /// [并行] 解密数据。
+    fn par_decrypt(
+        key: &Self::PrivateKey,
+        ciphertext: &[u8],
+        parallelism_config: &crate::common::config::ParallelismConfig,
+    ) -> Result<Vec<u8>, Self::Error>;
+}

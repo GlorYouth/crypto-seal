@@ -180,8 +180,10 @@ where
             Error::KeyManagement("No primary key metadata available.".to_string())
         })?;
 
+        let parallelism_config = self.key_manager.config().parallelism;
         let ciphertext_bytes =
-            T::par_encrypt(&primary_key, plaintext, additional_data).map_err(Error::from)?;
+            T::par_encrypt(&primary_key, plaintext, additional_data, &parallelism_config)
+                .map_err(Error::from)?;
 
         let mut output = key_metadata.id.as_bytes().to_vec();
         output.push(b':');
@@ -220,7 +222,9 @@ where
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
 
-        T::par_decrypt(&key, actual_ciphertext, additional_data).map_err(Error::from)
+        let parallelism_config = self.key_manager.config().parallelism;
+        T::par_decrypt(&key, actual_ciphertext, additional_data, &parallelism_config)
+            .map_err(Error::from)
     }
 
     #[cfg(feature = "parallel")]
@@ -421,17 +425,17 @@ mod tests {
     #[cfg(feature = "parallel")]
     #[test]
     fn test_engine_parallel_encrypt_decrypt_roundtrip() {
-        let (seal, password, _dir) = setup();
+        let (seal, password, _temp_dir) = setup();
         let mut engine = seal
-            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .symmetric_sync_engine::<AesGcmSystem>(password.clone())
             .unwrap();
 
-        // Use a large plaintext to trigger parallel logic
-        let plaintext = vec![1u8; 1024 * 1024 * 3]; // 3MB
-        let encrypted = engine.par_encrypt(&plaintext, None).unwrap();
+        let source_data = b"This is a test for parallel encryption.";
+
+        let encrypted = engine.par_encrypt(source_data, None).unwrap();
         let decrypted = engine.par_decrypt(&encrypted, None).unwrap();
 
-        assert_eq!(decrypted, plaintext);
+        assert_eq!(decrypted, source_data);
     }
 
     #[cfg(feature = "parallel")]

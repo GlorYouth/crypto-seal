@@ -8,7 +8,6 @@ use crate::asymmetric::systems::post_quantum::kyber::{
 use crate::asymmetric::systems::traditional::rsa::{
     RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper,
 };
-use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::traits::AuthenticatedCryptoSystem;
@@ -28,6 +27,25 @@ use chacha20poly1305::{
 use rsa::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use crate::asymmetric::traits::{
+    AsymmetricCryptographicSystem
+};
+use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+use rsa::pkcs8::DecodePublicKey;
+use rsa::RsaPublicKey;
+
+#[cfg(feature = "parallel")]
+use crate::{
+    asymmetric::traits::AsymmetricParallelSystem,
+    common::config::ParallelismConfig,
+    symmetric::{
+        systems::aes_gcm::AesGcmKey,
+        traits::{SymmetricCryptographicSystem, SymmetricParallelSystem},
+    },
+};
+#[cfg(feature = "parallel")]
+use rsa::{pkcs8::DecodePrivateKey, traits::PublicKeyParts, RsaPrivateKey};
+
 // --- 密钥结构 ---
 
 /// 混合公钥，包含用于签名的RSA公钥和用于密钥封装的Kyber公钥。
@@ -430,5 +448,59 @@ mod tests {
 
             assert_eq!(original_data, decrypted);
         }
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl AsymmetricParallelSystem for RsaKyberCryptoSystem {
+    fn par_encrypt(
+        key: &Self::PublicKey,
+        plaintext: &[u8],
+        parallelism_config: &ParallelismConfig,
+    ) -> Result<Vec<u8>, Self::Error> {
+        // 1. 生成一次性对称密钥
+        let symmetric_key = AesGcmSystem::generate_key(&Default::default())?;
+
+        // 2. 使用对称密钥并行加密数据
+        let encrypted_data =
+            AesGcmSystem::par_encrypt(&symmetric_key, plaintext, None, parallelism_config)?;
+
+        // 3. 使用非对称密钥加密对称密钥
+        let rsa_public_key =
+            RsaPublicKey::from_public_key_der(&key.rsa_public_key.0).map_err(|e| {
+                Error::Traditional(format!("Failed to parse RSA public key: {}", e))
+            })?;
+        let mut rng = rsa::rand_core::OsRng;
+        let encrypted_symmetric_key = rsa_public_key
+            .encrypt(&mut rng, rsa::Pkcs1v15Encrypt, &symmetric_key.0)
+            .map_err(|e| Error::Traditional(format!("RSA encryption failed: {}", e)))?;
+
+        // 4. 将加密后的对称密钥和加密后的数据打包在一起
+        Ok([encrypted_symmetric_key, encrypted_data].concat())
+    }
+
+    fn par_decrypt(
+        key: &Self::PrivateKey,
+        ciphertext: &[u8],
+        parallelism_config: &ParallelismConfig,
+    ) -> Result<Vec<u8>, Self::Error> {
+        // 1. 拆分出加密的对称密钥和加密的数据
+        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&key.rsa_private_key.0)
+            .map_err(|e| Error::Traditional(format!("Failed to parse RSA private key: {}", e)))?;
+        let rsa_key_size = rsa_private_key.size();
+
+        if ciphertext.len() < rsa_key_size {
+            return Err(Error::Format("Ciphertext too short".to_string()));
+        }
+        let (encrypted_symmetric_key, encrypted_data) = ciphertext.split_at(rsa_key_size);
+
+        // 2. 解密对称密钥
+        let symmetric_key_bytes = rsa_private_key
+            .decrypt(rsa::Pkcs1v15Encrypt, encrypted_symmetric_key)
+            .map_err(|e| Error::Traditional(format!("RSA decryption failed: {}", e)))?;
+        let symmetric_key = AesGcmKey(symmetric_key_bytes);
+
+        // 3. 使用对称密钥并行解密数据
+        AesGcmSystem::par_decrypt(&symmetric_key, encrypted_data, None, parallelism_config)
     }
 }
