@@ -202,11 +202,7 @@ async fn test_matrix_async_seal_stream_compatibility() {
 
 #[test]
 fn test_hybrid_rsakyber_signed_roundtrip() {
-    let dir = tempdir().unwrap();
-    let seal_path = dir.path().join("my_seal.seal");
-    let password = SecretString::from("test-password".to_string());
-    let seal = Seal::create(&seal_path, &password).unwrap();
-    let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
+    let (mut engine, _tmpdir) = setup_engine();
     let data = b"This data must be signed and verified.".to_vec();
     let aad = b"authenticated-encryption";
 
@@ -220,11 +216,7 @@ fn test_hybrid_rsakyber_signed_roundtrip() {
 
 #[test]
 fn test_hybrid_rsakyber_tampered_ciphertext_fails_verification() {
-    let dir = tempdir().unwrap();
-    let seal_path = dir.path().join("my_seal.seal");
-    let password = SecretString::from("test-password".to_string());
-    let seal = Seal::create(&seal_path, &password).unwrap();
-    let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
+    let (mut engine, _tmpdir) = setup_engine();
     let data = b"This data must be signed and verified.".to_vec();
     let aad = b"authenticated-encryption";
 
