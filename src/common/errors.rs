@@ -43,6 +43,8 @@ pub enum Error {
     Configuration(String),
     /// AAD 不匹配错误
     AadMismatch,
+    /// Bincode 序列化/反序列化错误
+    Bincode(String),
 }
 
 impl fmt::Display for Error {
@@ -64,6 +66,7 @@ impl fmt::Display for Error {
             Error::KeyManagement(msg) => write!(f, "密钥管理错误: {}", msg),
             Error::Configuration(msg) => write!(f, "配置错误: {}", msg),
             Error::AadMismatch => write!(f, "AAD 不匹配"),
+            Error::Bincode(msg) => write!(f, "Bincode 错误: {}", msg),
         }
     }
 }
@@ -98,6 +101,12 @@ impl From<serde_json::Error> for Error {
 impl From<config::ConfigError> for Error {
     fn from(err: config::ConfigError) -> Self {
         Error::Configuration(err.to_string())
+    }
+}
+
+impl From<Box<bincode::ErrorKind>> for Error {
+    fn from(err: Box<bincode::ErrorKind>) -> Self {
+        Error::Bincode(err.to_string())
     }
 }
 

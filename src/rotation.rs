@@ -1,3 +1,5 @@
+pub mod manager;
+
 use crate::common::errors::Error;
 pub(crate) use crate::common::traits::KeyMetadata;
 use serde::{Deserialize, Serialize};

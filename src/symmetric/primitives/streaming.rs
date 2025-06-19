@@ -70,15 +70,15 @@ where
             let ciphertext = C::encrypt(self.key, plaintext, Some(&aad))?;
             let ciphertext_bytes = ciphertext.as_ref();
 
-            let len = ciphertext_bytes.len() as u32;
-            self.writer.write_all(&len.to_le_bytes())?;
             self.writer.write_all(ciphertext_bytes)?;
 
             total_written += read_bytes as u64;
             self.chunk_index += 1;
 
             if let Some(ref mut buf) = mem_buffer {
-                buf.extend_from_slice(&ciphertext_bytes);
+                if ciphertext_bytes.len() >= 4 {
+                    buf.extend_from_slice(&ciphertext_bytes[4..]);
+                }
             }
 
             if let Some(cb) = &self.config.progress_callback {
@@ -158,8 +158,11 @@ where
 
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
+            
+            let mut block_with_len = len_buf.to_vec();
+            block_with_len.extend_from_slice(&ciphertext_buffer);
 
-            let plaintext = C::decrypt(self.key, &ciphertext_buffer, Some(&aad))?;
+            let plaintext = C::decrypt(self.key, &block_with_len, Some(&aad))?;
             self.chunk_index += 1;
 
             self.writer.write_all(&plaintext)?;

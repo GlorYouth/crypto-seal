@@ -5,6 +5,7 @@ pub mod errors;
 pub mod streaming;
 pub mod traits;
 pub mod utils;
+pub mod header;
 
 pub use self::config::ConfigFile;
 pub use self::errors::Error;

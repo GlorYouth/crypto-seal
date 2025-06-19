@@ -4,6 +4,32 @@ use secrecy::{CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use zeroize::Zeroize;
+use crate::common::errors::Error;
+use secrecy::{ExposeSecret, SecretString};
+
+/// 对称加密算法枚举
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum SymmetricAlgorithm {
+    Aes256Gcm,
+}
+
+/// 非对称加密算法枚举
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum AsymmetricAlgorithm {
+    Rsa2048,
+    // 未来可以轻松扩展，例如:
+    // Kyber768,
+}
+
+/// 算法的统一表示
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum Algorithm {
+    Symmetric(SymmetricAlgorithm),
+    Asymmetric(AsymmetricAlgorithm),
+}
 
 /// 密钥状态
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -25,7 +51,7 @@ impl SerializableSecret for SecString {}
 impl CloneableSecret for SecString {}
 
 /// 密钥元数据结构
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMetadata {
     /// 密钥唯一标识符
     pub id: String,
@@ -40,12 +66,10 @@ pub struct KeyMetadata {
     /// 密钥版本
     pub version: u32,
     /// 算法标识符
-    pub algorithm: String,
+    pub algorithm: Algorithm,
     /// (非对称) 公钥 (Base64编码)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
     /// (非对称) 加密后的私钥 (Base64编码)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_private_key: Option<SecretBox<SecString>>,
 }
 

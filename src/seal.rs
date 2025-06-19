@@ -3,24 +3,24 @@ use secrecy::{CloneableSecret, ExposeSecret, SecretBox, SecretString, Serializab
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs as tokio_fs;
+use bincode;
 
-use crate::asymmetric::engines::AsymmetricQSealAsyncEngine;
-use crate::asymmetric::engines::AsymmetricQSealEngine;
-use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
-use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
+use crate::asymmetric::traits::{AsymmetricCryptographicSystem};
 use crate::common::ConfigFile;
 use crate::common::config::ConfigManager;
 use crate::common::errors::Error;
-use crate::common::traits::{KeyMetadata, SecureKeyStorage};
+use crate::common::header::{Header, HeaderPayload, SealMode};
+use crate::common::traits::{
+    Algorithm, AsymmetricAlgorithm, KeyMetadata, SecString, SecureKeyStorage, SymmetricAlgorithm,
+};
+use crate::rotation::manager::KeyManager;
 use crate::storage::EncryptedKeyContainer;
-use crate::symmetric::engines::SymmetricQSealAsyncEngine;
-use crate::symmetric::engines::SymmetricQSealEngine;
-use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{
-    SymmetricAsyncStreamingSystem, SymmetricCryptographicSystem, SymmetricSyncStreamingSystem,
+     SymmetricCryptographicSystem,
 };
 use hkdf::Hkdf;
 use rand_core::{OsRng, TryRngCore};
@@ -178,111 +178,28 @@ impl Seal {
             .map_err(|e| Error::Format(format!("Vault payload is not valid UTF-8: {}", e)))
     }
 
-    /// 创建一个同步对称加密引擎。
+    /// 创建一个统一的、有状态的加密引擎实例。
     ///
-    /// 此方法从主密钥派生出一个专用于对称加密的密钥，并用它来实例化一个
-    /// `SymmetricQSealEngine`。返回的引擎可以安全地用于加密和解密数据。
-    pub fn symmetric_sync_engine<T>(
+    /// 这个方法会初始化一个密钥管理器，执行首次必要的密钥轮换，
+    /// 然后返回一个持有该管理器状态的引擎。
+    pub fn engine(
         self: &Arc<Self>,
-        password: SecretString,
-    ) -> Result<SymmetricQSealEngine<T>, Error>
-    where
-        T: SymmetricCryptographicSystem + SymmetricSyncStreamingSystem,
-        T::Error: std::error::Error + 'static,
-        Error: From<T::Error>,
-        T::Key: Clone,
-    {
-        // 1. 创建并初始化密钥管理器。
-        let mut key_manager =
-            SymmetricKeyRotationManager::new(Arc::clone(self), "symmetric-default");
+        mode: SealMode,
+        password: &SecretString,
+    ) -> Result<SealEngine, Error> {
+        let mut key_manager = KeyManager::new(Arc::clone(self), "seal-engine", mode);
         key_manager.initialize()?;
 
-        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
+        // 创建引擎时，确保至少有一个可用的主密钥
         if key_manager.needs_rotation() {
-            let algorithm_name = std::any::type_name::<T>().to_string();
-            key_manager.start_rotation(&password, &algorithm_name)?;
+            key_manager.start_rotation(password)?;
         }
 
-        // 3. 创建并返回引擎实例。
-        Ok(SymmetricQSealEngine::new(key_manager, password))
-    }
-
-    /// 创建一个异步对称加密引擎。
-    pub async fn symmetric_async_engine<T>(
-        self: &Arc<Self>,
-        password: SecretString,
-    ) -> Result<SymmetricQSealAsyncEngine<T>, Error>
-    where
-        T: SymmetricCryptographicSystem + SymmetricAsyncStreamingSystem + Send + Sync + 'static,
-        T::Key: Send + Sync,
-        T::Error: std::error::Error + Send + Sync + 'static,
-        Error: From<T::Error>,
-    {
-        // 1. 创建并初始化密钥管理器。
-        let mut key_manager =
-            SymmetricKeyRotationManager::new(Arc::clone(self), "symmetric-default-async");
-        key_manager.initialize()?;
-
-        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
-        if key_manager.needs_rotation() {
-            let algorithm_name = std::any::type_name::<T>().to_string();
-            key_manager
-                .start_rotation_async(&password, &algorithm_name)
-                .await?;
-        }
-
-        // 3. 创建并返回引擎实例。
-        Ok(SymmetricQSealAsyncEngine::new(key_manager, password))
-    }
-
-    /// 创建一个同步非对称加密引擎。
-    pub fn asymmetric_sync_engine<T>(
-        self: &Arc<Self>,
-        password: SecretString,
-    ) -> Result<AsymmetricQSealEngine<T>, Error>
-    where
-        T: AsymmetricCryptographicSystem + AsymmetricSyncStreamingSystem,
-        T::Error: std::error::Error + 'static,
-        Error: From<T::Error>,
-    {
-        // 1. 创建并初始化密钥管理器。
-        let mut key_manager =
-            AsymmetricKeyRotationManager::new(Arc::clone(self), "asymmetric-default");
-        key_manager.initialize()?;
-
-        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
-        if key_manager.needs_rotation() {
-            key_manager.start_rotation::<T>(&password)?;
-        }
-
-        // 3. 创建并返回引擎实例。
-        Ok(AsymmetricQSealEngine::new(key_manager, password))
-    }
-
-    /// 创建一个异步非对称加密引擎。
-    pub async fn asymmetric_async_engine<T>(
-        self: &Arc<Self>,
-        password: SecretString,
-    ) -> Result<AsymmetricQSealAsyncEngine<T>, Error>
-    where
-        T: crate::asymmetric::traits::AsyncStreamingSystem + Send + Sync + 'static,
-        T::PublicKey: Send + Sync,
-        T::PrivateKey: Send + Sync,
-        T::Error: std::error::Error + Send + Sync + 'static,
-        Error: From<T::Error>,
-    {
-        // 1. 创建并初始化密钥管理器。
-        let mut key_manager =
-            AsymmetricKeyRotationManager::new(Arc::clone(self), "asymmetric-default-async");
-        key_manager.initialize()?;
-
-        // 2. 如果需要，执行首次密钥轮换（即创建第一个密钥）。
-        if key_manager.needs_rotation() {
-            key_manager.start_rotation_async::<T>(&password).await?;
-        }
-
-        // 3. 创建并返回引擎实例。
-        Ok(AsymmetricQSealAsyncEngine::new(key_manager, password))
+        Ok(SealEngine {
+            key_manager,
+            _seal: Arc::clone(self),
+            password: password.clone(),
+        })
     }
 
     /// 使用HKDF从主密钥派生出一个新的密钥。
@@ -337,49 +254,408 @@ impl Seal {
     where
         F: FnOnce(&mut VaultPayload),
     {
-        // 1. 加载当前载荷的 Arc 指针。
-        let old_payload_arc = self.payload.load();
-
-        // 2. 克隆载荷以进行修改。
-        //    我们克隆 Arc 内部的数据，而不是 Arc 本身。
-        let mut new_payload = (**old_payload_arc).clone();
-
-        // 3. 将可变引用传递给闭包以执行更新。
+        let current_payload = self.payload.load();
+        let mut new_payload = (**current_payload).clone();
         update_fn(&mut new_payload);
-
-        // 4. 将更新后的载荷原子地写入文件。
-        Self::write_payload(&self.path, &new_payload, password)?;
-
-        // 5. 用新的载荷原子地替换内存中的旧载荷。
         self.payload.store(Arc::new(new_payload));
+        Ok(())
+    }
+}
+
+// ===================================================================================
+// UNIFIED SEAL ENGINE
+// ===================================================================================
+
+/// `SealEngine` 是执行实际加密和解密操作的统一接口。
+///
+/// 它持有密钥管理器的状态，以高效地处理连续的加密操作和自动密钥轮换。
+pub struct SealEngine {
+    key_manager: KeyManager,
+    // 我们需要一个对 Seal 的引用来访问配置等信息，但它不参与状态管理
+    _seal: Arc<Seal>,
+    // 引擎在创建时 "解锁"，存储密码以供内部需要写入的操作（如密钥轮换）使用。
+    password: SecretString,
+}
+
+impl SealEngine {
+    /// 使用当前引擎的模式来加密（封印）一个字节切片。
+    ///
+    /// 这是一个便捷的内存加密方法。
+    pub fn seal_bytes(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        // 为了代码复用，我们可以在内部使用流式加密的实现
+        let mut reader = std::io::Cursor::new(plaintext);
+        let mut writer = Vec::new();
+        self.seal_stream(&mut reader, &mut writer)?;
+        Ok(writer)
+    }
+
+    /// [并行] 使用当前引擎的模式来加密（封印）一个字节切片。
+    pub fn par_seal_bytes(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        // 1. 检查并执行密钥轮换
+        if self.key_manager.needs_rotation() {
+            self.key_manager.start_rotation(&self.password)?;
+        }
+
+        // 2. 构建 Header 和 DEK
+        let (header, dek) = self.build_header_and_dek()?;
+
+        // 3. 序列化 Header
+        let header_bytes = bincode::serialize(&header)?;
+
+        // 4. 调用底层的并行加密原语
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricParallelSystem;
+
+        let dek_key = AesGcmKey(dek);
+        let parallelism_config = &self.key_manager.config().parallelism;
+        let ciphertext_payload =
+            AesGcmSystem::par_encrypt(&dek_key, plaintext, None, parallelism_config)?;
+
+        // 5. 组合 Header 和加密后的载荷
+        let mut final_output =
+            Vec::with_capacity(4 + header_bytes.len() + ciphertext_payload.len());
+        final_output.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
+        final_output.extend_from_slice(&header_bytes);
+        final_output.extend_from_slice(&ciphertext_payload);
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(final_output)
+    }
+
+    /// [并行] 使用当前引擎的模式来流式加密（封印）一个数据流。
+    pub fn par_seal_stream<R, W>(&mut self, reader: R, mut writer: W) -> Result<(), Error>
+    where
+        R: std::io::Read + Send,
+        W: std::io::Write + Send,
+    {
+        // 1. 检查并执行密钥轮换
+        if self.key_manager.needs_rotation() {
+            self.key_manager.start_rotation(&self.password)?;
+        }
+
+        // 2. 构建 Header 和 DEK
+        let (header, dek) = self.build_header_and_dek()?;
+
+        // 3. 序列化并写入 Header
+        let header_bytes = bincode::serialize(&header)?;
+        writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(&header_bytes)?;
+
+        // 4. 调用底层的并行流式加密原语
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricParallelStreamingSystem;
+
+        let dek_key = AesGcmKey(dek);
+        let streaming_config = &self.key_manager.config().streaming;
+        let parallelism_config = &self.key_manager.config().parallelism;
+
+        AesGcmSystem::par_encrypt_stream(
+            &dek_key,
+            reader,
+            writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
 
         Ok(())
     }
 
-    /// (Async) 以原子方式提交对保险库载荷的修改。
-    pub(crate) async fn commit_payload_async<F>(
-        &self,
-        password: &SecretString,
-        update_fn: F,
-    ) -> Result<(), Error>
+    /// 使用当前引擎的模式来流式加密（封印）一个数据流。
+    ///
+    /// 此方法会自动处理密钥轮换、元数据生成和数据加密，
+    /// 并将统一格式的密文写入输出流。
+    pub fn seal_stream<R, W>(&mut self, reader: R, mut writer: W) -> Result<(), Error>
     where
-        F: FnOnce(&mut VaultPayload),
+        R: std::io::Read,
+        W: std::io::Write,
     {
-        // 1. 加载当前载荷的 Arc 指针。
-        let old_payload_arc = self.payload.load();
+        // 1. 检查并执行密钥轮换
+        if self.key_manager.needs_rotation() {
+            self.key_manager.start_rotation(&self.password)?;
+        }
 
-        // 2. 克隆载荷以进行修改。
-        let mut new_payload = (**old_payload_arc).clone();
+        // 2. 构建 Header
+        let (header, dek) = self.build_header_and_dek()?;
 
-        // 3. 将可变引用传递给闭包以执行更新。
-        update_fn(&mut new_payload);
+        // 3. 序列化并写入 Header
+        let header_bytes = bincode::serialize(&header)?; // 使用 bincode 以获得更紧凑的输出
+        writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(&header_bytes)?;
 
-        // 4. 将更新后的载荷原子地写入文件。
-        Self::write_payload_async(&self.path, &new_payload, password).await?;
+        // 4. 使用 DEK 加密数据流
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricSyncStreamingSystem;
 
-        // 5. 用新的载荷原子地替换内存中的旧载荷。
-        self.payload.store(Arc::new(new_payload));
+        let dek_key = AesGcmKey(dek);
+        let streaming_config = &self.key_manager.config().streaming;
+
+        AesGcmSystem::encrypt_stream(&dek_key, reader, writer, streaming_config, None)?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
 
         Ok(())
+    }
+
+    /// 使用当前引擎的模式解密（解封）一个字节切片。
+    ///
+    /// 此方法会自动解析密文头部，获取正确的密钥进行解密。
+    /// 这是一个便捷的内存解密方法。
+    pub fn unseal_bytes(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut reader = std::io::Cursor::new(ciphertext);
+        let mut writer = Vec::new();
+        self.unseal_stream(&mut reader, &mut writer)?;
+        Ok(writer)
+    }
+
+    /// [并行] 使用当前引擎的模式解密（解封）一个字节切片。
+    pub fn par_unseal_bytes(&self, ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        // 1. 解析 Header
+        let mut reader = std::io::Cursor::new(ciphertext);
+        let header = self.read_and_parse_header(&mut reader)?;
+
+        // 2. 根据 Header 派生/解密 DEK
+        let dek = self.derive_dek_from_header(&header)?;
+
+        // 3. 读取剩余的载荷并使用并行原语解密
+        let mut payload = Vec::new();
+        reader.read_to_end(&mut payload)?;
+
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricParallelSystem;
+
+        let dek_key = AesGcmKey(dek);
+        let parallelism_config = &self.key_manager.config().parallelism;
+        let decrypted_payload =
+            AesGcmSystem::par_decrypt(&dek_key, &payload, None, parallelism_config)?;
+
+        Ok(decrypted_payload)
+    }
+
+    /// [并行] 使用当前引擎的模式来流式解密（解封）一个数据流。
+    pub fn par_unseal_stream<R, W>(&self, mut reader: R, writer: W) -> Result<(), Error>
+    where
+        R: std::io::Read + Send,
+        W: std::io::Write + Send,
+    {
+        // 1. 解析 Header
+        let header = self.read_and_parse_header(&mut reader)?;
+
+        // 2. 根据 Header 派生/解密 DEK
+        let dek = self.derive_dek_from_header(&header)?;
+
+        // 3. 调用底层的并行流式解密原语
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricParallelStreamingSystem;
+
+        let dek_key = AesGcmKey(dek);
+        let streaming_config = &self.key_manager.config().streaming;
+        let parallelism_config = &self.key_manager.config().parallelism;
+
+        AesGcmSystem::par_decrypt_stream(
+            &dek_key,
+            reader,
+            writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )?;
+
+        Ok(())
+    }
+
+    /// 解密（解封）一个数据流。
+    ///
+    /// 此方法会自动解析密文头，并用正确的密钥解密后续的数据流。
+    pub fn unseal_stream<R, W>(&self, mut reader: R, writer: W) -> Result<(), Error>
+    where
+        R: std::io::Read,
+        W: std::io::Write,
+    {
+        // 1. 解析 Header
+        let header = self.read_and_parse_header(&mut reader)?;
+
+        // 2. 根据 Header 派生/解密 DEK
+        let dek = self.derive_dek_from_header(&header)?;
+
+        // 3. 使用 DEK 解密数据流
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricSyncStreamingSystem;
+
+        // Dispatch based on DEK algorithm
+        match header.payload {
+            HeaderPayload::Symmetric { algorithm, .. } => match algorithm {
+                SymmetricAlgorithm::Aes256Gcm => {
+                    let dek_key = AesGcmKey(dek);
+                    let streaming_config = &self.key_manager.config().streaming;
+                    AesGcmSystem::decrypt_stream(
+                        &dek_key,
+                        reader,
+                        writer,
+                        streaming_config,
+                        None,
+                    )?;
+                }
+            },
+            HeaderPayload::Hybrid { dek_algorithm, .. } => match dek_algorithm {
+                SymmetricAlgorithm::Aes256Gcm => {
+                    let dek_key = AesGcmKey(dek);
+                    let streaming_config = &self.key_manager.config().streaming;
+                    AesGcmSystem::decrypt_stream(
+                        &dek_key,
+                        reader,
+                        writer,
+                        streaming_config,
+                        None,
+                    )?;
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    /// 从输入流中读取并解析出一个 Header。
+    fn read_and_parse_header<R: std::io::Read>(&self, mut reader: R) -> Result<Header, Error> {
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf)?;
+        let header_len = u32::from_le_bytes(len_buf) as usize;
+
+        let mut header_bytes = vec![0u8; header_len];
+        reader.read_exact(&mut header_bytes)?;
+        let header: Header = bincode::deserialize(&header_bytes)?;
+
+        Ok(header)
+    }
+
+    /// 根据 Header 和当前引擎模式，派生或解密出数据加密密钥 (DEK)。
+    fn derive_dek_from_header(&self, header: &Header) -> Result<Vec<u8>, Error> {
+        // 解密时，我们创建一个临时的、只读的 KeyManager
+        let mut key_manager =
+            KeyManager::new(Arc::clone(&self._seal), "seal-engine-readonly", header.mode);
+        key_manager.initialize()?;
+
+        match &header.payload {
+            HeaderPayload::Symmetric { key_id, algorithm } => {
+                // Dispatch based on symmetric algorithm
+                match algorithm {
+                    SymmetricAlgorithm::Aes256Gcm => {
+                        use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+                        let key = key_manager
+                            .derive_symmetric_key::<AesGcmSystem>(key_id)?
+                            .ok_or_else(|| {
+                                Error::Key(format!(
+                                    "Failed to derive symmetric key for id: {}",
+                                    key_id
+                                ))
+                            })?;
+                        Ok(key.0)
+                    }
+                }
+            }
+            HeaderPayload::Hybrid {
+                kek_id,
+                encrypted_dek,
+                kek_algorithm,
+                ..
+            } => {
+                // Dispatch based on KEK algorithm
+                match kek_algorithm {
+                    AsymmetricAlgorithm::Rsa2048 => {
+                        use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
+                        use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+
+                        let (_, kek_priv) = key_manager
+                            .get_asymmetric_keypair::<RsaCryptoSystem>(kek_id)?
+                            .ok_or_else(|| {
+                                Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
+                            })?;
+
+                        let dek = RsaCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
+                        Ok(dek)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 根据当前模式构建 Header 和数据加密密钥 (DEK)。
+    fn build_header_and_dek(&mut self) -> Result<(Header, Vec<u8>), Error> {
+        let primary_meta = self
+            .key_manager
+            .get_primary_key_metadata()
+            .ok_or_else(|| Error::KeyManagement("No primary key available.".to_string()))?
+            .clone(); // Clone to avoid borrow checker issues
+
+        let (header_payload, dek) = match self.key_manager.mode() {
+            SealMode::Symmetric => {
+                // 在对称模式下，DEK 就是从主种子派生出的密钥本身。
+                match primary_meta.algorithm {
+                    Algorithm::Symmetric(sym_alg) => {
+                        use crate::symmetric::systems::aes_gcm::AesGcmSystem; // TODO: make configurable
+
+                        let key = self
+                            .key_manager
+                            .derive_symmetric_key::<AesGcmSystem>(&primary_meta.id)?
+                            .ok_or_else(|| {
+                                Error::Key("Failed to derive symmetric key.".to_string())
+                            })?;
+
+                        let payload = HeaderPayload::Symmetric {
+                            key_id: primary_meta.id.clone(),
+                            algorithm: sym_alg,
+                        };
+                        Ok((payload, key.0))
+                    }
+                    _ => Err(Error::KeyManagement(
+                        "Mismatched key type in metadata for symmetric mode.".to_string(),
+                    )),
+                }?
+            }
+            SealMode::Hybrid => {
+                // 在混合模式下，生成一个新的DEK，并用主非对称公钥加密它。
+                match primary_meta.algorithm {
+                    Algorithm::Asymmetric(asym_alg) => {
+                        use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
+                        use crate::symmetric::systems::aes_gcm::AesGcmSystem;
+
+                        // 1. 获取KEK
+                        let (kek_pub, _) = self
+                            .key_manager
+                            .get_asymmetric_keypair::<RsaCryptoSystem>(&primary_meta.id)?
+                            .ok_or_else(|| Error::Key("Failed to get KEK keypair.".to_string()))?;
+
+                        // 2. 生成一次性DEK (TODO: algorithm should be configurable)
+                        let dek =
+                            AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
+
+                        // 3. 加密DEK
+                        let encrypted_dek = RsaCryptoSystem::encrypt(&kek_pub, &dek.0, None)?;
+
+                        let payload = HeaderPayload::Hybrid {
+                            kek_id: primary_meta.id.clone(),
+                            kek_algorithm: asym_alg,
+                            dek_algorithm: SymmetricAlgorithm::Aes256Gcm, // TODO: Configurable
+                            encrypted_dek,
+                        };
+                        Ok((payload, dek.0))
+                    }
+                    _ => Err(Error::KeyManagement(
+                        "Mismatched key type in metadata for hybrid mode.".to_string(),
+                    )),
+                }?
+            }
+        };
+
+        let header = Header {
+            version: 1,
+            mode: self.key_manager.mode(),
+            payload: header_payload,
+        };
+
+        Ok((header, dek))
     }
 }

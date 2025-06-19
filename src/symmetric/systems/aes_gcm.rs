@@ -52,12 +52,17 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
             .encrypt_in_place_detached(&nonce, additional_data.unwrap_or(&[]), &mut buffer)
             .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
-        let mut ciphertext = Vec::with_capacity(NONCE_SIZE + buffer.len() + TAG_SIZE);
-        ciphertext.extend_from_slice(nonce.as_slice());
-        ciphertext.extend_from_slice(&tag);
-        ciphertext.extend_from_slice(&buffer);
+        let mut raw_ciphertext = Vec::with_capacity(NONCE_SIZE + TAG_SIZE + buffer.len());
+        raw_ciphertext.extend_from_slice(nonce.as_slice());
+        raw_ciphertext.extend_from_slice(&tag);
+        raw_ciphertext.extend_from_slice(&buffer);
 
-        Ok(ciphertext)
+        // 统一密文格式：[4字节长度][加密块]
+        let mut final_output = Vec::with_capacity(4 + raw_ciphertext.len());
+        final_output.extend_from_slice(&(raw_ciphertext.len() as u32).to_le_bytes());
+        final_output.extend_from_slice(&raw_ciphertext);
+        
+        Ok(final_output)
     }
 
     fn decrypt(
@@ -65,7 +70,22 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         ciphertext: &[u8],
         additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error> {
-        if ciphertext.len() < NONCE_SIZE + TAG_SIZE {
+        // 统一密文格式：[4字节长度][加密块]
+        if ciphertext.len() < 4 {
+            return Err(Error::DecryptionFailed(
+                "Ciphertext is too short to contain length prefix".to_string(),
+            ));
+        }
+        let (len_slice, raw_ciphertext) = ciphertext.split_at(4);
+        let len = u32::from_le_bytes(len_slice.try_into().unwrap()) as usize;
+
+        if raw_ciphertext.len() != len {
+            return Err(Error::DecryptionFailed(
+                "Ciphertext length does not match length prefix".to_string(),
+            ));
+        }
+
+        if raw_ciphertext.len() < NONCE_SIZE + TAG_SIZE {
             return Err(Error::DecryptionFailed(
                 "Ciphertext is too short".to_string(),
             ));
@@ -73,7 +93,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key.0);
         let cipher = Aes256Gcm::new(key);
 
-        let (nonce_slice, rest) = ciphertext.split_at(NONCE_SIZE);
+        let (nonce_slice, rest) = raw_ciphertext.split_at(NONCE_SIZE);
         let (tag_slice, ct_slice) = rest.split_at(TAG_SIZE);
         let nonce = Nonce::from_slice(nonce_slice);
         let tag = Tag::from_slice(tag_slice);
@@ -117,20 +137,26 @@ impl SymmetricParallelSystem for AesGcmSystem {
             .num_threads(parallelism_config.parallelism)
             .build()
             .map_err(|e| Error::Key(e.to_string()))?;
+        
+        let additional_data = additional_data.map(|d| d.to_vec());
 
         let encrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = pool.install(|| {
             plaintext
                 .par_chunks(PARALLEL_CHUNK_SIZE)
-                .map(|chunk| Self::encrypt(key, chunk, additional_data))
+                .enumerate() // 获取块索引
+                .map(|(i, chunk)| {
+                    // 为每个块创建独立的 AAD
+                    let mut aad_chunk = additional_data.clone().unwrap_or_default();
+                    aad_chunk.extend_from_slice(&(i as u64).to_le_bytes()); // 添加索引作为 AAD 的一部分
+                    Self::encrypt(key, chunk, Some(&aad_chunk))
+                })
                 .collect()
         });
 
+        // 拼接所有加密后的块。每个块已经包含了 [长度][数据]
         let mut final_result = Vec::new();
         for result in encrypted_chunks {
-            let chunk = result?;
-            let len = chunk.len() as u32;
-            final_result.extend_from_slice(&len.to_le_bytes());
-            final_result.extend_from_slice(&chunk);
+            final_result.extend_from_slice(&result?);
         }
 
         Ok(final_result)
@@ -150,6 +176,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
         let mut chunks_to_decrypt: Vec<Vec<u8>> = Vec::new();
         let mut len_buf = [0u8; 4];
 
+        // 解析 [长度][数据] 格式的块
         while reader.read_exact(&mut len_buf).is_ok() {
             let len = u32::from_le_bytes(len_buf) as usize;
             if (reader.position() as usize + len) > ciphertext.len() {
@@ -159,18 +186,29 @@ impl SymmetricParallelSystem for AesGcmSystem {
             }
             let mut chunk_buf = vec![0u8; len];
             reader.read_exact(&mut chunk_buf)?;
-            chunks_to_decrypt.push(chunk_buf);
+            
+            // 将 [长度][数据] 作为一个整体传递给解密器
+            let mut final_chunk = len_buf.to_vec();
+            final_chunk.extend_from_slice(&chunk_buf);
+            chunks_to_decrypt.push(final_chunk);
         }
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(parallelism_config.parallelism)
             .build()
             .map_err(|e| Error::Key(e.to_string()))?;
+        
+        let additional_data = additional_data.map(|d| d.to_vec());
 
         let decrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = pool.install(|| {
             chunks_to_decrypt
                 .par_iter()
-                .map(|chunk| Self::decrypt(key, chunk, additional_data))
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let mut aad_chunk = additional_data.clone().unwrap_or_default();
+                    aad_chunk.extend_from_slice(&(i as u64).to_le_bytes());
+                    Self::decrypt(key, chunk, Some(&aad_chunk))
+                })
                 .collect()
         });
 

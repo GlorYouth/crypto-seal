@@ -140,6 +140,7 @@ where
                 .into_iter()
                 .par_bridge()
                 .for_each(|(index, plaintext)| {
+                    // AAD 和块索引现在由底层 C::encrypt 处理
                     let mut aad = additional_data.clone().unwrap_or_default();
                     aad.extend_from_slice(&index.to_le_bytes());
 
@@ -272,18 +273,18 @@ where
             });
 
             // --- 3. 处理线程 (主线程/Rayon) ---
+            // 从工作通道接收数据，并行解密后送入结果通道
             work_rx
                 .into_iter()
                 .par_bridge()
                 .for_each(|(index, ciphertext)| {
+                    // AAD 和块索引现在由底层 C::decrypt 处理
                     let mut aad = additional_data.clone().unwrap_or_default();
                     aad.extend_from_slice(&index.to_le_bytes());
+
                     let result = C::decrypt(key, &ciphertext, Some(&aad));
-                    if result_tx
-                        .send((index, result.map_err(Error::from)))
-                        .is_err()
-                    {
-                        // Writer thread terminated, stop processing
+                    if result_tx.send((index, result.map_err(Error::from))).is_err() {
+                        // 写入线程已终止
                     }
                 });
 
