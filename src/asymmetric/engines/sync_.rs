@@ -285,6 +285,7 @@ where
             &public_key,
             plaintext,
             &self.key_manager.config().parallelism,
+            None,
         )?;
 
         let mut output = key_metadata.id.as_bytes().to_vec();
@@ -321,6 +322,7 @@ where
             &private_key,
             actual_ciphertext,
             &self.key_manager.config().parallelism,
+            None,
         )
         .map_err(Error::from)
     }

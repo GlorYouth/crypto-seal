@@ -375,4 +375,65 @@ mod tests {
 
         assert_eq!(plaintext, decrypted_plaintext.as_slice());
     }
+
+    #[test]
+    fn test_decrypt_tampered_tag() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"some data";
+        let mut ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+
+        // Tamper the tag (located after the nonce)
+        if ciphertext.len() >= NONCE_SIZE + TAG_SIZE {
+            ciphertext[NONCE_SIZE] ^= 0xff;
+        }
+
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
+        assert!(result.is_err(), "Decryption should fail with a tampered tag");
+    }
+
+    #[test]
+    fn test_decrypt_tampered_nonce() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"some data";
+        let mut ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+
+        // Tamper the nonce
+        if !ciphertext.is_empty() {
+            ciphertext[0] ^= 0xff;
+        }
+
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
+        assert!(result.is_err(), "Decryption should fail with a tampered nonce");
+    }
+
+    #[test]
+    fn test_encrypt_without_aad_decrypt_with_fails() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"some data";
+        let aad = b"some aad";
+
+        let ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad));
+        assert!(result.is_err(), "Decryption should fail when AAD is unexpectedly provided");
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_par_encrypt_decrypt_with_aad_roundtrip() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"This is a test for parallel encryption with AAD.";
+        let aad = b"parallel aad";
+        let parallelism_config = ParallelismConfig::default();
+
+        let ciphertext =
+            AesGcmSystem::par_encrypt(&key, plaintext, Some(aad), &parallelism_config).unwrap();
+        let decrypted =
+            AesGcmSystem::par_decrypt(&key, &ciphertext, Some(aad), &parallelism_config).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
 }

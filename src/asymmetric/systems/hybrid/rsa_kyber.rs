@@ -25,8 +25,6 @@ use chacha20poly1305::{
     aead::generic_array::GenericArray,
     aead::{Aead as ChaAead, AeadCore as ChaAeadCore, KeyInit as ChaKeyInit},
 };
-use rsa::RsaPublicKey;
-use rsa::pkcs8::DecodePublicKey;
 use rsa::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,11 +35,9 @@ use crate::{
     common::config::ParallelismConfig,
     symmetric::{
         systems::aes_gcm::AesGcmKey,
-        traits::{SymmetricCryptographicSystem, SymmetricParallelSystem},
+        traits::SymmetricParallelSystem,
     },
 };
-#[cfg(feature = "parallel")]
-use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey, traits::PublicKeyParts};
 
 // --- 密钥结构 ---
 
@@ -279,6 +275,69 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
     }
 }
 
+
+#[cfg(feature = "parallel")]
+impl AsymmetricParallelSystem for RsaKyberCryptoSystem {
+    fn par_encrypt(
+        key: &Self::PublicKey,
+        plaintext: &[u8],
+        parallelism_config: &ParallelismConfig,
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        // 1. 生成一次性对称密钥
+        let mut aes_key = [0u8; 32];
+        OsRng.fill_bytes(&mut aes_key);
+        let symmetric_key = AesGcmKey(aes_key.to_vec());
+
+        // 2. KEM: 使用Kyber公钥封装（加密）AES密钥。
+        let kem_ciphertext =
+            KyberCryptoSystem::encrypt(&key.kyber_public_key, &aes_key, None)?;
+
+        // 3. DEM: 使用AES密钥并行加密数据
+        let dem_ciphertext =
+            AesGcmSystem::par_encrypt(&symmetric_key, plaintext, aad, parallelism_config)?;
+
+        // 4. 组合: KEM密文长度(2字节) + KEM密文 + DEM密文
+        let kem_len = kem_ciphertext.len() as u16;
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&kem_len.to_be_bytes());
+        combined.extend_from_slice(&kem_ciphertext);
+        combined.extend_from_slice(&dem_ciphertext);
+
+        Ok(combined)
+    }
+
+    fn par_decrypt(
+        key: &Self::PrivateKey,
+        ciphertext: &[u8],
+        parallelism_config: &ParallelismConfig,
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        // 1. 解析组合密文
+        if ciphertext.len() < 2 {
+            return Err(Error::Format("密文过短，无法解析长度".to_string()));
+        }
+        let kem_len = u16::from_be_bytes(ciphertext[0..2].try_into().unwrap()) as usize;
+        let kem_end = 2 + kem_len;
+
+        if ciphertext.len() < kem_end {
+            return Err(Error::Format("密文格式错误，长度不足".to_string()));
+        }
+
+        let kem_part = &ciphertext[2..kem_end];
+        let dem_part = &ciphertext[kem_end..];
+
+        // 2. KEM: 使用Kyber私钥解封AES密钥。
+        let aes_key_bytes =
+            KyberCryptoSystem::decrypt(&key.kyber_private_key, kem_part, None)?;
+        let symmetric_key = AesGcmKey(aes_key_bytes);
+
+        // 3. DEM: 使用对称密钥并行解密数据
+        AesGcmSystem::par_decrypt(&symmetric_key, dem_part, aad, parallelism_config)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +481,103 @@ mod tests {
         assert_eq!(plaintext.to_vec(), decrypted);
     }
 
+    #[test]
+    fn test_hybrid_wrong_aad_fails() {
+        let (public_key, private_key) = setup_keys();
+        let plaintext = b"some data";
+        let aad = b"correct aad";
+        let wrong_aad = b"wrong aad";
+
+        // Unauthenticated encryption
+        let ciphertext = RsaKyberCryptoSystem::encrypt(&public_key, plaintext, Some(aad)).unwrap();
+        let result = RsaKyberCryptoSystem::decrypt(&private_key, &ciphertext, Some(wrong_aad));
+        assert!(result.is_err(), "Unauthenticated decryption should fail with wrong AAD");
+
+        // Authenticated encryption
+        let auth_ciphertext = RsaKyberCryptoSystem::encrypt_authenticated(
+            &public_key,
+            plaintext,
+            Some(aad),
+            Some(&private_key),
+        )
+        .unwrap();
+        let auth_result = RsaKyberCryptoSystem::decrypt_authenticated(
+            &private_key,
+            &auth_ciphertext,
+            Some(wrong_aad),
+            Some(&public_key),
+        );
+        assert!(auth_result.is_err(), "Authenticated decryption should fail with wrong AAD");
+    }
+
+    #[test]
+    fn test_hybrid_verify_with_wrong_key_fails() {
+        let (public_key, private_key) = setup_keys();
+        let (wrong_public_key, _) = setup_keys(); // A different key pair
+        let plaintext = b"message to be authenticated";
+
+        let ciphertext = RsaKyberCryptoSystem::encrypt_authenticated(
+            &public_key,
+            plaintext,
+            None,
+            Some(&private_key),
+        )
+        .unwrap();
+
+        let result = RsaKyberCryptoSystem::decrypt_authenticated(
+            &private_key,
+            &ciphertext,
+            None,
+            Some(&wrong_public_key), // Use the wrong public key for verification
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Verification(_)));
+    }
+
+    #[test]
+    fn test_decrypt_authenticated_with_sig_but_no_verifier_key_fails() {
+        let (public_key, private_key) = setup_keys();
+        let plaintext = b"signed message";
+
+        let ciphertext = RsaKyberCryptoSystem::encrypt_authenticated(
+            &public_key,
+            plaintext,
+            None,
+            Some(&private_key),
+        )
+        .unwrap();
+
+        // Attempt to decrypt without providing the verifier key
+        let result = RsaKyberCryptoSystem::decrypt_authenticated(
+            &private_key,
+            &ciphertext,
+            None,
+            None, // No verifier key
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Key(_)));
+    }
+
+    #[test]
+    fn test_decrypt_malformed_ciphertext() {
+        let (_, private_key) = setup_keys();
+
+        // Test case 1: Ciphertext too short to contain even the length
+        let short_ciphertext = vec![0];
+        let result = RsaKyberCryptoSystem::decrypt(&private_key, &short_ciphertext, None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Format(_)));
+
+        // Test case 2: KEM length points beyond the end of the ciphertext
+        let mut malformed_len_ciphertext = vec![0xff, 0xff]; // Large length
+        malformed_len_ciphertext.extend_from_slice(b"some data");
+        let result = RsaKyberCryptoSystem::decrypt(&private_key, &malformed_len_ciphertext, None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Format(_)));
+    }
+
     #[cfg(feature = "async-engine")]
     mod async_tests {
         use super::*;
@@ -462,56 +618,54 @@ mod tests {
             assert_eq!(original_data, decrypted);
         }
     }
-}
 
-#[cfg(feature = "parallel")]
-impl AsymmetricParallelSystem for RsaKyberCryptoSystem {
-    fn par_encrypt(
-        key: &Self::PublicKey,
-        plaintext: &[u8],
-        parallelism_config: &ParallelismConfig,
-    ) -> Result<Vec<u8>, Self::Error> {
-        // 1. 生成一次性对称密钥
-        let symmetric_key = AesGcmSystem::generate_key(&Default::default())?;
+    #[cfg(feature = "parallel")]
+    mod parallel_tests {
+        use super::*;
+        use crate::common::config::ParallelismConfig;
 
-        // 2. 使用对称密钥并行加密数据
-        let encrypted_data =
-            AesGcmSystem::par_encrypt(&symmetric_key, plaintext, None, parallelism_config)?;
+        #[test]
+        fn test_par_encrypt_decrypt_roundtrip() {
+            let (pk, sk) = setup_keys();
+            let plaintext = vec![0u8; 1024 * 512]; // 512KB of data
+            let p_config = ParallelismConfig::default();
 
-        // 3. 使用非对称密钥加密对称密钥
-        let rsa_public_key = RsaPublicKey::from_public_key_der(&key.rsa_public_key.0)
-            .map_err(|e| Error::Traditional(format!("Failed to parse RSA public key: {}", e)))?;
-        let mut rng = rsa::rand_core::OsRng;
-        let encrypted_symmetric_key = rsa_public_key
-            .encrypt(&mut rng, rsa::Pkcs1v15Encrypt, &symmetric_key.0)
-            .map_err(|e| Error::Traditional(format!("RSA encryption failed: {}", e)))?;
+            let ciphertext =
+                RsaKyberCryptoSystem::par_encrypt(&pk, &plaintext, &p_config, None).unwrap();
+            let decrypted =
+                RsaKyberCryptoSystem::par_decrypt(&sk, &ciphertext, &p_config, None).unwrap();
 
-        // 4. 将加密后的对称密钥和加密后的数据打包在一起
-        Ok([encrypted_symmetric_key, encrypted_data].concat())
-    }
-
-    fn par_decrypt(
-        key: &Self::PrivateKey,
-        ciphertext: &[u8],
-        parallelism_config: &ParallelismConfig,
-    ) -> Result<Vec<u8>, Self::Error> {
-        // 1. 拆分出加密的对称密钥和加密的数据
-        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&key.rsa_private_key.0)
-            .map_err(|e| Error::Traditional(format!("Failed to parse RSA private key: {}", e)))?;
-        let rsa_key_size = rsa_private_key.size();
-
-        if ciphertext.len() < rsa_key_size {
-            return Err(Error::Format("Ciphertext too short".to_string()));
+            assert_eq!(decrypted, plaintext);
         }
-        let (encrypted_symmetric_key, encrypted_data) = ciphertext.split_at(rsa_key_size);
 
-        // 2. 解密对称密钥
-        let symmetric_key_bytes = rsa_private_key
-            .decrypt(rsa::Pkcs1v15Encrypt, encrypted_symmetric_key)
-            .map_err(|e| Error::Traditional(format!("RSA decryption failed: {}", e)))?;
-        let symmetric_key = AesGcmKey(symmetric_key_bytes);
+        #[test]
+        fn test_par_encrypt_decrypt_with_aad_roundtrip() {
+            let (pk, sk) = setup_keys();
+            let plaintext = vec![1u8; 1024 * 512]; // 512KB of data
+            let aad = b"parallel aad test";
+            let p_config = ParallelismConfig::default();
 
-        // 3. 使用对称密钥并行解密数据
-        AesGcmSystem::par_decrypt(&symmetric_key, encrypted_data, None, parallelism_config)
+            let ciphertext =
+                RsaKyberCryptoSystem::par_encrypt(&pk, &plaintext, &p_config, Some(aad)).unwrap();
+            let decrypted =
+                RsaKyberCryptoSystem::par_decrypt(&sk, &ciphertext, &p_config, Some(aad))
+                    .unwrap();
+
+            assert_eq!(decrypted, plaintext);
+        }
+
+        #[test]
+        fn test_par_decrypt_with_wrong_key_fails() {
+            let (pk, _) = setup_keys();
+            let (_, sk_wrong) = setup_keys();
+            let plaintext = vec![2u8; 1024 * 512]; // 512KB of data
+            let p_config = ParallelismConfig::default();
+
+            let ciphertext =
+                RsaKyberCryptoSystem::par_encrypt(&pk, &plaintext, &p_config, None).unwrap();
+            let result = RsaKyberCryptoSystem::par_decrypt(&sk_wrong, &ciphertext, &p_config, None);
+
+            assert!(result.is_err());
+        }
     }
 }

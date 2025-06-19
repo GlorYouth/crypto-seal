@@ -213,17 +213,19 @@ where
 /// 这主要适用于混合加密方案，其中对称加密部分可以从并行化中受益。
 #[cfg(feature = "parallel")]
 pub trait AsymmetricParallelSystem: AsymmetricCryptographicSystem {
-    /// [并行] 加密数据。
+    /// 并行加密
     fn par_encrypt(
         key: &Self::PublicKey,
         plaintext: &[u8],
-        parallelism_config: &crate::common::config::ParallelismConfig,
+        parallelism_config: &ParallelismConfig,
+        aad: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error>;
 
-    /// [并行] 解密数据。
+    /// 并行解密
     fn par_decrypt(
         key: &Self::PrivateKey,
         ciphertext: &[u8],
-        parallelism_config: &crate::common::config::ParallelismConfig,
+        parallelism_config: &ParallelismConfig,
+        aad: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error>;
 }
