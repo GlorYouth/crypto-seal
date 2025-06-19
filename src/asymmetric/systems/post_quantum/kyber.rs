@@ -6,6 +6,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,16 +113,21 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             len => return Err(Error::PostQuantum(format!("无效的Kyber公钥长度: {}", len))),
         };
 
-        // 使用共享密钥对DEK进行XOR加密
+        // 使用共享密钥的哈希对DEK进行XOR加密
+        let mut hasher = Sha256::new();
+        hasher.update(&shared_secret_bytes);
+        let key_hash = hasher.finalize();
+
         let mut encrypted_dek = plaintext.to_vec();
-        for (i, byte) in shared_secret_bytes.iter().enumerate() {
+        for (i, byte) in key_hash.iter().enumerate() {
             encrypted_dek[i] ^= byte;
         }
 
-        // 组合输出: [变体ID(1)][Kyber密文][XOR加密后的DEK]
+        // 组合输出: [变体ID(1)][Kyber密文][XOR加密后的DEK][原始共享密钥]
         let mut combined = vec![variant_id];
         combined.extend_from_slice(&kyber_ciphertext_bytes);
         combined.extend_from_slice(&encrypted_dek);
+        combined.extend_from_slice(&shared_secret_bytes);
 
         Ok(combined)
     }
@@ -139,13 +145,13 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         let variant_id = ciphertext[0];
         let rest = &ciphertext[1..];
 
-        let (kyber_ct_len, shared_secret_bytes, shared_key_len) = match variant_id {
+        let (kyber_ct_len, decapsulated_ss_bytes, shared_key_len) = match variant_id {
             1 => {
                 // Kyber512
                 if private_key.0.len() != KYBER512_SECRETKEYBYTES {
                     return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
                 }
-                if rest.len() < KYBER512_CIPHERTEXTBYTES {
+                if rest.len() < KYBER512_CIPHERTEXTBYTES + KYBER512_SHAREDKEYBYTES {
                     return Err(Error::Format("Kyber512密文格式无效".to_string()));
                 }
                 let ct_bytes = &rest[..KYBER512_CIPHERTEXTBYTES];
@@ -165,7 +171,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 if private_key.0.len() != KYBER768_SECRETKEYBYTES {
                     return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
                 }
-                if rest.len() < KYBER768_CIPHERTEXTBYTES {
+                if rest.len() < KYBER768_CIPHERTEXTBYTES + KYBER768_SHAREDKEYBYTES {
                     return Err(Error::Format("Kyber768密文格式无效".to_string()));
                 }
                 let ct_bytes = &rest[..KYBER768_CIPHERTEXTBYTES];
@@ -185,7 +191,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 if private_key.0.len() != KYBER1024_SECRETKEYBYTES {
                     return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
                 }
-                if rest.len() < KYBER1024_CIPHERTEXTBYTES {
+                if rest.len() < KYBER1024_CIPHERTEXTBYTES + KYBER1024_SHAREDKEYBYTES {
                     return Err(Error::Format("Kyber1024密文格式无效".to_string()));
                 }
                 let ct_bytes = &rest[..KYBER1024_CIPHERTEXTBYTES];
@@ -203,15 +209,30 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             _ => return Err(Error::PostQuantum("未知的Kyber变体ID".to_string())),
         };
 
+        // 验证共享密钥
+        let expected_ss_start = kyber_ct_len + shared_key_len;
+        if rest.len() < expected_ss_start {
+             return Err(Error::Format("密文长度不足，无法提取共享密钥".to_string()));
+        }
+        let original_ss_bytes = &rest[expected_ss_start..];
+
+        if original_ss_bytes != decapsulated_ss_bytes.as_slice() {
+            return Err(Error::DecryptionFailed("密文验证失败".to_string()));
+        }
+        
         // 提取XOR加密后的DEK
-        let encrypted_dek_part = &rest[kyber_ct_len..];
+        let encrypted_dek_part = &rest[kyber_ct_len..expected_ss_start];
         if encrypted_dek_part.len() != shared_key_len {
             return Err(Error::Format("密文的DEK部分长度无效".to_string()));
         }
         let mut dek = encrypted_dek_part.to_vec();
+        
+        // 使用共享密钥的哈希对DEK进行XOR解密
+        let mut hasher = Sha256::new();
+        hasher.update(&decapsulated_ss_bytes);
+        let key_hash = hasher.finalize();
 
-        // 对DEK进行XOR解密
-        for (i, byte) in shared_secret_bytes.iter().enumerate() {
+        for (i, byte) in key_hash.iter().enumerate() {
             dek[i] ^= byte;
         }
 
