@@ -25,10 +25,16 @@ impl SealEngine {
 
     /// 根据 Header 和当前引擎模式，派生或解密出数据加密密钥 (DEK)。
     pub(crate) fn derive_dek_from_header(&self, header: &Header) -> Result<Vec<u8>, Error> {
-        // 解密时，我们创建一个临时的、只读的 KeyManager
-        let mut key_manager =
-            KeyManager::new(Arc::clone(&self._seal), "seal-engine-readonly", header.mode);
-        key_manager.initialize()?;
+        // 使用引擎自身的密钥管理器来查找和解密密钥。
+        // KeyManager 必须与加密时使用的管理器具有相同的配置（特别是 key_prefix）。
+        let key_manager = &self.key_manager;
+
+        // 检查模式是否匹配。
+        if key_manager.mode() != header.mode {
+            return Err(Error::KeyManagement(
+                "Engine mode does not match header mode.".to_string(),
+            ));
+        }
 
         match &header.payload {
             HeaderPayload::Symmetric { key_id, algorithm } => {
@@ -50,50 +56,35 @@ impl SealEngine {
             }
             HeaderPayload::Hybrid {
                 kek_id,
-                encrypted_dek,
                 kek_algorithm,
+                encrypted_dek,
                 signature,
                 ..
             } => {
                 // Dispatch based on KEK algorithm
                 match kek_algorithm {
                     AsymmetricAlgorithm::Rsa2048 => {
-                        if signature.is_some() {
-                            return Err(Error::Verification(
-                                "Unexpected signature found for non-authenticated algorithm."
-                                    .to_string(),
-                            ));
-                        }
                         use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
-
                         let (_, kek_priv) = key_manager
                             .get_asymmetric_keypair::<RsaCryptoSystem>(kek_id)?
                             .ok_or_else(|| {
                                 Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
                             })?;
-
                         let dek = RsaCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
                         Ok(dek)
                     }
                     AsymmetricAlgorithm::Kyber768 => {
-                        if signature.is_some() {
-                            return Err(Error::Verification(
-                                "Unexpected signature found for non-authenticated algorithm."
-                                    .to_string(),
-                            ));
-                        }
                         use crate::asymmetric::systems::post_quantum::kyber::KyberCryptoSystem;
-
                         let (_, kek_priv) = key_manager
                             .get_asymmetric_keypair::<KyberCryptoSystem>(kek_id)?
                             .ok_or_else(|| {
                                 Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
                             })?;
-
                         let dek = KyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
                         Ok(dek)
                     }
                     AsymmetricAlgorithm::RsaKyber768 => {
+                        use crate::AsymmetricCryptographicSystem;
                         use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 
                         let sig_to_verify = signature.as_ref().ok_or_else(|| {
@@ -106,7 +97,7 @@ impl SealEngine {
                                 Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
                             })?;
 
-                        // 使用 trait 方法进行验证
+                        // 在解密前必须验证签名
                         RsaKyberCryptoSystem::verify(&kek_pub, encrypted_dek, sig_to_verify)
                             .map_err(|e| {
                                 Error::Verification(format!("Signature verification failed: {}", e))

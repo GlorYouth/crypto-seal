@@ -10,7 +10,7 @@ use crate::common::ConfigFile;
 use crate::common::config::ConfigManager;
 use crate::common::errors::Error;
 use crate::common::header::SealMode;
-use crate::common::traits::SecureKeyStorage;
+use crate::common::traits::{AsymmetricAlgorithm, SecureKeyStorage};
 use crate::engine::SealEngine;
 use crate::rotation::manager::KeyManager;
 use crate::storage::EncryptedKeyContainer;
@@ -158,8 +158,8 @@ impl Seal {
         let mut key_manager = KeyManager::new(Arc::clone(self), "seal-engine", mode);
         key_manager.initialize()?;
 
-        // 创建引擎时，确保至少有一个可用的主密钥
-        if key_manager.needs_rotation() {
+        // 如果没有主密钥，则根据当前配置自动轮换
+        if key_manager.get_primary_key_metadata().is_none() {
             key_manager.start_rotation(password)?;
         }
 
@@ -214,7 +214,11 @@ impl Seal {
     /// # Arguments
     /// * `password` - 用于加密新载荷的主密码。
     /// * `update_fn` - 一个接收 `&mut VaultPayload` 的闭包，用于执行修改。
-    pub fn commit_payload<F>(&self, password: &SecretString, update_fn: F) -> Result<(), Error>
+    pub(crate) fn commit_payload<F>(
+        &self,
+        password: &SecretString,
+        update_fn: F,
+    ) -> Result<(), Error>
     where
         F: FnOnce(&mut VaultPayload),
     {
@@ -228,6 +232,36 @@ impl Seal {
 
         // 写入成功后，才更新内存中的状态。
         self.payload.store(Arc::new(new_payload));
+
+        Ok(())
+    }
+
+    /// 手动轮换到指定的主非对称密钥。
+    ///
+    /// 这个方法会首先更新保险库中的主非对称算法配置，
+    /// 然后立即生成一个该类型的新密钥对，并将其设为活动状态。
+    ///
+    /// # Arguments
+    ///
+    /// * `algorithm` - 要轮换到的目标非对称算法。
+    /// * `password` - 用于解锁保险库的密码。
+    pub fn rotate_asymmetric_key(
+        self: &Arc<Self>,
+        algorithm: AsymmetricAlgorithm,
+        password: &SecretString,
+    ) -> Result<(), Error> {
+        // 1. 原子地更新配置
+        self.commit_payload(password, |payload| {
+            payload.config.crypto.primary_asymmetric_algorithm = algorithm;
+        })?;
+
+        // 2. 创建一个 KeyManager 来执行轮换
+        //    我们总是为非对称密钥使用 Hybrid 模式
+        let mut key_manager = KeyManager::new(Arc::clone(self), "seal-engine", SealMode::Hybrid);
+        key_manager.initialize()?;
+
+        // 3. 强制开始轮换，这将根据新的配置生成密钥
+        key_manager.start_rotation(password)?;
 
         Ok(())
     }
