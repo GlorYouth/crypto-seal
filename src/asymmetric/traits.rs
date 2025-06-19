@@ -130,10 +130,10 @@ where
         W: AsyncWrite + Unpin + Send;
 }
 
+/// 并行流式非对称加密系统
 #[cfg(feature = "parallel")]
-/// 支持并行流式处理的非对称加密系统
 pub trait AsymmetricParallelStreamingSystem: AsymmetricCryptographicSystem {
-    /// 并行流式加密
+    /// 执行混合并行流式加密操作
     fn par_encrypt_stream<S, R, W>(
         public_key: &Self::PublicKey,
         reader: R,
