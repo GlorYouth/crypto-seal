@@ -1,7 +1,7 @@
 //! AES-GCM 对称加密实现
 use crate::common::config::{CryptoConfig, ParallelismConfig};
 use crate::common::errors::Error;
-use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelSystem};
+use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelSystem, SymmetricParallelStreamingSystem};
 use aes_gcm::aead::{AeadInPlace, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce, Tag};
 use base64::{Engine, engine::general_purpose};
@@ -9,8 +9,11 @@ use rayon::prelude::*;
 use rsa::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write, BufReader, BufWriter};
 use typenum::U12;
+use std::collections::BTreeMap;
+use std::thread;
+use rayon::ThreadPoolBuilder;
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
@@ -292,6 +295,178 @@ impl SymmetricParallelSystem for AesGcmSystem {
         Ok(final_result)
     }
 }
+
+#[cfg(feature = "parallel")]
+impl SymmetricParallelStreamingSystem for AesGcmSystem {
+    fn par_encrypt_stream<R: Read + Send, W: Write + Send>(
+        key: &Self::Key,
+        source: R,
+        destination: W,
+        _streaming_config: &crate::common::config::StreamingConfig,
+        parallelism_config: &ParallelismConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<crate::common::streaming::StreamingResult, Self::Error> {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(parallelism_config.parallelism)
+            .build()
+            .map_err(|e| Error::Operation(format!("Failed to build thread pool: {}", e)))?;
+
+        let key_bytes = key.0.clone();
+        let aad = additional_data.unwrap_or(&[]).to_vec();
+        let mut reader = BufReader::with_capacity(PARALLEL_CHUNK_SIZE, source);
+        
+        std::thread::scope(|s| {
+            let mut writer = BufWriter::new(destination);
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(Nonce<U12>, Tag, Vec<u8>), Error>>(parallelism_config.parallelism);
+
+            let writer_thread = s.spawn(move || -> Result<u64, Error> {
+                let mut bytes_written: u64 = 0;
+                for chunk_result in rx {
+                    let (nonce, tag, ciphertext) = chunk_result?;
+                    let total_len = (nonce.len() + tag.len() + ciphertext.len()) as u32;
+                    writer.write_all(&total_len.to_le_bytes())?;
+                    writer.write_all(nonce.as_slice())?;
+                    writer.write_all(&tag)?;
+                    writer.write_all(&ciphertext)?;
+                    bytes_written += ciphertext.len() as u64;
+                }
+                writer.flush()?;
+                Ok(bytes_written)
+            });
+
+            pool.install(|| {
+                let mut chunk_index = 0u64;
+                loop {
+                    let mut buffer = vec![0; PARALLEL_CHUNK_SIZE];
+                    let bytes_read = reader.read(&mut buffer).map_err(Error::Io)?;
+
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    buffer.truncate(bytes_read);
+
+                    let tx_clone = tx.clone();
+                    let key_clone = key_bytes.clone();
+                    let aad_clone = aad.clone();
+
+                    pool.spawn(move || {
+                        let key_slice = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_clone);
+                        let cipher = Aes256Gcm::new(key_slice);
+                        let mut aad_chunk = aad_clone;
+                        aad_chunk.extend_from_slice(&chunk_index.to_le_bytes());
+
+                        let result = Self::encrypt_chunk_parallel(&cipher, &buffer, &aad_chunk)
+                            .map(|enc_chunk| (enc_chunk.nonce, enc_chunk.tag, enc_chunk.ciphertext));
+
+                        let _ = tx_clone.send(result);
+                    });
+
+                    chunk_index += 1;
+                    if bytes_read < PARALLEL_CHUNK_SIZE {
+                        break;
+                    }
+                }
+                Ok::<(), Error>(())
+            })?;
+            
+            drop(tx);
+            
+            let bytes_processed = writer_thread.join().unwrap()?;
+            Ok(crate::common::streaming::StreamingResult { bytes_processed, buffer: None })
+        })
+    }
+
+    fn par_decrypt_stream<R: Read + Send, W: Write + Send>(
+        key: &Self::Key,
+        source: R,
+        destination: W,
+        _streaming_config: &crate::common::config::StreamingConfig,
+        parallelism_config: &ParallelismConfig,
+        additional_data: Option<&[u8]>,
+    ) -> Result<crate::common::streaming::StreamingResult, Self::Error> {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(parallelism_config.parallelism)
+            .build()
+            .map_err(|e| Error::Operation(format!("Failed to build thread pool: {}", e)))?;
+
+        let key_bytes = key.0.clone();
+        let aad = additional_data.unwrap_or(&[]).to_vec();
+        let mut reader = BufReader::new(source);
+
+        std::thread::scope(|s| {
+            let mut writer = BufWriter::new(destination);
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Result<Vec<u8>, Error>)>(parallelism_config.parallelism);
+
+            let writer_thread = s.spawn(move || -> Result<u64, Error> {
+                let mut ordered_chunks = BTreeMap::new();
+                let mut next_chunk_to_write = 0u64;
+                let mut bytes_written: u64 = 0;
+
+                for (chunk_index, decrypted_result) in rx {
+                    ordered_chunks.insert(chunk_index, decrypted_result);
+
+                    while let Some(result) = ordered_chunks.remove(&next_chunk_to_write) {
+                        let data = result?;
+                        bytes_written += data.len() as u64;
+                        writer.write_all(&data)?;
+                        next_chunk_to_write += 1;
+                    }
+                }
+                writer.flush()?;
+                Ok(bytes_written)
+            });
+
+            pool.install(|| {
+                let mut chunk_index = 0u64;
+                loop {
+                    let mut len_buf = [0u8; 4];
+                    if reader.read_exact(&mut len_buf).is_err() {
+                        break;
+                    }
+                    let total_len = u32::from_le_bytes(len_buf) as usize;
+
+                    let mut chunk_buf = vec![0; total_len];
+                    reader.read_exact(&mut chunk_buf).map_err(Error::Io)?;
+
+                    let tx_clone = tx.clone();
+                    let key_clone = key_bytes.clone();
+                    let aad_clone = aad.clone();
+
+                    pool.spawn(move || {
+                        let key_slice = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_clone);
+                        let cipher = Aes256Gcm::new(key_slice);
+
+                        let (nonce_slice, rest) = chunk_buf.split_at(NONCE_SIZE);
+                        let (tag_slice, ct_slice) = rest.split_at(TAG_SIZE);
+
+                        let mut aad_chunk = aad_clone;
+                        aad_chunk.extend_from_slice(&chunk_index.to_le_bytes());
+
+                        let mut buffer = ct_slice.to_vec();
+                        let nonce = Nonce::from_slice(nonce_slice);
+                        let tag = Tag::from_slice(tag_slice);
+
+                        let result = cipher
+                            .decrypt_in_place_detached(nonce, &aad_chunk, &mut buffer, tag)
+                            .map(|()| buffer)
+                            .map_err(|e| Error::DecryptionFailed(e.to_string()));
+
+                        let _ = tx_clone.send((chunk_index, result));
+                    });
+
+                    chunk_index += 1;
+                }
+                Ok::<(), Error>(())
+            })?;
+
+            drop(tx);
+
+            let bytes_processed = writer_thread.join().unwrap()?;
+            Ok(crate::common::streaming::StreamingResult { bytes_processed, buffer: None })
+        })
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -284,73 +284,27 @@ where
     }
 }
 
-/// 为所有实现了 `SymmetricCryptographicSystem` 的类型提供 `SymmetricParallelStreamingSystem` 的默认实现。
-impl<T> SymmetricParallelStreamingSystem for T
-where
-    T: SymmetricCryptographicSystem + Send + Sync,
-    T::Key: Clone + Send + Sync,
-    T::Error: Send,
-    Error: From<T::Error> + Send,
-{
-    fn par_encrypt_stream<R: Read + Send, W: Write + Send>(
-        key: &Self::Key,
-        reader: R,
-        writer: W,
-        stream_config: &StreamingConfig,
-        parallel_config: &ParallelismConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error> {
-        ParallelStreamingEncryptor::<Self, R, W>::new(
-            reader,
-            writer,
-            key,
-            stream_config,
-            parallel_config,
-            additional_data,
-        )
-        .process()
-    }
-
-    fn par_decrypt_stream<R: Read + Send, W: Write + Send>(
-        key: &Self::Key,
-        reader: R,
-        writer: W,
-        _stream_config: &StreamingConfig,
-        parallel_config: &ParallelismConfig,
-        additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error> {
-        ParallelStreamingDecryptor::<Self, R, W>::new(
-            reader,
-            writer,
-            key,
-            parallel_config,
-            additional_data,
-        )
-        .process()
-    }
-}
-
 #[cfg(all(feature = "parallel", feature = "async-engine"))]
 mod async_impl {
     use super::*;
+    use crate::common::streaming::StreamingResult;
     use crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem;
-    use std::sync::mpsc as std_mpsc;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    use tokio::sync::mpsc;
-    use tokio::task::JoinHandle;
+    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::task;
+    use tokio_util::io::SyncIoBridge;
 
     #[async_trait::async_trait]
     impl<T> SymmetricAsyncParallelStreamingSystem for T
     where
-        T: SymmetricCryptographicSystem + Send + Sync,
+        T: SymmetricParallelStreamingSystem + Send + Sync,
         T::Key: Clone + Send + Sync + 'static,
-        T::Error: Send + Sync,
+        T::Error: Send + Sync + 'static,
         Error: From<T::Error> + Send,
     {
         async fn par_encrypt_stream_async<R, W>(
             key: &Self::Key,
-            mut reader: R,
-            mut writer: W,
+            reader: R,
+            writer: W,
             stream_config: &StreamingConfig,
             parallel_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
@@ -359,100 +313,37 @@ mod async_impl {
             R: AsyncRead + Unpin + Send + 'static,
             W: AsyncWrite + Unpin + Send + 'static,
         {
-            let (work_tx, mut work_rx) = mpsc::channel::<WorkItem>(parallel_config.parallelism);
-            let (result_tx, mut result_rx) =
-                mpsc::channel::<EncryptResultItem>(parallel_config.parallelism);
-
-            let additional_data = additional_data.map(|d| d.to_vec());
-            let stream_config = stream_config.clone();
-
-            // --- 1. 读取线程 ---
-            let reader_handle = tokio::spawn(async move {
-                let mut chunk_index: u64 = 0;
-                loop {
-                    let mut buffer = vec![0u8; stream_config.buffer_size];
-                    let read_bytes = match reader.read(&mut buffer).await {
-                        Ok(0) => break,
-                        Ok(n) => n,
-                        Err(e) => return Err(Error::Io(e)),
-                    };
-                    buffer.truncate(read_bytes);
-
-                    if work_tx.send((chunk_index, buffer)).await.is_err() {
-                        break;
-                    }
-                    chunk_index += 1;
-                }
-                Ok(())
-            });
-
-            // --- 2. 处理线程 (Rayon) ---
-            let (rayon_tx, rayon_rx) = std_mpsc::sync_channel(parallel_config.parallelism);
             let key_clone = key.clone();
-            let additional_data_clone = additional_data.clone();
+            let aad_clone = additional_data.map(|d| d.to_vec());
+            let stream_config_clone = stream_config.clone();
+            let parallel_config_clone = parallel_config.clone();
 
-            tokio::task::spawn_blocking(move || {
-                rayon_rx
-                    .into_iter()
-                    .par_bridge()
-                    .for_each(|(index, plaintext): WorkItem| {
-                        let mut aad = additional_data_clone.clone().unwrap_or_default();
-                        aad.extend_from_slice(&index.to_le_bytes());
+            let mut sync_reader = SyncIoBridge::new(reader);
+            let mut sync_writer = SyncIoBridge::new(writer);
 
-                        let result = T::encrypt(&key_clone, &plaintext, Some(&aad));
-                        let mapped_result =
-                            result.map(|d| d.as_ref().to_vec()).map_err(Error::from);
-
-                        let original_size = plaintext.len();
-                        let _ = result_tx.blocking_send((index, original_size, mapped_result));
-                    });
+            let processing_handle = task::spawn_blocking(move || {
+                let result = T::par_encrypt_stream(
+                    &key_clone,
+                    &mut sync_reader,
+                    &mut sync_writer,
+                    &stream_config_clone,
+                    &parallel_config_clone,
+                    aad_clone.as_deref(),
+                );
+                (result, sync_writer) // Return both the result and the writer
             });
 
-            tokio::spawn(async move {
-                while let Some(item) = work_rx.recv().await {
-                    if rayon_tx.send(item).is_err() {
-                        break;
-                    }
-                }
-            });
+            let (streaming_result, sync_writer) = processing_handle.await?;
+            let writer = sync_writer.into_inner();
 
-            // --- 3. 写入线程 ---
-            let writer_handle: JoinHandle<Result<(u64, W), Error>> = tokio::spawn(async move {
-                let mut reorder_buffer = HashMap::new();
-                let mut next_chunk_to_write: u64 = 0;
-                let mut total_bytes_processed: u64 = 0;
-
-                while let Some((index, original_size, result)) = result_rx.recv().await {
-                    let ciphertext = result?;
-                    reorder_buffer.insert(index, (original_size, ciphertext));
-
-                    while let Some((size, data)) = reorder_buffer.remove(&next_chunk_to_write) {
-                        writer.write_all(&data).await.map_err(|e| Error::Io(e))?;
-                        total_bytes_processed += size as u64;
-                        next_chunk_to_write += 1;
-                    }
-                }
-                writer.flush().await.map_err(Error::Io)?;
-                Ok((total_bytes_processed, writer))
-            });
-
-            reader_handle.await??;
-            let (total_bytes, writer) = writer_handle.await??;
-
-            Ok((
-                StreamingResult {
-                    bytes_processed: total_bytes,
-                    buffer: None,
-                },
-                writer,
-            ))
+            Ok((streaming_result?, writer))
         }
 
         async fn par_decrypt_stream_async<R, W>(
             key: &Self::Key,
-            mut reader: R,
-            mut writer: W,
-            _stream_config: &StreamingConfig,
+            reader: R,
+            writer: W,
+            stream_config: &StreamingConfig,
             parallel_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
         ) -> Result<(StreamingResult, W), Error>
@@ -460,103 +351,30 @@ mod async_impl {
             R: AsyncRead + Unpin + Send + 'static,
             W: AsyncWrite + Unpin + Send + 'static,
         {
-            type DecryptWorkItem = (u64, Result<Vec<u8>, Error>);
-
-            let (work_tx, mut work_rx) =
-                mpsc::channel::<DecryptWorkItem>(parallel_config.parallelism);
-            let (result_tx, mut result_rx) =
-                mpsc::channel::<DecryptResultItem>(parallel_config.parallelism);
-
-            let additional_data = additional_data.map(|d| d.to_vec());
-
-            // --- 1. 读取线程 ---
-            let reader_handle = tokio::spawn(async move {
-                let mut chunk_index: u64 = 0;
-                loop {
-                    let mut len_buf = [0u8; 4];
-                    if reader.read_exact(&mut len_buf).await.is_err() {
-                        break; // Clean EOF
-                    }
-
-                    let block_size = u32::from_le_bytes(len_buf) as usize;
-                    let mut ciphertext_buffer = vec![0u8; block_size];
-
-                    let work_item = match reader.read_exact(&mut ciphertext_buffer).await {
-                        Ok(_) => {
-                            let mut block_with_len = len_buf.to_vec();
-                            block_with_len.extend_from_slice(&ciphertext_buffer);
-                            Ok(block_with_len)
-                        }
-                        Err(e) => Err(Error::Io(e)),
-                    };
-
-                    if work_tx.send((chunk_index, work_item)).await.is_err() {
-                        break;
-                    }
-                    chunk_index += 1;
-                }
-                Ok(())
-            });
-
-            // --- 2. 处理线程 (Rayon) ---
-            let (rayon_tx, rayon_rx) = std_mpsc::sync_channel(parallel_config.parallelism);
             let key_clone = key.clone();
-            let additional_data_clone = additional_data.clone();
+            let aad_clone = additional_data.map(|d| d.to_vec());
+            let stream_config_clone = stream_config.clone();
+            let parallel_config_clone = parallel_config.clone();
 
-            tokio::task::spawn_blocking(move || {
-                rayon_rx.into_iter().par_bridge().for_each(
-                    |(index, ciphertext_res): DecryptWorkItem| {
-                        let result = match ciphertext_res {
-                            Ok(ciphertext) => {
-                                let mut aad = additional_data_clone.clone().unwrap_or_default();
-                                aad.extend_from_slice(&index.to_le_bytes());
-                                T::decrypt(&key_clone, &ciphertext, Some(&aad)).map_err(Error::from)
-                            }
-                            Err(e) => Err(e),
-                        };
-                        let _ = result_tx.blocking_send((index, result));
-                    },
+            let mut sync_reader = SyncIoBridge::new(reader);
+            let mut sync_writer = SyncIoBridge::new(writer);
+
+            let processing_handle = task::spawn_blocking(move || {
+                let result = T::par_decrypt_stream(
+                    &key_clone,
+                    &mut sync_reader,
+                    &mut sync_writer,
+                    &stream_config_clone,
+                    &parallel_config_clone,
+                    aad_clone.as_deref(),
                 );
+                (result, sync_writer) // Return both the result and the writer
             });
 
-            tokio::spawn(async move {
-                while let Some(item) = work_rx.recv().await {
-                    if rayon_tx.send(item).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // --- 3. 写入线程 ---
-            let writer_handle: JoinHandle<Result<(u64, W), Error>> = tokio::spawn(async move {
-                let mut reorder_buffer = HashMap::new();
-                let mut next_chunk_to_write: u64 = 0;
-                let mut total_bytes_processed: u64 = 0;
-
-                while let Some((index, result)) = result_rx.recv().await {
-                    let plaintext = result?;
-                    reorder_buffer.insert(index, plaintext);
-
-                    while let Some(data) = reorder_buffer.remove(&next_chunk_to_write) {
-                        total_bytes_processed += data.len() as u64;
-                        writer.write_all(&data).await.map_err(Error::Io)?;
-                        next_chunk_to_write += 1;
-                    }
-                }
-                writer.flush().await.map_err(Error::Io)?;
-                Ok((total_bytes_processed, writer))
-            });
-
-            reader_handle.await??;
-            let (total_bytes, writer) = writer_handle.await??;
-
-            Ok((
-                StreamingResult {
-                    bytes_processed: total_bytes,
-                    buffer: None,
-                },
-                writer,
-            ))
+            let (streaming_result, sync_writer) = processing_handle.await?;
+            let writer = sync_writer.into_inner();
+            
+            Ok((streaming_result?, writer))
         }
     }
 }

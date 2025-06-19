@@ -1,17 +1,15 @@
-use criterion::BatchSize;
-use criterion::{
-    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
-};
-use rand::RngCore;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput, SamplingMode};
+use rand::{RngCore};
 use seal_kit::common::traits::AsymmetricAlgorithm;
 use seal_kit::{Error, Seal, SealMode};
 use secrecy::SecretString;
-use std::fs;
-use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::tempdir;
+use std::time::Duration;
+use std::hint::black_box;
+use criterion::BatchSize;
+use std::fs;
 
 const AAD: &[u8] = b"CriterionProfileAAD";
 
@@ -65,6 +63,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
 
         // --- Standard Encryption Benchmarks ---
         for &(size_name, data_size) in &data_sizes {
+            group.throughput(Throughput::Bytes(data_size as u64));
             let data = generate_random_data(data_size);
 
             // In-Memory
@@ -93,8 +92,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
             );
 
             // Parallel Streaming
-            if data_size > 1024 * 1024 {
-                // Only run parallel on larger data
+            if data_size > 1024 * 1024 { // Only run parallel on larger data
                 group.bench_with_input(
                     BenchmarkId::new(format!("{:?}-Parallel-Stream", alg), size_name),
                     &data,
@@ -103,9 +101,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                         b.iter_batched(
                             || (Cursor::new(d.clone()), Vec::new()),
                             |(mut reader, mut writer): (Cursor<Vec<u8>>, Vec<u8>)| {
-                                mut_engine
-                                    .par_seal_stream(&mut reader, &mut writer, None)
-                                    .unwrap();
+                                mut_engine.par_seal_stream(&mut reader, &mut writer, None).unwrap();
                                 black_box(writer);
                             },
                             BatchSize::SmallInput,
@@ -120,7 +116,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
         {
             // Create a separate engine for caching tests to not interfere with standard ones
             let mut caching_engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-
+            
             // Pre-warm the cache by performing one small encryption.
             // This calls the internal, private `ensure_dek_cached` implicitly.
             let warm_up_data = [0u8; 16];
@@ -131,6 +127,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
             );
 
             for &(size_name, data_size) in &data_sizes {
+                group.throughput(Throughput::Bytes(data_size as u64));
                 let data = generate_random_data(data_size);
 
                 // In-Memory with cached DEK
@@ -144,10 +141,9 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                         })
                     },
                 );
-
+                
                 // Parallel Streaming with cached DEK
-                if data_size > 1024 * 1024 {
-                    // Only run parallel on larger data
+                if data_size > 1024 * 1024 { // Only run parallel on larger data
                     group.bench_with_input(
                         BenchmarkId::new(format!("{:?}-Cached-Parallel-Stream", alg), size_name),
                         &data,
@@ -155,13 +151,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                             b.iter_batched(
                                 || (Cursor::new(d.clone()), Vec::new()),
                                 |(mut reader, mut writer): (Cursor<Vec<u8>>, Vec<u8>)| {
-                                    caching_engine
-                                        .par_seal_stream_with_cached_dek(
-                                            &mut reader,
-                                            &mut writer,
-                                            None,
-                                        )
-                                        .unwrap();
+                                    caching_engine.par_seal_stream_with_cached_dek(&mut reader, &mut writer, None).unwrap();
                                     black_box(writer);
                                 },
                                 BatchSize::SmallInput,
@@ -174,8 +164,8 @@ fn seal_kit_benchmark(c: &mut Criterion) {
     }
 
     group.finish();
-    // tempdir will be dropped and cleaned up automatically here
+    // tempdir is automatically dropped and cleaned up here, no need for manual file removal.
 }
 
 criterion_group!(benches, seal_kit_benchmark);
-criterion_main!(benches);
+criterion_main!(benches); 
