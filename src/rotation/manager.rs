@@ -3,17 +3,16 @@ use crate::common::config::ConfigFile;
 use crate::common::errors::Error;
 use crate::common::header::SealMode;
 use crate::common::traits::{
-    Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage,
-    SymmetricAlgorithm,
+    Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage, SymmetricAlgorithm,
 };
 use crate::rotation::RotationPolicy;
 use crate::seal::Seal;
+use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
-use std::sync::Arc;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use uuid::Uuid;
-use base64::Engine;
 
 /// `KeyManager` 是 seal-kit 中用于管理所有加密密钥（对称和非对称）的统一接口。
 ///
@@ -26,7 +25,7 @@ pub struct KeyManager {
     seal: Arc<Seal>,
     rotation_policy: RotationPolicy,
     key_prefix: String,
-    
+
     primary_key_metadata: Option<KeyMetadata>,
     secondary_keys_metadata: Vec<KeyMetadata>,
 }
@@ -67,7 +66,7 @@ impl KeyManager {
         self.secondary_keys_metadata = relevant_keys.into_values().collect();
         Ok(())
     }
-    
+
     /// 返回 `seal` 实例的配置。
     pub fn config(&self) -> ConfigFile {
         self.seal.config()
@@ -156,16 +155,41 @@ impl KeyManager {
     }
 
     fn start_hybrid_rotation(&mut self, password: &SecretString) -> Result<(), Error> {
-        // TODO: 将加密系统的选择从硬编码改为配置驱动
-        use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
         use crate::asymmetric::traits::AsymmetricCryptographicSystem;
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
         let crypto_config = self.seal.config().crypto;
-        let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&crypto_config)?;
 
-        let public_key_b64 = RsaCryptoSystem::export_public_key(&public_key)?;
-        let private_key_b64 = RsaCryptoSystem::export_private_key(&private_key)?;
+        let (public_key_b64, private_key_b64, algorithm) =
+            match crypto_config.primary_asymmetric_algorithm {
+                AsymmetricAlgorithm::Rsa2048 => {
+                    use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
+                    let (pk, sk) = RsaCryptoSystem::generate_keypair(&crypto_config)?;
+                    (
+                        RsaCryptoSystem::export_public_key(&pk)?,
+                        RsaCryptoSystem::export_private_key(&sk)?,
+                        Algorithm::Asymmetric(AsymmetricAlgorithm::Rsa2048),
+                    )
+                }
+                AsymmetricAlgorithm::Kyber768 => {
+                    use crate::asymmetric::systems::post_quantum::kyber::KyberCryptoSystem;
+                    let (pk, sk) = KyberCryptoSystem::generate_keypair(&crypto_config)?;
+                    (
+                        KyberCryptoSystem::export_public_key(&pk)?,
+                        KyberCryptoSystem::export_private_key(&sk)?,
+                        Algorithm::Asymmetric(AsymmetricAlgorithm::Kyber768),
+                    )
+                }
+                AsymmetricAlgorithm::RsaKyber768 => {
+                    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+                    let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&crypto_config)?;
+                    (
+                        RsaKyberCryptoSystem::export_public_key(&pk)?,
+                        RsaKyberCryptoSystem::export_private_key(&sk)?,
+                        Algorithm::Asymmetric(AsymmetricAlgorithm::RsaKyber768),
+                    )
+                }
+            };
 
         // 加密私钥以便安全存储
         let encrypted_private_key = {
@@ -195,7 +219,7 @@ impl KeyManager {
             usage_count: 0,
             status: KeyStatus::Active,
             version: new_version,
-            algorithm: Algorithm::Asymmetric(AsymmetricAlgorithm::Rsa2048), // TODO: 从配置中获取
+            algorithm,
             public_key: Some(public_key_b64),
             encrypted_private_key: Some(encrypted_private_key),
         };
@@ -291,8 +315,7 @@ impl KeyManager {
                 })?;
 
             let container_json = encrypted_private_key_container.expose_secret().0.clone();
-            let container =
-                crate::storage::EncryptedKeyContainer::from_json(&container_json)?;
+            let container = crate::storage::EncryptedKeyContainer::from_json(&container_json)?;
 
             let key_derivation_key = self.seal.derive_key(
                 &self.seal.payload().master_seed,
@@ -315,7 +338,7 @@ impl KeyManager {
             Ok(None)
         }
     }
-    
+
     /// 获取主密钥的元数据
     pub fn get_primary_key_metadata(&self) -> Option<&KeyMetadata> {
         self.primary_key_metadata.as_ref()
@@ -344,8 +367,8 @@ impl KeyManager {
             .unwrap_or(0);
         max_version + 1
     }
-    
+
     pub fn mode(&self) -> SealMode {
         self.mode
     }
-} 
+}

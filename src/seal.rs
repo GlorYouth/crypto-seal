@@ -11,13 +11,13 @@ use crate::common::config::ConfigManager;
 use crate::common::errors::Error;
 use crate::common::header::SealMode;
 use crate::common::traits::SecureKeyStorage;
+use crate::engine::SealEngine;
 use crate::rotation::manager::KeyManager;
 use crate::storage::EncryptedKeyContainer;
+use crate::vault::{MasterSeed, VaultPayload};
 use hkdf::Hkdf;
 use rand_core::{OsRng, TryRngCore};
 use sha2::Sha256;
-use crate::engine::SealEngine;
-use crate::vault::{MasterSeed, VaultPayload};
 
 const MASTER_SEED_SIZE: usize = 32; // 256-bit master seed
 const SEAL_ALGORITHM_ID: &str = "seal-kit-v1-vault";
@@ -214,18 +214,21 @@ impl Seal {
     /// # Arguments
     /// * `password` - 用于加密新载荷的主密码。
     /// * `update_fn` - 一个接收 `&mut VaultPayload` 的闭包，用于执行修改。
-    pub(crate) fn commit_payload<F>(
-        &self,
-        password: &SecretString,
-        update_fn: F,
-    ) -> Result<(), Error>
+    pub fn commit_payload<F>(&self, password: &SecretString, update_fn: F) -> Result<(), Error>
     where
         F: FnOnce(&mut VaultPayload),
     {
         let current_payload = self.payload.load();
         let mut new_payload = (**current_payload).clone();
+
         update_fn(&mut new_payload);
+
+        // 首先，将修改后的载荷原子地写入磁盘。
+        Self::write_payload(&self.path, &new_payload, password)?;
+
+        // 写入成功后，才更新内存中的状态。
         self.payload.store(Arc::new(new_payload));
+
         Ok(())
     }
 }

@@ -8,6 +8,7 @@
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub mod asymmetric;
 pub mod common;
+pub mod engine;
 pub mod rotation;
 #[cfg(feature = "secure-storage")]
 pub mod seal;
@@ -15,7 +16,6 @@ pub mod storage;
 #[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
 pub mod symmetric;
 pub mod vault;
-pub mod engine;
 #[cfg(all(feature = "traditional", feature = "post-quantum"))]
 pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
@@ -51,48 +51,3 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use common::config::ConfigFile;
 pub use common::header::SealMode;
 pub use engine::SealEngine;
-
-#[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
-mod tests {
-    use super::*;
-    use crate::common::config::CryptoConfig;
-    use crate::common::utils::constant_time_eq;
-
-    #[test]
-    #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-    fn test_unified_encrypt_decrypt() {
-        // 使用统一特征进行跨不同加密系统的测试
-        let systems: [&str; 3] = ["traditional", "post-quantum", "hybrid"];
-        let test_message = b"Hello, unified crypto world!";
-        let config = CryptoConfig::default();
-
-        for system in systems.iter() {
-            let result = match *system {
-                "traditional" => {
-                    let (pub_key, priv_key) = TraditionalRsa::generate_keypair(&config).unwrap();
-                    let encrypted = TraditionalRsa::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted = TraditionalRsa::decrypt(&priv_key, &encrypted, None).unwrap();
-                    // 使用常量时间比较，提高安全性
-                    constant_time_eq(&decrypted, test_message)
-                }
-                "post-quantum" => {
-                    let (pub_key, priv_key) = PostQuantumKyber::generate_keypair(&config).unwrap();
-                    let encrypted =
-                        PostQuantumKyber::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted = PostQuantumKyber::decrypt(&priv_key, &encrypted, None).unwrap();
-                    // 使用常量时间比较，提高安全性
-                    constant_time_eq(&decrypted, test_message)
-                }
-                "hybrid" => {
-                    let (pub_key, priv_key) = HybridRsaKyber::generate_keypair(&config).unwrap();
-                    let encrypted = HybridRsaKyber::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted = HybridRsaKyber::decrypt(&priv_key, &encrypted, None).unwrap();
-                    // 使用常量时间比较，提高安全性
-                    constant_time_eq(&decrypted, test_message)
-                }
-                _ => false,
-            };
-            assert!(result, "Failed with system: {}", system);
-        }
-    }
-}

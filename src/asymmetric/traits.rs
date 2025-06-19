@@ -7,12 +7,16 @@ use std::fmt::Debug;
 ///
 /// 在 `seal-kit` 框架中，非对称加密主要用作密钥封装机制 (Key Encapsulation Mechanism, KEM)，
 /// 即安全地加密和解密数据加密密钥 (DEK)。
+/// 同时，它也提供签名和验证功能以确保数据的完整性和来源。
 pub trait AsymmetricCryptographicSystem: Sized {
     /// 公钥类型
     type PublicKey: Clone + Serialize + for<'de> Deserialize<'de> + Debug;
 
     /// 私钥类型
     type PrivateKey: Clone + Serialize + for<'de> Deserialize<'de> + Debug;
+
+    /// 签名类型
+    type Signature: Clone + Serialize + for<'de> Deserialize<'de> + Debug + AsRef<[u8]>;
 
     /// 错误类型
     type Error: std::error::Error + Send + Sync + 'static;
@@ -35,6 +39,17 @@ pub trait AsymmetricCryptographicSystem: Sized {
         ciphertext: &[u8],
         additional_data: Option<&[u8]>,
     ) -> Result<Vec<u8>, Self::Error>;
+
+    /// 使用私钥对消息进行签名
+    fn sign(private_key: &Self::PrivateKey, message: &[u8])
+    -> Result<Self::Signature, Self::Error>;
+
+    /// 使用公钥验证签名
+    fn verify(
+        public_key: &Self::PublicKey,
+        message: &[u8],
+        signature: &Self::Signature,
+    ) -> Result<(), Self::Error>;
 
     /// 将公钥导出为标准格式
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error>;

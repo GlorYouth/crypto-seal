@@ -158,7 +158,7 @@ where
 
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
-            
+
             let mut block_with_len = len_buf.to_vec();
             block_with_len.extend_from_slice(&ciphertext_buffer);
 

@@ -291,10 +291,15 @@ mod tests {
         // Encrypt
         let source = BufReader::new(Cursor::new(original_data.clone()));
         let mut encrypted_dest = Vec::new();
-        let (_, encrypted_dest) =
-            AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, Some(aad))
-                .await
-                .unwrap();
+        let (_, encrypted_dest) = AesGcmSystem::encrypt_stream_async(
+            &key,
+            source,
+            &mut encrypted_dest,
+            &config,
+            Some(aad),
+        )
+        .await
+        .unwrap();
 
         // Decrypt
         let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
@@ -383,10 +388,15 @@ mod tests {
         for original_data in data_cases {
             let source = BufReader::new(Cursor::new(original_data.clone()));
             let mut encrypted_dest = Vec::new();
-            let (_, encrypted_dest) =
-                AesGcmSystem::encrypt_stream_async(&key, source, &mut encrypted_dest, &config, None)
-                    .await
-                    .unwrap();
+            let (_, encrypted_dest) = AesGcmSystem::encrypt_stream_async(
+                &key,
+                source,
+                &mut encrypted_dest,
+                &config,
+                None,
+            )
+            .await
+            .unwrap();
 
             let encrypted_source = BufReader::new(Cursor::new(encrypted_dest));
             let mut decrypted_dest = Vec::new();

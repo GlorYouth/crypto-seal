@@ -33,6 +33,8 @@ pub enum Error {
     DecryptionFailed(String),
     /// 签名验证失败
     Verification(String),
+    /// 签名操作错误
+    Signature(String),
     /// 密钥导入失败
     KeyImportFailed(String),
     /// 密钥导出失败
@@ -67,6 +69,7 @@ impl fmt::Display for Error {
             Error::EncryptionFailed(msg) => write!(f, "加密失败: {}", msg),
             Error::DecryptionFailed(msg) => write!(f, "解密失败: {}", msg),
             Error::Verification(msg) => write!(f, "签名验证失败: {}", msg),
+            Error::Signature(msg) => write!(f, "签名操作错误: {}", msg),
             Error::KeyImportFailed(msg) => write!(f, "密钥导入失败: {}", msg),
             Error::KeyExportFailed(msg) => write!(f, "密钥导出失败: {}", msg),
             Error::KeyManagement(msg) => write!(f, "密钥管理错误: {}", msg),

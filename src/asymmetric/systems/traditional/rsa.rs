@@ -5,9 +5,12 @@ use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::utils::ZeroizingVec;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
+use rsa::pss::{Signature as PssSignature, SigningKey, VerifyingKey};
 use rsa::rand_core::OsRng as RsaOsRng;
+use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 /// RSA公钥包装器，提供序列化支持
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,6 +42,16 @@ impl RsaPrivateKeyWrapper {
     }
 }
 
+/// RSA 签名包装器
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RsaSignature(pub Vec<u8>);
+
+impl AsRef<[u8]> for RsaSignature {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// RSA加密系统实现
 ///
 /// 提供标准RSA PKCS#1 v1.5加密和解密功能
@@ -47,6 +60,7 @@ pub struct RsaCryptoSystem;
 impl AsymmetricCryptographicSystem for RsaCryptoSystem {
     type PublicKey = RsaPublicKeyWrapper;
     type PrivateKey = RsaPrivateKeyWrapper;
+    type Signature = RsaSignature;
     type Error = Error;
 
     fn generate_keypair(
@@ -105,6 +119,37 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
             .map_err(|e| Error::Traditional(format!("RSA解密失败: {}", e)))
     }
 
+    fn sign(
+        private_key: &Self::PrivateKey,
+        message: &[u8],
+    ) -> Result<Self::Signature, Self::Error> {
+        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)
+            .map_err(|e| Error::Key(format!("解析RSA私钥失败: {}", e)))?;
+
+        let signing_key = SigningKey::<Sha256>::new(rsa_private_key);
+        let mut rng = RsaOsRng;
+        let signature = signing_key.sign_with_rng(&mut rng, message);
+
+        Ok(RsaSignature(signature.to_vec()))
+    }
+
+    fn verify(
+        public_key: &Self::PublicKey,
+        message: &[u8],
+        signature: &Self::Signature,
+    ) -> Result<(), Self::Error> {
+        let rsa_public_key = RsaPublicKey::from_public_key_der(&public_key.0)
+            .map_err(|e| Error::Key(format!("解析RSA公钥失败: {}", e)))?;
+
+        let verifying_key = VerifyingKey::<Sha256>::new(rsa_public_key);
+        let rsa_signature = PssSignature::try_from(signature.as_ref())
+            .map_err(|e| Error::Signature(format!("无效的签名格式: {}", e)))?;
+
+        verifying_key
+            .verify(message, &rsa_signature)
+            .map_err(|e| Error::Signature(format!("签名验证失败: {}", e)))
+    }
+
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error> {
         // 从DER数据恢复公钥
         let public_key = RsaPublicKey::from_public_key_der(&public_key.0)
@@ -158,10 +203,7 @@ mod tests {
     use super::*;
     use crate::common::config::CryptoConfig;
     use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
-    use rsa::pss::{SigningKey, VerifyingKey};
-    use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
     use rsa::traits::PublicKeyParts;
-    use sha2::Sha256;
 
     // Helper to get a valid key pair for tests
     fn setup_keys() -> (RsaPublicKeyWrapper, RsaPrivateKeyWrapper) {
@@ -181,42 +223,39 @@ mod tests {
     }
 
     #[test]
-    fn test_rsa_pss_sign_verify_roundtrip() {
+    fn test_sign_verify_roundtrip() {
         let (public_key, private_key) = setup_keys();
         let data = b"data to be signed";
 
-        let signing_key = SigningKey::<Sha256>::new(
-            RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap(),
-        );
-        let verifying_key = VerifyingKey::<Sha256>::new(
-            RsaPublicKey::from_public_key_der(&public_key.0).unwrap(),
-        );
+        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+        let verification_result = RsaCryptoSystem::verify(&public_key, data, &signature);
 
-        let mut rng = RsaOsRng;
-        let signature = signing_key.sign_with_rng(&mut rng, data);
-
-        assert!(verifying_key.verify(data, &signature).is_ok());
+        assert!(verification_result.is_ok());
     }
 
     #[test]
-    fn test_rsa_pss_verify_tampered_signature_fails() {
+    fn test_verify_tampered_signature_fails() {
         let (public_key, private_key) = setup_keys();
         let data = b"some important data";
 
-        let signing_key = SigningKey::<Sha256>::new(
-            RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap(),
-        );
-        let verifying_key = VerifyingKey::<Sha256>::new(
-            RsaPublicKey::from_public_key_der(&public_key.0).unwrap(),
-        );
-
-        let mut rng = RsaOsRng;
-        let mut signature_bytes = signing_key.sign_with_rng(&mut rng, data).to_vec();
+        let mut signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
         // Tamper with the signature
-        signature_bytes[0] ^= 0xff;
-        let tampered_signature = rsa::pss::Signature::try_from(signature_bytes.as_slice()).unwrap();
+        signature.0[0] ^= 0xff;
 
-        assert!(verifying_key.verify(data, &tampered_signature).is_err());
+        let verification_result = RsaCryptoSystem::verify(&public_key, data, &signature);
+        assert!(verification_result.is_err());
+    }
+
+    #[test]
+    fn test_verify_tampered_data_fails() {
+        let (public_key, private_key) = setup_keys();
+        let data = b"some important data";
+        let tampered_data = b"some tampered data";
+
+        let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
+
+        let verification_result = RsaCryptoSystem::verify(&public_key, tampered_data, &signature);
+        assert!(verification_result.is_err());
     }
 
     #[test]

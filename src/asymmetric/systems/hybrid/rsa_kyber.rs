@@ -8,7 +8,7 @@ use crate::asymmetric::systems::post_quantum::kyber::{
     KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper,
 };
 use crate::asymmetric::systems::traditional::rsa::{
-    RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper,
+    RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper, RsaSignature,
 };
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
@@ -39,6 +39,7 @@ pub struct RsaKyberCryptoSystem;
 impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     type PublicKey = RsaKyberPublicKey;
     type PrivateKey = RsaKyberPrivateKey;
+    type Signature = RsaSignature;
     type Error = Error;
 
     fn generate_keypair(
@@ -104,16 +105,31 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         // 委托给Kyber系统进行解密
         KyberCryptoSystem::decrypt(&private_key.kyber_private_key, ciphertext, additional_data)
     }
+
+    fn sign(
+        private_key: &Self::PrivateKey,
+        message: &[u8],
+    ) -> Result<Self::Signature, Self::Error> {
+        RsaCryptoSystem::sign(&private_key.rsa_private_key, message)
+    }
+
+    fn verify(
+        public_key: &Self::PublicKey,
+        message: &[u8],
+        signature: &Self::Signature,
+    ) -> Result<(), Self::Error> {
+        RsaCryptoSystem::verify(&public_key.rsa_public_key, message, signature)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
     use rsa::{
         pss::{SigningKey, VerifyingKey},
         signature::{RandomizedSigner, Verifier},
     };
-    use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
     use sha2::{Digest, Sha256};
 
     fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
@@ -161,21 +177,25 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_verification_roundtrip() {
+    fn test_hybrid_signature_roundtrip() {
         let (pk, sk) = setup_keys();
         let data = b"this data will be signed";
-        let digest = Sha256::digest(data);
 
-        // Sign using the RSA private key component
-        let rsa_sk =
-            rsa::RsaPrivateKey::from_pkcs8_der(sk.rsa_private_key.inner_data()).unwrap();
-        let signing_key = SigningKey::<Sha256>::new(rsa_sk);
-        let signature = signing_key.sign_with_rng(&mut rsa::rand_core::OsRng, &digest);
+        let signature = RsaKyberCryptoSystem::sign(&sk, data).unwrap();
+        let result = RsaKyberCryptoSystem::verify(&pk, data, &signature);
 
-        // Verify using the RSA public key component
-        let rsa_pk =
-            rsa::RsaPublicKey::from_public_key_der(pk.rsa_public_key.inner_data()).unwrap();
-        let verifying_key = VerifyingKey::<Sha256>::new(rsa_pk);
-        assert!(verifying_key.verify(&digest, &signature).is_ok());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_hybrid_verification_fails_with_tampered_data() {
+        let (pk, sk) = setup_keys();
+        let data = b"this data will be signed";
+        let tampered_data = b"some other data";
+
+        let signature = RsaKyberCryptoSystem::sign(&sk, data).unwrap();
+        let result = RsaKyberCryptoSystem::verify(&pk, tampered_data, &signature);
+
+        assert!(result.is_err());
     }
 }

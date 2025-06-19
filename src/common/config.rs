@@ -4,6 +4,7 @@
 //! 包含 Seal 保险库所使用的核心配置结构。
 //! 这些结构定义了加密参数、存储行为和密钥轮换策略。
 //!
+use crate::common::traits::AsymmetricAlgorithm;
 use crate::rotation::RotationPolicy;
 use num_cpus;
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,8 @@ pub struct CryptoConfig {
     pub use_traditional: bool,
     /// 是否使用后量子密码学
     pub use_post_quantum: bool,
+    /// 默认使用的非对称算法
+    pub primary_asymmetric_algorithm: AsymmetricAlgorithm,
     /// RSA密钥位数
     pub rsa_key_bits: usize,
     /// Kyber安全级别 (512/768/1024)
@@ -61,6 +64,7 @@ impl Default for CryptoConfig {
         Self {
             use_traditional: true,
             use_post_quantum: true,
+            primary_asymmetric_algorithm: AsymmetricAlgorithm::Rsa2048,
             rsa_key_bits: 3072,     // NIST建议的安全位数
             kyber_parameter_k: 768, // NIST竞赛中的推荐级别
             use_authenticated_encryption: true,

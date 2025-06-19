@@ -131,21 +131,24 @@ where
             });
 
             // --- 3. 处理线程 (主线程/Rayon) ---
-            work_rx.into_iter().par_bridge().for_each(|(index, plaintext)| {
-                let mut aad = additional_data.clone().unwrap_or_default();
-                aad.extend_from_slice(&index.to_le_bytes());
+            work_rx
+                .into_iter()
+                .par_bridge()
+                .for_each(|(index, plaintext)| {
+                    let mut aad = additional_data.clone().unwrap_or_default();
+                    aad.extend_from_slice(&index.to_le_bytes());
 
-                let result = C::encrypt(key, &plaintext, Some(&aad));
-                let mapped_result = result.map(|d| d.as_ref().to_vec());
+                    let result = C::encrypt(key, &plaintext, Some(&aad));
+                    let mapped_result = result.map(|d| d.as_ref().to_vec());
 
-                let original_size = plaintext.len();
-                if result_tx
-                    .send((index, original_size, mapped_result.map_err(Error::from)))
-                    .is_err()
-                {
-                    // 写入线程已终止
-                }
-            });
+                    let original_size = plaintext.len();
+                    if result_tx
+                        .send((index, original_size, mapped_result.map_err(Error::from)))
+                        .is_err()
+                    {
+                        // 写入线程已终止
+                    }
+                });
 
             reader_handle.join().unwrap()?;
             drop(result_tx);
@@ -258,15 +261,21 @@ where
             });
 
             // --- 3. 处理线程 (主线程/Rayon) ---
-            work_rx.into_iter().par_bridge().for_each(|(index, ciphertext)| {
-                let mut aad = additional_data.clone().unwrap_or_default();
-                aad.extend_from_slice(&index.to_le_bytes());
+            work_rx
+                .into_iter()
+                .par_bridge()
+                .for_each(|(index, ciphertext)| {
+                    let mut aad = additional_data.clone().unwrap_or_default();
+                    aad.extend_from_slice(&index.to_le_bytes());
 
-                let result = C::decrypt(key, &ciphertext, Some(&aad));
-                if result_tx.send((index, result.map_err(Error::from))).is_err() {
-                    // 写入线程已终止
-                }
-            });
+                    let result = C::decrypt(key, &ciphertext, Some(&aad));
+                    if result_tx
+                        .send((index, result.map_err(Error::from)))
+                        .is_err()
+                    {
+                        // 写入线程已终止
+                    }
+                });
 
             reader_handle.join().unwrap()?;
             drop(result_tx);
@@ -383,20 +392,22 @@ mod async_impl {
             let additional_data_clone = additional_data.clone();
 
             tokio::task::spawn_blocking(move || {
-                rayon_rx.into_iter().par_bridge().for_each(
-                    |(index, plaintext): WorkItem| {
+                rayon_rx
+                    .into_iter()
+                    .par_bridge()
+                    .for_each(|(index, plaintext): WorkItem| {
                         let mut aad = additional_data_clone.clone().unwrap_or_default();
                         aad.extend_from_slice(&index.to_le_bytes());
 
                         let result = T::encrypt(&key_clone, &plaintext, Some(&aad));
-                        let mapped_result = result.map(|d| d.as_ref().to_vec()).map_err(Error::from);
+                        let mapped_result =
+                            result.map(|d| d.as_ref().to_vec()).map_err(Error::from);
 
                         let original_size = plaintext.len();
                         let _ = result_tx.blocking_send((index, original_size, mapped_result));
-                    },
-                );
+                    });
             });
-            
+
             tokio::spawn(async move {
                 while let Some(item) = work_rx.recv().await {
                     if rayon_tx.send(item).is_err() {
@@ -406,7 +417,7 @@ mod async_impl {
             });
 
             // --- 3. 写入线程 ---
-            let writer_handle: JoinHandle<Result<(u64, W), Error>> = tokio::spawn(async move { 
+            let writer_handle: JoinHandle<Result<(u64, W), Error>> = tokio::spawn(async move {
                 let mut reorder_buffer = HashMap::new();
                 let mut next_chunk_to_write: u64 = 0;
                 let mut total_bytes_processed: u64 = 0;
@@ -416,9 +427,7 @@ mod async_impl {
                     reorder_buffer.insert(index, (original_size, ciphertext));
 
                     while let Some((size, data)) = reorder_buffer.remove(&next_chunk_to_write) {
-                        writer.write_all(&data).await.map_err(|e| {
-                            Error::Io(e)
-                        })?;
+                        writer.write_all(&data).await.map_err(|e| Error::Io(e))?;
                         total_bytes_processed += size as u64;
                         next_chunk_to_write += 1;
                     }
@@ -501,8 +510,7 @@ mod async_impl {
                             Ok(ciphertext) => {
                                 let mut aad = additional_data_clone.clone().unwrap_or_default();
                                 aad.extend_from_slice(&index.to_le_bytes());
-                                T::decrypt(&key_clone, &ciphertext, Some(&aad))
-                                    .map_err(Error::from)
+                                T::decrypt(&key_clone, &ciphertext, Some(&aad)).map_err(Error::from)
                             }
                             Err(e) => Err(e),
                         };
@@ -510,7 +518,7 @@ mod async_impl {
                     },
                 );
             });
-            
+
             tokio::spawn(async move {
                 while let Some(item) = work_rx.recv().await {
                     if rayon_tx.send(item).is_err() {

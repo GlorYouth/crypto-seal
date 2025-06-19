@@ -54,7 +54,9 @@ fn test_par_seal_stream_incompatible_with_par_unseal_bytes() {
     let ciphertext = {
         let mut source = Cursor::new(plaintext);
         let mut dest = Cursor::new(Vec::new());
-        engine.par_seal_stream(&mut source, &mut dest, None).unwrap();
+        engine
+            .par_seal_stream(&mut source, &mut dest, None)
+            .unwrap();
         dest.into_inner()
     };
 
@@ -153,4 +155,4 @@ async fn test_par_seal_stream_async_incompatible_with_par_unseal_bytes() {
         result.is_err(),
         "par_seal_stream_async 的输出不应能被 par_unseal_bytes 解密"
     );
-} 
+}

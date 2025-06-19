@@ -61,7 +61,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let mut final_output = Vec::with_capacity(4 + raw_ciphertext.len());
         final_output.extend_from_slice(&(raw_ciphertext.len() as u32).to_le_bytes());
         final_output.extend_from_slice(&raw_ciphertext);
-        
+
         Ok(final_output)
     }
 
@@ -137,7 +137,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
             .num_threads(parallelism_config.parallelism)
             .build()
             .map_err(|e| Error::Key(e.to_string()))?;
-        
+
         let additional_data = additional_data.map(|d| d.to_vec());
 
         let encrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = pool.install(|| {
@@ -186,7 +186,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
             }
             let mut chunk_buf = vec![0u8; len];
             reader.read_exact(&mut chunk_buf)?;
-            
+
             // 将 [长度][数据] 作为一个整体传递给解密器
             let mut final_chunk = len_buf.to_vec();
             final_chunk.extend_from_slice(&chunk_buf);
@@ -197,7 +197,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
             .num_threads(parallelism_config.parallelism)
             .build()
             .map_err(|e| Error::Key(e.to_string()))?;
-        
+
         let additional_data = additional_data.map(|d| d.to_vec());
 
         let decrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = pool.install(|| {
@@ -227,20 +227,7 @@ mod tests {
     use crate::common::config::CryptoConfig;
 
     #[cfg(feature = "parallel")]
-    #[test]
-    fn test_par_encrypt_decrypt_roundtrip() {
-        let config = CryptoConfig::default();
-        let key = AesGcmSystem::generate_key(&config).unwrap();
-        let plaintext = b"This is a test for parallel encryption.";
-        let parallelism_config = ParallelismConfig::default();
-
-        let ciphertext =
-            AesGcmSystem::par_encrypt(&key, plaintext, None, &parallelism_config).unwrap();
-        let decrypted =
-            AesGcmSystem::par_decrypt(&key, &ciphertext, None, &parallelism_config).unwrap();
-
-        assert_eq!(decrypted, plaintext);
-    }
+    use crate::common::config::ParallelismConfig;
 
     #[test]
     fn test_generate_key() {
@@ -340,28 +327,50 @@ mod tests {
 
     #[test]
     fn test_import_invalid_key() {
-        let invalid_key_b64 = "invalid-base64-key";
-        let result = AesGcmSystem::import_key(invalid_key_b64);
-        assert!(result.is_err());
+        let invalid_encoded_key = "not-a-base64-key";
+        let result = AesGcmSystem::import_key(invalid_encoded_key);
+        assert!(matches!(result, Err(Error::Key(_))));
 
-        let short_key_bytes = vec![0; 16];
-        let short_key_b64 = general_purpose::STANDARD.encode(&short_key_bytes);
-        let result = AesGcmSystem::import_key(&short_key_b64);
-        assert!(result.is_err());
+        let short_key_bytes = vec![0u8; 16];
+        let short_encoded_key = general_purpose::STANDARD.encode(&short_key_bytes);
+        let result_short = AesGcmSystem::import_key(&short_encoded_key);
+        assert!(matches!(result_short, Err(Error::Key(_))));
     }
 
     #[test]
     fn test_decrypt_invalid_ciphertext() {
         let config = CryptoConfig::default();
         let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"some data";
 
-        let _invalid_ciphertext = "not-even-valid-bytes-so-no-need-to-test";
-        // We can't create invalid &[u8] in the same way as &str, so we test behavior with invalid formats.
+        let mut ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
 
-        // Ciphertext too short
-        let short_ciphertext = vec![0; NONCE_SIZE - 1];
-        let result = AesGcmSystem::decrypt(&key, &short_ciphertext, None);
-        assert!(result.is_err());
+        // 篡改长度前缀，使其与实际长度不符
+        let original_len = u32::from_le_bytes(ciphertext[0..4].try_into().unwrap());
+        let tampered_len = (original_len - 1).to_le_bytes(); // Make it smaller
+        ciphertext[0..4].copy_from_slice(&tampered_len);
+
+        let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
+        assert!(
+            matches!(result, Err(Error::DecryptionFailed(e)) if e.contains("length does not match length prefix"))
+        );
+
+        // 测试过短的密文 (无法包含长度前缀)
+        let short_ciphertext = vec![0, 1, 2];
+        let result_short = AesGcmSystem::decrypt(&key, &short_ciphertext, None);
+        assert!(
+            matches!(result_short, Err(Error::DecryptionFailed(e)) if e.contains("too short to contain length prefix"))
+        );
+
+        // 测试过短的密文 (包含长度前缀但数据不足)
+        let mut another_short_ciphertext = vec![0u8; NONCE_SIZE + TAG_SIZE - 1];
+        let len_bytes = (another_short_ciphertext.len() as u32).to_le_bytes();
+        let mut final_ciphertext = len_bytes.to_vec();
+        final_ciphertext.append(&mut another_short_ciphertext);
+        let result_another_short = AesGcmSystem::decrypt(&key, &final_ciphertext, None);
+        assert!(
+            matches!(result_another_short, Err(Error::DecryptionFailed(e)) if e.contains("too short"))
+        );
     }
 
     #[test]
@@ -427,7 +436,10 @@ mod tests {
         }
 
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
-        assert!(result.is_err(), "Decryption should fail with a tampered tag");
+        assert!(
+            result.is_err(),
+            "Decryption should fail with a tampered tag"
+        );
     }
 
     #[test]
@@ -443,7 +455,10 @@ mod tests {
         }
 
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
-        assert!(result.is_err(), "Decryption should fail with a tampered nonce");
+        assert!(
+            result.is_err(),
+            "Decryption should fail with a tampered nonce"
+        );
     }
 
     #[test]
@@ -455,7 +470,26 @@ mod tests {
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
         let result = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad));
-        assert!(result.is_err(), "Decryption should fail when AAD is unexpectedly provided");
+        assert!(
+            result.is_err(),
+            "Decryption should fail when AAD is unexpectedly provided"
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_par_encrypt_decrypt_roundtrip() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let plaintext = b"This is a test for parallel encryption.";
+        let parallelism_config = ParallelismConfig::default();
+
+        let ciphertext =
+            AesGcmSystem::par_encrypt(&key, plaintext, None, &parallelism_config).unwrap();
+        let decrypted =
+            AesGcmSystem::par_decrypt(&key, &ciphertext, None, &parallelism_config).unwrap();
+
+        assert_eq!(decrypted, plaintext);
     }
 
     #[cfg(feature = "parallel")]
@@ -473,5 +507,60 @@ mod tests {
             AesGcmSystem::par_decrypt(&key, &ciphertext, Some(aad), &parallelism_config).unwrap();
 
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_par_encrypt_decrypt_large_payload() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let parallelism_config = ParallelismConfig::default();
+
+        // 创建一个大于 PARALLEL_CHUNK_SIZE 的载荷，以强制多块处理
+        let large_plaintext = vec![65u8; PARALLEL_CHUNK_SIZE + PARALLEL_CHUNK_SIZE / 2]; // 1.5 MiB
+        let aad = b"additional data for large payload";
+
+        let ciphertext =
+            AesGcmSystem::par_encrypt(&key, &large_plaintext, Some(aad), &parallelism_config)
+                .unwrap();
+        let decrypted =
+            AesGcmSystem::par_decrypt(&key, &ciphertext, Some(aad), &parallelism_config).unwrap();
+
+        assert_eq!(decrypted, large_plaintext);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_par_encrypt_empty_payload() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let parallelism_config = ParallelismConfig::default();
+        let plaintext = b"";
+
+        let ciphertext =
+            AesGcmSystem::par_encrypt(&key, plaintext, None, &parallelism_config).unwrap();
+        assert!(ciphertext.is_empty());
+
+        let decrypted =
+            AesGcmSystem::par_decrypt(&key, &ciphertext, None, &parallelism_config).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn test_par_decrypt_wrong_aad() {
+        let config = CryptoConfig::default();
+        let key = AesGcmSystem::generate_key(&config).unwrap();
+        let parallelism_config = ParallelismConfig::default();
+        let plaintext = vec![66u8; PARALLEL_CHUNK_SIZE + 100]; // Ensure multiple chunks
+        let aad = b"correct aad";
+        let wrong_aad = b"wrong aad";
+
+        let ciphertext =
+            AesGcmSystem::par_encrypt(&key, &plaintext, Some(aad), &parallelism_config).unwrap();
+
+        let result =
+            AesGcmSystem::par_decrypt(&key, &ciphertext, Some(wrong_aad), &parallelism_config);
+        assert!(matches!(result, Err(Error::DecryptionFailed(_))));
     }
 }

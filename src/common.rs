@@ -2,10 +2,10 @@
 
 pub mod config;
 pub mod errors;
+pub mod header;
 pub mod streaming;
 pub mod traits;
 pub mod utils;
-pub mod header;
 
 pub use self::config::ConfigFile;
 pub use self::errors::Error;
@@ -14,7 +14,6 @@ pub use self::utils::constant_time_eq;
 
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 pub use self::traits::AuthenticatedCryptoSystem;
-
 
 pub use self::config::CryptoConfig;
 #[cfg(feature = "async-engine")]

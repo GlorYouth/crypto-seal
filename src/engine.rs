@@ -29,7 +29,11 @@ impl SealEngine {
     }
 
     /// [并行] 使用当前引擎的模式来加密（封印）一个字节切片。
-    pub fn par_seal_bytes(&mut self, plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    pub fn par_seal_bytes(
+        &mut self,
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
         // 1. 检查并执行密钥轮换
         if self.key_manager.needs_rotation() {
             self.key_manager.start_rotation(&self.password)?;
@@ -63,7 +67,12 @@ impl SealEngine {
     }
 
     /// [并行] 使用当前引擎的模式来流式加密（封印）一个数据流。
-    pub fn par_seal_stream<R, W>(&mut self, reader: R, mut writer: W, aad: Option<&[u8]>) -> Result<(), Error>
+    pub fn par_seal_stream<R, W>(
+        &mut self,
+        reader: R,
+        mut writer: W,
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error>
     where
         R: std::io::Read + Send,
         W: std::io::Write + Send,
@@ -107,7 +116,12 @@ impl SealEngine {
     ///
     /// 此方法会自动处理密钥轮换、元数据生成和数据加密，
     /// 并将统一格式的密文写入输出流。
-    pub fn seal_stream<R, W>(&mut self, reader: R, mut writer: W, aad: Option<&[u8]>) -> Result<(), Error>
+    pub fn seal_stream<R, W>(
+        &mut self,
+        reader: R,
+        mut writer: W,
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error>
     where
         R: std::io::Read,
         W: std::io::Write,
@@ -151,7 +165,11 @@ impl SealEngine {
     }
 
     /// [并行] 使用当前引擎的模式解密（解封）一个字节切片。
-    pub fn par_unseal_bytes(&self, ciphertext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    pub fn par_unseal_bytes(
+        &self,
+        ciphertext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
         // 1. 解析 Header
         let mut reader = std::io::Cursor::new(ciphertext);
         let header = self.read_and_parse_header(&mut reader)?;
@@ -163,9 +181,9 @@ impl SealEngine {
         let mut payload = Vec::new();
         reader.read_to_end(&mut payload)?;
 
-        use std::io::Read;
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricParallelSystem;
+        use std::io::Read;
 
         let dek_key = AesGcmKey(dek);
         let parallelism_config = &self.key_manager.config().parallelism;
@@ -176,7 +194,12 @@ impl SealEngine {
     }
 
     /// [并行] 使用当前引擎的模式来流式解密（解封）一个数据流。
-    pub fn par_unseal_stream<R, W>(&self, mut reader: R, writer: W, aad: Option<&[u8]>) -> Result<(), Error>
+    pub fn par_unseal_stream<R, W>(
+        &self,
+        mut reader: R,
+        writer: W,
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error>
     where
         R: std::io::Read + Send,
         W: std::io::Write + Send,
@@ -210,7 +233,12 @@ impl SealEngine {
     /// 解密（解封）一个数据流。
     ///
     /// 此方法会自动解析密文头，并用正确的密钥解密后续的数据流。
-    pub fn unseal_stream<R, W>(&self, mut reader: R, writer: W, aad: Option<&[u8]>) -> Result<(), Error>
+    pub fn unseal_stream<R, W>(
+        &self,
+        mut reader: R,
+        writer: W,
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error>
     where
         R: std::io::Read,
         W: std::io::Write,
@@ -232,33 +260,20 @@ impl SealEngine {
                 SymmetricAlgorithm::Aes256Gcm => {
                     let dek_key = AesGcmKey(dek);
                     let streaming_config = &self.key_manager.config().streaming;
-                    AesGcmSystem::decrypt_stream(
-                        &dek_key,
-                        reader,
-                        writer,
-                        streaming_config,
-                        aad,
-                    )?;
+                    AesGcmSystem::decrypt_stream(&dek_key, reader, writer, streaming_config, aad)?;
                 }
             },
             HeaderPayload::Hybrid { dek_algorithm, .. } => match dek_algorithm {
                 SymmetricAlgorithm::Aes256Gcm => {
                     let dek_key = AesGcmKey(dek);
                     let streaming_config = &self.key_manager.config().streaming;
-                    AesGcmSystem::decrypt_stream(
-                        &dek_key,
-                        reader,
-                        writer,
-                        streaming_config,
-                        aad,
-                    )?;
+                    AesGcmSystem::decrypt_stream(&dek_key, reader, writer, streaming_config, aad)?;
                 }
             },
         }
 
         Ok(())
     }
-
 }
 
 #[cfg(feature = "async-engine")]
@@ -285,12 +300,12 @@ mod async_engine_impls {
                 self.key_manager.start_rotation(&self.password)?;
             }
             let (header, dek) = self.build_header_and_dek()?;
-            
+
             let mut header_bytes = bincode::serialize(&header)?;
             let mut final_header = Vec::with_capacity(4 + header_bytes.len());
             final_header.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
             final_header.append(&mut header_bytes);
-            
+
             let mut async_writer = writer;
             tokio::io::AsyncWriteExt::write_all(&mut async_writer, &final_header).await?;
 
@@ -329,14 +344,9 @@ mod async_engine_impls {
             let dek_key = AesGcmKey(dek);
             let streaming_config = &self.key_manager.config().streaming;
 
-            let (_, writer) = AesGcmSystem::decrypt_stream_async(
-                &dek_key,
-                reader,
-                writer,
-                streaming_config,
-                aad,
-            )
-            .await?;
+            let (_, writer) =
+                AesGcmSystem::decrypt_stream_async(&dek_key, reader, writer, streaming_config, aad)
+                    .await?;
             Ok(writer)
         }
 
@@ -355,12 +365,12 @@ mod async_engine_impls {
                 self.key_manager.start_rotation(&self.password)?;
             }
             let (header, dek) = self.build_header_and_dek()?;
-            
+
             let mut header_bytes = bincode::serialize(&header)?;
             let mut final_header = Vec::with_capacity(4 + header_bytes.len());
             final_header.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
             final_header.append(&mut header_bytes);
-            
+
             tokio::io::AsyncWriteExt::write_all(&mut writer, &final_header).await?;
 
             use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
@@ -400,7 +410,7 @@ mod async_engine_impls {
             let dek_key = AesGcmKey(dek);
             let streaming_config = &self.key_manager.config().streaming;
             let parallelism_config = &self.key_manager.config().parallelism;
-            
+
             let (_, writer) = AesGcmSystem::par_decrypt_stream_async(
                 &dek_key,
                 reader,
@@ -410,7 +420,7 @@ mod async_engine_impls {
                 aad,
             )
             .await?;
-            
+
             Ok(writer)
         }
     }

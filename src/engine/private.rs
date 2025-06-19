@@ -1,16 +1,18 @@
-use std::sync::Arc;
-use rsa::signature::SignatureEncoding;
 use crate::common::header::{Header, HeaderPayload, SealMode};
 use crate::common::traits::{Algorithm, AsymmetricAlgorithm, SymmetricAlgorithm};
 use crate::engine::SealEngine;
-use crate::{AsymmetricCryptographicSystem, Error};
 use crate::rotation::manager::KeyManager;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
+use crate::{AsymmetricCryptographicSystem, Error};
+use rsa::signature::SignatureEncoding;
+use std::sync::Arc;
 
 impl SealEngine {
-    
     /// 从输入流中读取并解析出一个 Header。
-    pub(crate) fn read_and_parse_header<R: std::io::Read>(&self, mut reader: R) -> Result<Header, Error> {
+    pub(crate) fn read_and_parse_header<R: std::io::Read>(
+        &self,
+        mut reader: R,
+    ) -> Result<Header, Error> {
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf)?;
         let header_len = u32::from_le_bytes(len_buf) as usize;
@@ -59,7 +61,8 @@ impl SealEngine {
                     AsymmetricAlgorithm::Rsa2048 => {
                         if signature.is_some() {
                             return Err(Error::Verification(
-                                "Unexpected signature found for non-authenticated algorithm.".to_string(),
+                                "Unexpected signature found for non-authenticated algorithm."
+                                    .to_string(),
                             ));
                         }
                         use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
@@ -76,7 +79,8 @@ impl SealEngine {
                     AsymmetricAlgorithm::Kyber768 => {
                         if signature.is_some() {
                             return Err(Error::Verification(
-                                "Unexpected signature found for non-authenticated algorithm.".to_string(),
+                                "Unexpected signature found for non-authenticated algorithm."
+                                    .to_string(),
                             ));
                         }
                         use crate::asymmetric::systems::post_quantum::kyber::KyberCryptoSystem;
@@ -92,13 +96,9 @@ impl SealEngine {
                     }
                     AsymmetricAlgorithm::RsaKyber768 => {
                         use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-                        use rsa::pkcs8::DecodePublicKey;
-                        use rsa::pss::VerifyingKey;
-                        use rsa::signature::Verifier;
-                        use sha2::Sha256;
 
                         let sig_to_verify = signature.as_ref().ok_or_else(|| {
-                            Error::Verification("Signature missing for RsaKyber768.".to_string())
+                            Error::Signature("Signature missing for RsaKyber768.".to_string())
                         })?;
 
                         let (kek_pub, kek_priv) = key_manager
@@ -107,19 +107,13 @@ impl SealEngine {
                                 Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
                             })?;
 
-                        let rsa_pk = rsa::RsaPublicKey::from_public_key_der(
-                            kek_pub.rsa_public_key.inner_data(),
-                        )?;
-                        let verifying_key = VerifyingKey::<Sha256>::new(rsa_pk);
-                        let sig_obj = rsa::pss::Signature::try_from(sig_to_verify.as_slice())
-                            .map_err(|_| Error::Verification("Invalid signature format.".to_string()))?;
+                        // 使用 trait 方法进行验证
+                        RsaKyberCryptoSystem::verify(&kek_pub, encrypted_dek, sig_to_verify)
+                            .map_err(|e| {
+                                Error::Verification(format!("Signature verification failed: {}", e))
+                            })?;
 
-                        verifying_key.verify(encrypted_dek, &sig_obj).map_err(|_| {
-                            Error::Verification("Signature verification failed.".to_string())
-                        })?;
-
-                        let dek =
-                            RsaKyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
+                        let dek = RsaKyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
                         Ok(dek)
                     }
                 }
@@ -167,11 +161,13 @@ impl SealEngine {
                     Algorithm::Asymmetric(asym_alg) => match asym_alg {
                         AsymmetricAlgorithm::Rsa2048 => {
                             use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
-                            
+
                             let (kek_pub, _) = self
                                 .key_manager
                                 .get_asymmetric_keypair::<RsaCryptoSystem>(&primary_meta.id)?
-                                .ok_or_else(|| Error::Key("Failed to get KEK keypair.".to_string()))?;
+                                .ok_or_else(|| {
+                                    Error::Key("Failed to get KEK keypair.".to_string())
+                                })?;
 
                             let dek =
                                 AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
@@ -189,11 +185,13 @@ impl SealEngine {
                         }
                         AsymmetricAlgorithm::Kyber768 => {
                             use crate::asymmetric::systems::post_quantum::kyber::KyberCryptoSystem;
-                            
+
                             let (kek_pub, _) = self
                                 .key_manager
                                 .get_asymmetric_keypair::<KyberCryptoSystem>(&primary_meta.id)?
-                                .ok_or_else(|| Error::Key("Failed to get KEK keypair.".to_string()))?;
+                                .ok_or_else(|| {
+                                    Error::Key("Failed to get KEK keypair.".to_string())
+                                })?;
 
                             let dek =
                                 AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
@@ -211,15 +209,13 @@ impl SealEngine {
                         }
                         AsymmetricAlgorithm::RsaKyber768 => {
                             use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-                            use rsa::pkcs8::DecodePrivateKey;
-                            use rsa::pss::SigningKey;
-                            use rsa::signature::RandomizedSigner;
-                            use sha2::Sha256;
 
                             let (kek_pub, kek_priv) = self
                                 .key_manager
                                 .get_asymmetric_keypair::<RsaKyberCryptoSystem>(&primary_meta.id)?
-                                .ok_or_else(|| Error::Key("Failed to get KEK keypair.".to_string()))?;
+                                .ok_or_else(|| {
+                                    Error::Key("Failed to get KEK keypair.".to_string())
+                                })?;
 
                             let dek =
                                 AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
@@ -227,17 +223,13 @@ impl SealEngine {
                             let encrypted_dek =
                                 RsaKyberCryptoSystem::encrypt(&kek_pub, &dek.0, None)?;
 
-                            let rsa_sk = rsa::RsaPrivateKey::from_pkcs8_der(
-                                kek_priv.rsa_private_key.inner_data(),
-                            )?;
-                            let signing_key = SigningKey::<Sha256>::new(rsa_sk);
-                            let signature =
-                                signing_key.sign_with_rng(&mut sha2::digest::crypto_common::rand_core::OsRng, &encrypted_dek).to_vec();
+                            // 使用 trait 方法进行签名
+                            let signature = RsaKyberCryptoSystem::sign(&kek_priv, &encrypted_dek)?;
 
                             let payload = HeaderPayload::Hybrid {
                                 kek_id: primary_meta.id.clone(),
                                 kek_algorithm: asym_alg.clone(),
-                                dek_algorithm: SymmetricAlgorithm::Aes256Gcm, 
+                                dek_algorithm: SymmetricAlgorithm::Aes256Gcm,
                                 encrypted_dek,
                                 signature: Some(signature),
                             };

@@ -2,8 +2,8 @@ use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::utils::ZeroizingVec;
-use base64::{engine::general_purpose::STANDARD, Engine};
-use pqcrypto_kyber::{kyber1024, kyber512, kyber768};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use pqcrypto_kyber::{kyber512, kyber768, kyber1024};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,6 +15,17 @@ pub struct KyberPublicKeyWrapper(pub Vec<u8>);
 /// Kyber私钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KyberPrivateKeyWrapper(pub ZeroizingVec);
+
+/// Kyber 签名包装器 (占位符)
+/// Kyber 是 KEM，不直接提供签名功能。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KyberSignature(Vec<u8>);
+
+impl AsRef<[u8]> for KyberSignature {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// Kyber后量子加密系统实现
 ///
@@ -40,6 +51,7 @@ const KYBER1024_SHAREDKEYBYTES: usize = kyber1024::shared_secret_bytes();
 impl AsymmetricCryptographicSystem for KyberCryptoSystem {
     type PublicKey = KyberPublicKeyWrapper;
     type PrivateKey = KyberPrivateKeyWrapper;
+    type Signature = KyberSignature;
     type Error = Error;
 
     fn generate_keypair(
@@ -212,21 +224,21 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         // 验证共享密钥
         let expected_ss_start = kyber_ct_len + shared_key_len;
         if rest.len() < expected_ss_start {
-             return Err(Error::Format("密文长度不足，无法提取共享密钥".to_string()));
+            return Err(Error::Format("密文长度不足，无法提取共享密钥".to_string()));
         }
         let original_ss_bytes = &rest[expected_ss_start..];
 
         if original_ss_bytes != decapsulated_ss_bytes.as_slice() {
             return Err(Error::DecryptionFailed("密文验证失败".to_string()));
         }
-        
+
         // 提取XOR加密后的DEK
         let encrypted_dek_part = &rest[kyber_ct_len..expected_ss_start];
         if encrypted_dek_part.len() != shared_key_len {
             return Err(Error::Format("密文的DEK部分长度无效".to_string()));
         }
         let mut dek = encrypted_dek_part.to_vec();
-        
+
         // 使用共享密钥的哈希对DEK进行XOR解密
         let mut hasher = Sha256::new();
         hasher.update(&decapsulated_ss_bytes);
@@ -237,6 +249,25 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         }
 
         Ok(dek)
+    }
+
+    fn sign(
+        _private_key: &Self::PrivateKey,
+        _message: &[u8],
+    ) -> Result<Self::Signature, Self::Error> {
+        Err(Error::Operation(
+            "Kyber is a Key Encapsulation Mechanism and does not support signing.".to_string(),
+        ))
+    }
+
+    fn verify(
+        _public_key: &Self::PublicKey,
+        _message: &[u8],
+        _signature: &Self::Signature,
+    ) -> Result<(), Self::Error> {
+        Err(Error::Operation(
+            "Kyber is a Key Encapsulation Mechanism and does not support verification.".to_string(),
+        ))
     }
 
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error> {
@@ -348,5 +379,19 @@ mod tests {
             ciphertext1, ciphertext2,
             "Two encryptions of the same plaintext should not be identical due to KEM randomization"
         );
+    }
+
+    #[test]
+    fn test_kyber_signing_is_not_supported() {
+        let (_public_key, private_key) = setup_keys(768);
+        let message = b"test message";
+
+        let sign_result = KyberCryptoSystem::sign(&private_key, message);
+        assert!(matches!(sign_result, Err(Error::Operation(_))));
+
+        // 即使签名从未被创建，也测试验证函数
+        let dummy_signature = KyberSignature(vec![]);
+        let verify_result = KyberCryptoSystem::verify(&_public_key, message, &dummy_signature);
+        assert!(matches!(verify_result, Err(Error::Operation(_))));
     }
 }
