@@ -163,11 +163,22 @@ impl Seal {
             key_manager.start_rotation(password)?;
         }
 
-        Ok(SealEngine {
-            key_manager,
-            _seal: Arc::clone(self),
-            password: password.clone(),
-        })
+        // 2. 初始化对应模式的 KeyManager
+        let mut key_manager = KeyManager::new(self.clone(), "seal-engine", mode);
+        key_manager.initialize()?;
+
+        // 3. 如果是 Hybrid 模式，但没有主密钥，需要先创建一个
+        if mode == SealMode::Hybrid && key_manager.get_primary_key_metadata().is_none() {
+            // 在 engine() 调用中不应自动轮换，这应该是一个明确的用户操作。
+            // 我们返回一个错误，提示用户需要先轮换/设置密钥。
+            // Throwing an error here to guide the user.
+            return Err(Error::Configuration(
+                "Hybrid mode requires an initial asymmetric key. Please call `rotate_asymmetric_key` first.".to_string(),
+            ));
+        }
+
+        // 4. 创建并返回引擎
+        Ok(SealEngine::new(key_manager, self.clone(), password.clone()))
     }
 
     /// 使用HKDF从主密钥派生出一个新的密钥。

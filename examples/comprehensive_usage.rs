@@ -1,6 +1,6 @@
 use seal_kit::{
-    common::{header::SealMode, traits::AsymmetricAlgorithm},
     Seal,
+    common::{header::SealMode, traits::AsymmetricAlgorithm},
 };
 use secrecy::SecretString;
 use std::fs;
@@ -97,8 +97,11 @@ fn run_in_memory_encryption_example(
 /// 这是处理大文件的理想方式，因为它能保持内存使用量稳定且低下。
 fn run_streaming_encryption_example() -> Result<(), Box<dyn std::error::Error>> {
     let vault_path = "streaming_vault.seal";
-    let password =
-        SecretString::new("a-different-streaming-password".to_string().into_boxed_str());
+    let password = SecretString::new(
+        "a-different-streaming-password"
+            .to_string()
+            .into_boxed_str(),
+    );
 
     // --- VAULT CREATION & CONFIGURATION / 创建并配置保险库 ---
     let seal = Seal::create(vault_path, &password)?;
@@ -188,4 +191,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("All examples completed successfully! / 所有示例均已成功完成！");
 
     Ok(())
-} 
+}

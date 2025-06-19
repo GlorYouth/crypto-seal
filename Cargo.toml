@@ -12,6 +12,14 @@ categories = ["cryptography"]
 [features]
 default = ["asymmetric", "symmetric", "secure-storage", "async-engine", "parallel"]
 
+# 可选功能：启用DEK缓存以实现高性能加密。
+# 警告：此功能会重用DEK，这违反了密码学最佳实践，并可能降低安全性。
+# 仅在性能至关重要且了解安全风险的情况下使用。
+# Optional feature: Enables DEK caching for high-performance encryption.
+# WARNING: This feature reuses the DEK, which is against cryptographic best practices and may reduce security.
+# Use only when performance is critical and the security implications are understood.
+dek-caching = []
+
 # 非对称加密
 asymmetric = ["traditional", "post-quantum"]
 traditional = ["rsa"]
@@ -27,6 +35,7 @@ secure-storage = ["argon2", "secrecy", "aes-gcm-feature", "rand_core"]
 async-engine = ["tokio", "tokio-util", "async-trait"]
 parallel = ["rayon"]
 async = ["notify", "tokio", "async-trait"]
+
 
 [dependencies]
 # 核心与序列化
@@ -74,6 +83,7 @@ typenum = "1.18.0"
 [dev-dependencies]
 criterion = "0.6"
 tempfile = "3.8.0"
+rand = "0.9.1"
 
 [[example]]
 name = "comprehensive_usage"

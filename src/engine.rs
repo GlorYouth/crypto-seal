@@ -4,20 +4,163 @@ use crate::common::header::Header;
 use crate::rotation::manager::KeyManager;
 use crate::{Error, Seal};
 use secrecy::SecretString;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 /// `SealEngine` 是执行实际加密和解密操作的统一接口。
 ///
 /// 它持有密钥管理器的状态，以高效地处理连续的加密操作和自动密钥轮换。
+#[derive(Clone)]
 pub struct SealEngine {
     pub(crate) key_manager: KeyManager,
     // 我们需要一个对 Seal 的引用来访问配置等信息，但它不参与状态管理
     pub(crate) _seal: Arc<Seal>,
     // 引擎在创建时 "解锁"，存储密码以供内部需要写入的操作（如密钥轮换）使用。
     pub(crate) password: SecretString,
+
+    /// 可选的DEK缓存，用于高性能、低安全性的场景。
+    /// An optional DEK cache for high-performance, lower-security scenarios.
+    #[cfg(feature = "dek-caching")]
+    dek_cache: Option<(Header, Vec<u8>)>,
 }
 
 impl SealEngine {
+    /// Creates a new `SealEngine`.
+    /// This is the correct way to instantiate the engine, as it handles internal state and feature flags.
+    /// 创建一个新的 `SealEngine`。
+    /// 这是实例化引擎的正确方法，因为它能处理内部状态和功能标志。
+    pub(crate) fn new(key_manager: KeyManager, seal: Arc<Seal>, password: SecretString) -> Self {
+        Self {
+            key_manager,
+            _seal: seal,
+            password,
+            #[cfg(feature = "dek-caching")]
+            dek_cache: None,
+        }
+    }
+
+    /// Clears the cached Data Encryption Key (DEK).
+    /// This forces the engine to generate a new DEK on the next `_with_cached_dek` encryption call.
+    /// 清除缓存的数据加密密钥（DEK）。
+    /// 这将强制引擎在下一次调用 `_with_cached_dek` 加密方法时生成一个新的DEK。
+    #[cfg(feature = "dek-caching")]
+    pub fn clear_dek_cache(&mut self) {
+        self.dek_cache = None;
+    }
+
+    /// （内部方法）确保缓存中有一个可用的DEK，如果不存在则生成一个。
+    #[cfg(feature = "dek-caching")]
+    fn ensure_dek_cached(&mut self) -> Result<(), Error> {
+        if self.dek_cache.is_none() {
+            if self.key_manager.needs_rotation() {
+                self.key_manager.start_rotation(&self.password)?;
+            }
+            let (header, dek) = self.build_header_and_dek()?;
+            self.dek_cache = Some((header, dek));
+        }
+        Ok(())
+    }
+
+    /// [DEK Caching] Encrypts a byte slice using a cached DEK for high performance.
+    /// **Warning:** Reusing a DEK for multiple encryption operations is against cryptographic best practices.
+    /// [DEK 缓存] 使用缓存的DEK加密字节切片以实现高性能。
+    /// **警告：** 对多个加密操作重用DEK违反了密码学的最佳实践。
+    #[cfg(feature = "dek-caching")]
+    pub fn seal_bytes_with_cached_dek(
+        &mut self,
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
+        self.ensure_dek_cached()?;
+        let (header, dek) = self.dek_cache.as_ref().unwrap();
+
+        let mut reader = std::io::Cursor::new(plaintext);
+        let mut writer = Vec::new();
+
+        let header_bytes = header.encode_to_vec()?;
+        writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(&header_bytes)?;
+
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricSyncStreamingSystem;
+
+        let dek_key = AesGcmKey(dek.clone());
+        let streaming_config = &self.key_manager.config().streaming;
+        AesGcmSystem::encrypt_stream(&dek_key, &mut reader, &mut writer, streaming_config, aad)?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(writer)
+    }
+
+    /// [DEK Caching] Encrypts a stream using a cached DEK for high performance.
+    /// **Warning:** Reusing a DEK for multiple encryption operations is against cryptographic best practices.
+    /// [DEK 缓存] 使用缓存的DEK加密流以实现高性能。
+    /// **警告：** 对多个加密操作重用DEK违反了密码学的最佳实践。
+    #[cfg(feature = "dek-caching")]
+    pub fn seal_stream_with_cached_dek<R: Read, W: Write>(
+        &mut self,
+        source: &mut R,
+        destination: &mut W,
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        self.ensure_dek_cached()?;
+        let (header, dek) = self.dek_cache.as_ref().unwrap();
+
+        let header_bytes = header.encode_to_vec()?;
+        destination.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
+        destination.write_all(&header_bytes)?;
+
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricSyncStreamingSystem;
+
+        let dek_key = AesGcmKey(dek.clone());
+        let streaming_config = &self.key_manager.config().streaming;
+        AesGcmSystem::encrypt_stream(&dek_key, source, destination, streaming_config, aad)?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(())
+    }
+
+    /// [DEK Caching] Encrypts a stream in parallel using a cached DEK for high performance.
+    /// **Warning:** Reusing a DEK for multiple encryption operations is against cryptographic best practices.
+    /// [DEK 缓存] 使用缓存的DEK并行加密流以实现高性能。
+    /// **警告：** 对多个加密操作重用DEK违反了密码学的最佳实践。
+    #[cfg(feature = "dek-caching")]
+    pub fn par_seal_stream_with_cached_dek<R: Read + Send, W: Write + Send>(
+        &mut self,
+        source: &mut R,
+        destination: &mut W,
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        self.ensure_dek_cached()?;
+        let (header, dek) = self.dek_cache.as_ref().unwrap();
+
+        let header_bytes = header.encode_to_vec()?;
+        destination.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
+        destination.write_all(&header_bytes)?;
+
+        use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
+        use crate::symmetric::traits::SymmetricParallelStreamingSystem;
+
+        let dek_key = AesGcmKey(dek.clone());
+        let streaming_config = &self.key_manager.config().streaming;
+        let parallelism_config = &self.key_manager.config().parallelism;
+        AesGcmSystem::par_encrypt_stream(
+            &dek_key,
+            source,
+            destination,
+            streaming_config,
+            parallelism_config,
+            aad,
+        )?;
+
+        self.key_manager.increment_usage_count(&self.password)?;
+
+        Ok(())
+    }
+
     /// 使用当前引擎的模式来加密（封印）一个字节切片。
     ///
     /// 这是一个便捷的内存加密方法。

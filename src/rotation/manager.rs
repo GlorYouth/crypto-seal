@@ -18,6 +18,7 @@ use uuid::Uuid;
 ///
 /// 它根据 `SealMode` 在内部选择合适的密钥存储和管理策略，
 /// 并处理密钥的整个生命周期，包括生成、存储、轮换和按需检索。
+#[derive(Clone)]
 pub struct KeyManager {
     mode: SealMode,
     // 未来这里会持有一个具体的 KeyStore 实现

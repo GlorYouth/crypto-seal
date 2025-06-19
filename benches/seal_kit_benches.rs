@@ -1,9 +1,16 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::BatchSize;
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
+use rand::RngCore;
 use seal_kit::common::traits::AsymmetricAlgorithm;
 use seal_kit::{Error, Seal, SealMode};
 use secrecy::SecretString;
+use std::fs;
+use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::tempdir;
 
 const AAD: &[u8] = b"CriterionProfileAAD";
@@ -21,150 +28,154 @@ fn setup_seal(
     Ok((seal, password, dir))
 }
 
+fn generate_random_data(size: usize) -> Vec<u8> {
+    let mut data = vec![0u8; size];
+    rand::rng().fill_bytes(&mut data);
+    data
+}
+
 /// The main benchmark function that covers all modes.
 /// 覆盖所有模式的主基准测试函数。
 fn seal_kit_benchmark(c: &mut Criterion) {
-    let data_sizes = [1024 * 1024, 10 * 1024 * 1024]; // 1MB and 10MB
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("benchmark_vault.seal");
+
+    let password = SecretString::new("password".to_string().into_boxed_str());
+    let seal = Seal::create(&vault_path, &password).unwrap();
+
+    let mut group = c.benchmark_group("Seal-Kit Performance");
+    group.sampling_mode(SamplingMode::Flat);
+    group.measurement_time(Duration::from_secs(15));
+
+    let data_sizes = [
+        ("1KB", 1024),
+        ("1MB", 1024 * 1024),
+        ("10MB", 10 * 1024 * 1024),
+        ("100MB", 100 * 1024 * 1024),
+    ];
     let algorithms = [
-        AsymmetricAlgorithm::RsaKyber768,
-        AsymmetricAlgorithm::Kyber768,
         AsymmetricAlgorithm::Rsa2048,
+        AsymmetricAlgorithm::Kyber768,
+        AsymmetricAlgorithm::RsaKyber768,
     ];
 
-    for &size in &data_sizes {
-        let mut group = c.benchmark_group(format!("Seal-Kit-Perf-{}B", size));
-        group.throughput(Throughput::Bytes(size as u64));
+    for alg in algorithms.iter() {
+        seal.rotate_asymmetric_key(alg.clone(), &password).unwrap();
+        let engine = seal.engine(SealMode::Hybrid, &password).unwrap();
 
-        let data = vec![0x42; size];
+        // --- Standard Encryption Benchmarks ---
+        for &(size_name, data_size) in &data_sizes {
+            let data = generate_random_data(data_size);
 
-        for algo in &algorithms {
-            let (seal, password, _dir) = setup_seal(algo.clone()).expect("Failed to setup seal");
-            let algo_id = format!("{:?}", algo);
+            // In-Memory
+            group.bench_with_input(
+                BenchmarkId::new(format!("{:?}-Memory", alg), size_name),
+                &data,
+                |b, d| {
+                    let mut mut_engine = engine.clone();
+                    b.iter(|| {
+                        black_box(mut_engine.seal_bytes(d, None).unwrap());
+                    })
+                },
+            );
 
-            // --- Pre-generate ciphertexts for decryption tests ---
-            // --- 为解密测试预先生成密文 ---
-            let (ciphertext_serial, ciphertext_parallel) = {
-                let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-                let c1 = engine.seal_bytes(&data, Some(AAD)).unwrap();
-                let c2 = engine.par_seal_bytes(&data, Some(AAD)).unwrap();
-                (c1, c2)
-            };
+            // In-Memory (Decryption)
+            let ciphertext = engine.clone().seal_bytes(&data, None).unwrap();
+            group.bench_with_input(
+                BenchmarkId::new(format!("{:?}-Memory-Decrypt", alg), size_name),
+                &ciphertext,
+                |b, c| {
+                    let mut mut_engine = engine.clone();
+                    b.iter(|| {
+                        black_box(mut_engine.unseal_bytes(c, None).unwrap());
+                    })
+                },
+            );
 
-            // === In-Memory Benchmarks / 内存操作基准测试 ===
-
-            // SealBytes (Serial)
-            group.bench_function(BenchmarkId::new(format!("{}-SealBytes", algo_id), size), |b| {
-                b.iter_batched(
-                    || seal.engine(SealMode::Hybrid, &password).unwrap(),
-                    |mut e| e.seal_bytes(&data, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-
-            // UnsealBytes (Serial)
-            group.bench_function(BenchmarkId::new(format!("{}-UnsealBytes", algo_id), size), |b| {
-                b.iter_batched(
-                    || seal.engine(SealMode::Hybrid, &password).unwrap(),
-                    |e| e.unseal_bytes(&ciphertext_serial, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-
-            // ParSealBytes (Parallel)
-            group.bench_function(BenchmarkId::new(format!("{}-ParSealBytes", algo_id), size), |b| {
-                b.iter_batched(
-                    || seal.engine(SealMode::Hybrid, &password).unwrap(),
-                    |mut e| e.par_seal_bytes(&data, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-
-            // ParUnsealBytes (Parallel)
-            group.bench_function(BenchmarkId::new(format!("{}-ParUnsealBytes", algo_id), size), |b| {
-                b.iter_batched(
-                    || seal.engine(SealMode::Hybrid, &password).unwrap(),
-                    |e| e.par_unseal_bytes(&ciphertext_parallel, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-
-            // === Streaming Benchmarks / 流操作基准测试 ===
-
-            // SealStream (Serial)
-            group.bench_function(BenchmarkId::new(format!("{}-SealStream", algo_id), size), |b| {
-                b.iter_batched(
-                    || {
-                        (
-                            seal.engine(SealMode::Hybrid, &password).unwrap(),
-                            Cursor::new(data.as_slice()),
-                            Vec::with_capacity(size + 1024),
+            // Parallel Streaming
+            if data_size > 1024 * 1024 {
+                // Only run parallel on larger data
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{:?}-Parallel-Stream", alg), size_name),
+                    &data,
+                    |b, d| {
+                        let mut mut_engine = engine.clone();
+                        b.iter_batched(
+                            || (Cursor::new(d.clone()), Vec::new()),
+                            |(mut reader, mut writer): (Cursor<Vec<u8>>, Vec<u8>)| {
+                                mut_engine
+                                    .par_seal_stream(&mut reader, &mut writer, None)
+                                    .unwrap();
+                                black_box(writer);
+                            },
+                            BatchSize::SmallInput,
                         )
                     },
-                    |(mut e, mut r, mut w)| e.seal_stream(&mut r, &mut w, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
                 );
-            });
-
-            // UnsealStream (Serial)
-            let stream_ciphertext = {
-                let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-                let mut writer = Vec::new();
-                engine.seal_stream(&mut Cursor::new(&data), &mut writer, Some(AAD)).unwrap();
-                writer
-            };
-            group.bench_function(BenchmarkId::new(format!("{}-UnsealStream", algo_id), size), |b| {
-                b.iter_batched(
-                    || {
-                        (
-                            seal.engine(SealMode::Hybrid, &password).unwrap(),
-                            Cursor::new(stream_ciphertext.as_slice()),
-                            Vec::with_capacity(size),
-                        )
-                    },
-                    |(e, mut r, mut w)| e.unseal_stream(&mut r, &mut w, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-
-            // ParSealStream (Parallel)
-            group.bench_function(BenchmarkId::new(format!("{}-ParSealStream", algo_id), size), |b| {
-                b.iter_batched(
-                    || {
-                        (
-                            seal.engine(SealMode::Hybrid, &password).unwrap(),
-                            Cursor::new(data.as_slice()),
-                            Vec::with_capacity(size + 1024),
-                        )
-                    },
-                    |(mut e, r, w)| e.par_seal_stream(r, w, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-
-             // ParUnsealStream (Parallel)
-             let par_stream_ciphertext = {
-                let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-                let mut writer = Vec::new();
-                engine.par_seal_stream(Cursor::new(&data), &mut writer, Some(AAD)).unwrap();
-                writer
-            };
-            group.bench_function(BenchmarkId::new(format!("{}-ParUnsealStream", algo_id), size), |b| {
-                b.iter_batched(
-                    || {
-                        (
-                            seal.engine(SealMode::Hybrid, &password).unwrap(),
-                            Cursor::new(par_stream_ciphertext.as_slice()),
-                            Vec::with_capacity(size),
-                        )
-                    },
-                    |(e, r, w)| e.par_unseal_stream(r, w, Some(AAD)),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
+            }
         }
-        group.finish();
+
+        // --- DEK Caching Benchmarks ---
+        #[cfg(feature = "dek-caching")]
+        {
+            // Create a separate engine for caching tests to not interfere with standard ones
+            let mut caching_engine = seal.engine(SealMode::Hybrid, &password).unwrap();
+
+            // Pre-warm the cache by performing one small encryption.
+            // This calls the internal, private `ensure_dek_cached` implicitly.
+            let warm_up_data = [0u8; 16];
+            let _ = black_box(
+                caching_engine
+                    .seal_bytes_with_cached_dek(&warm_up_data, None)
+                    .unwrap(),
+            );
+
+            for &(size_name, data_size) in &data_sizes {
+                let data = generate_random_data(data_size);
+
+                // In-Memory with cached DEK
+                group.bench_with_input(
+                    BenchmarkId::new(format!("{:?}-Cached-Memory", alg), size_name),
+                    &data,
+                    |b, d| {
+                        // The engine is already warmed up, so we can reuse it
+                        b.iter(|| {
+                            black_box(caching_engine.seal_bytes_with_cached_dek(d, None).unwrap());
+                        })
+                    },
+                );
+
+                // Parallel Streaming with cached DEK
+                if data_size > 1024 * 1024 {
+                    // Only run parallel on larger data
+                    group.bench_with_input(
+                        BenchmarkId::new(format!("{:?}-Cached-Parallel-Stream", alg), size_name),
+                        &data,
+                        |b, d| {
+                            b.iter_batched(
+                                || (Cursor::new(d.clone()), Vec::new()),
+                                |(mut reader, mut writer): (Cursor<Vec<u8>>, Vec<u8>)| {
+                                    caching_engine
+                                        .par_seal_stream_with_cached_dek(
+                                            &mut reader,
+                                            &mut writer,
+                                            None,
+                                        )
+                                        .unwrap();
+                                    black_box(writer);
+                                },
+                                BatchSize::SmallInput,
+                            )
+                        },
+                    );
+                }
+            }
+        }
     }
+
+    group.finish();
+    // tempdir will be dropped and cleaned up automatically here
 }
 
 criterion_group!(benches, seal_kit_benchmark);
-criterion_main!(benches); 
+criterion_main!(benches);

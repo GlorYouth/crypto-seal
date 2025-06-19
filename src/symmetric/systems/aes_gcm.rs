@@ -212,7 +212,9 @@ impl SymmetricParallelSystem for AesGcmSystem {
 
         // Deserialize the ciphertext format: [num_chunks: u32][chunk_1]...[chunk_n]
         if ciphertext.len() < 4 {
-            return Err(Error::DecryptionFailed("Ciphertext too short for chunk count".into()));
+            return Err(Error::DecryptionFailed(
+                "Ciphertext too short for chunk count".into(),
+            ));
         }
         let (num_chunks_slice, mut data_area) = ciphertext.split_at(4);
         let num_chunks = u32::from_le_bytes(num_chunks_slice.try_into().unwrap());
@@ -241,7 +243,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
             };
 
             if r2.len() < chunk_ct_len {
-                 return Err(Error::DecryptionFailed(format!(
+                return Err(Error::DecryptionFailed(format!(
                     "Ciphertext truncated, not enough data for ciphertext in chunk {}",
                     i
                 )));
@@ -256,7 +258,6 @@ impl SymmetricParallelSystem for AesGcmSystem {
             ));
             data_area = r3; // Update the slice to the remaining part
         }
-
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(parallelism_config.parallelism)
@@ -275,7 +276,8 @@ impl SymmetricParallelSystem for AesGcmSystem {
                     let mut aad_chunk = additional_data.to_vec();
                     aad_chunk.extend_from_slice(&(i as u64).to_le_bytes());
                     let mut buffer = chunk_ct.clone();
-                    cipher.decrypt_in_place_detached(nonce, &aad_chunk, &mut buffer, tag)
+                    cipher
+                        .decrypt_in_place_detached(nonce, &aad_chunk, &mut buffer, tag)
                         .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
                     Ok(buffer)
                 })

@@ -17,7 +17,7 @@ pub enum SealMode {
 
 /// `Header` 是所有加密数据流的元数据信封。
 /// 它位于加密数据的前面，提供了足够的信息来解密后续的载荷。
-#[derive(Debug, Serialize, Deserialize, Decode, Encode)]
+#[derive(Debug, Serialize, Deserialize, Decode, Encode, Clone)]
 pub struct Header {
     /// 协议版本号，用于未来的兼容性升级。
     pub version: u16,
@@ -41,7 +41,7 @@ impl Header {
 }
 
 /// `HeaderPayload` 包含了特定于加密模式的元数据。
-#[derive(Debug, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum HeaderPayload {
     /// 对称加密模式的元数据。
