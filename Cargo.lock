@@ -1519,7 +1519,6 @@ dependencies = [
  "config",
  "criterion",
  "hkdf",
- "memchr",
  "notify",
  "num_cpus",
  "pqcrypto-kyber",
@@ -1535,6 +1534,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "typenum",
  "uuid",
  "zeroize",
 ]

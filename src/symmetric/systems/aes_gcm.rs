@@ -10,6 +10,7 @@ use rsa::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::io::{Cursor, Read};
+use typenum::U12;
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
@@ -23,6 +24,14 @@ pub struct AesGcmSystem;
 /// AES-GCM 密钥的包装，以支持序列化和调试
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AesGcmKey(pub Vec<u8>);
+
+/// A helper struct to manage chunk-level encryption results.
+/// 一个辅助结构，用于管理块级加密结果。
+struct EncryptedChunk {
+    nonce: Nonce<U12>,
+    tag: Tag,
+    ciphertext: Vec<u8>,
+}
 
 impl SymmetricCryptographicSystem for AesGcmSystem {
     const KEY_SIZE: usize = KEY_SIZE;
@@ -121,6 +130,27 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     }
 }
 
+impl AesGcmSystem {
+    /// Encrypts a single chunk of data, intended for parallel execution.
+    /// 加密单个数据块，专为并行执行设计。
+    fn encrypt_chunk_parallel(
+        cipher: &Aes256Gcm,
+        chunk: &[u8],
+        aad: &[u8],
+    ) -> Result<EncryptedChunk, Error> {
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut buffer = chunk.to_vec();
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce, aad, &mut buffer)
+            .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
+        Ok(EncryptedChunk {
+            nonce,
+            tag,
+            ciphertext: buffer,
+        })
+    }
+}
+
 #[cfg(feature = "parallel")]
 impl SymmetricParallelSystem for AesGcmSystem {
     fn par_encrypt(
@@ -130,7 +160,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
         parallelism_config: &ParallelismConfig,
     ) -> Result<Vec<u8>, Self::Error> {
         if plaintext.is_empty() {
-            return Ok(Vec::new());
+            return Self::encrypt(key, plaintext, additional_data); // Use serial for empty
         }
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -138,25 +168,33 @@ impl SymmetricParallelSystem for AesGcmSystem {
             .build()
             .map_err(|e| Error::Key(e.to_string()))?;
 
-        let additional_data = additional_data.map(|d| d.to_vec());
+        let key_slice = aes_gcm::Key::<Aes256Gcm>::from_slice(&key.0);
+        let cipher = Aes256Gcm::new(key_slice);
+        let additional_data = additional_data.unwrap_or(&[]);
 
-        let encrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = pool.install(|| {
+        let encrypted_chunks: Vec<Result<EncryptedChunk, Self::Error>> = pool.install(|| {
             plaintext
                 .par_chunks(PARALLEL_CHUNK_SIZE)
-                .enumerate() // 获取块索引
+                .enumerate()
                 .map(|(i, chunk)| {
-                    // 为每个块创建独立的 AAD
-                    let mut aad_chunk = additional_data.clone().unwrap_or_default();
-                    aad_chunk.extend_from_slice(&(i as u64).to_le_bytes()); // 添加索引作为 AAD 的一部分
-                    Self::encrypt(key, chunk, Some(&aad_chunk))
+                    let mut aad_chunk = additional_data.to_vec();
+                    aad_chunk.extend_from_slice(&(i as u64).to_le_bytes());
+                    Self::encrypt_chunk_parallel(&cipher, chunk, &aad_chunk)
                 })
                 .collect()
         });
 
-        // 拼接所有加密后的块。每个块已经包含了 [长度][数据]
+        // Serialize the chunks into the final format: [num_chunks: u32][chunk_1]...[chunk_n]
+        // where chunk_i = [nonce][tag][ciphertext]
         let mut final_result = Vec::new();
+        let num_chunks = encrypted_chunks.len() as u32;
+        final_result.extend_from_slice(&num_chunks.to_le_bytes());
+
         for result in encrypted_chunks {
-            final_result.extend_from_slice(&result?);
+            let chunk = result?;
+            final_result.extend_from_slice(chunk.nonce.as_slice());
+            final_result.extend_from_slice(&chunk.tag);
+            final_result.extend_from_slice(&chunk.ciphertext);
         }
 
         Ok(final_result)
@@ -172,42 +210,74 @@ impl SymmetricParallelSystem for AesGcmSystem {
             return Ok(Vec::new());
         }
 
-        let mut reader = Cursor::new(ciphertext);
-        let mut chunks_to_decrypt: Vec<Vec<u8>> = Vec::new();
-        let mut len_buf = [0u8; 4];
-
-        // 解析 [长度][数据] 格式的块
-        while reader.read_exact(&mut len_buf).is_ok() {
-            let len = u32::from_le_bytes(len_buf) as usize;
-            if (reader.position() as usize + len) > ciphertext.len() {
-                return Err(Error::Key(
-                    "Ciphertext is truncated or malformed.".to_string(),
-                ));
-            }
-            let mut chunk_buf = vec![0u8; len];
-            reader.read_exact(&mut chunk_buf)?;
-
-            // 将 [长度][数据] 作为一个整体传递给解密器
-            let mut final_chunk = len_buf.to_vec();
-            final_chunk.extend_from_slice(&chunk_buf);
-            chunks_to_decrypt.push(final_chunk);
+        // Deserialize the ciphertext format: [num_chunks: u32][chunk_1]...[chunk_n]
+        if ciphertext.len() < 4 {
+            return Err(Error::DecryptionFailed("Ciphertext too short for chunk count".into()));
         }
+        let (num_chunks_slice, mut data_area) = ciphertext.split_at(4);
+        let num_chunks = u32::from_le_bytes(num_chunks_slice.try_into().unwrap());
+
+        if num_chunks == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut chunks_to_decrypt = Vec::with_capacity(num_chunks as usize);
+        for i in 0..num_chunks {
+            if data_area.len() < NONCE_SIZE + TAG_SIZE {
+                return Err(Error::DecryptionFailed(format!(
+                    "Ciphertext truncated, not enough data for nonce and tag in chunk {}",
+                    i
+                )));
+            }
+            let (nonce_slice, r1) = data_area.split_at(NONCE_SIZE);
+            let (tag_slice, r2) = r1.split_at(TAG_SIZE);
+
+            // The last chunk's size is whatever is left.
+            // 最后一个块的大小就是剩余的所有数据。
+            let chunk_ct_len = if i < num_chunks - 1 {
+                PARALLEL_CHUNK_SIZE
+            } else {
+                r2.len()
+            };
+
+            if r2.len() < chunk_ct_len {
+                 return Err(Error::DecryptionFailed(format!(
+                    "Ciphertext truncated, not enough data for ciphertext in chunk {}",
+                    i
+                )));
+            }
+
+            let (ct_slice, r3) = r2.split_at(chunk_ct_len);
+
+            chunks_to_decrypt.push((
+                Nonce::<U12>::clone_from_slice(nonce_slice),
+                Tag::clone_from_slice(tag_slice),
+                ct_slice.to_vec(),
+            ));
+            data_area = r3; // Update the slice to the remaining part
+        }
+
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(parallelism_config.parallelism)
             .build()
             .map_err(|e| Error::Key(e.to_string()))?;
 
-        let additional_data = additional_data.map(|d| d.to_vec());
+        let key_slice = aes_gcm::Key::<Aes256Gcm>::from_slice(&key.0);
+        let cipher = Aes256Gcm::new(key_slice);
+        let additional_data = additional_data.unwrap_or(&[]);
 
         let decrypted_chunks: Vec<Result<Vec<u8>, Self::Error>> = pool.install(|| {
             chunks_to_decrypt
                 .par_iter()
                 .enumerate()
-                .map(|(i, chunk)| {
-                    let mut aad_chunk = additional_data.clone().unwrap_or_default();
+                .map(|(i, (nonce, tag, chunk_ct))| {
+                    let mut aad_chunk = additional_data.to_vec();
                     aad_chunk.extend_from_slice(&(i as u64).to_le_bytes());
-                    Self::decrypt(key, chunk, Some(&aad_chunk))
+                    let mut buffer = chunk_ct.clone();
+                    cipher.decrypt_in_place_detached(nonce, &aad_chunk, &mut buffer, tag)
+                        .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
+                    Ok(buffer)
                 })
                 .collect()
         });
