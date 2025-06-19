@@ -135,12 +135,21 @@ impl ConfigManager {
     /// 1. `ConfigFile` 的默认值。
     /// 2. `config.json` 文件 (如果存在)。
     /// 3. 手动解析的环境变量。
-    pub fn new() -> Result<ConfigFile, config::ConfigError> {
+    pub fn new(
+        config_dir: Option<&std::path::Path>,
+    ) -> Result<ConfigFile, config::ConfigError> {
         let builder = config::Config::builder()
             // 1. 从默认结构开始
-            .add_source(config::Config::try_from(&ConfigFile::default())?)
-            // 2. 添加配置文件（可选）
-            .add_source(config::File::with_name("config.json").required(false));
+            .add_source(config::Config::try_from(&ConfigFile::default())?);
+
+        // 2. 添加配置文件（可选）
+        let builder = if let Some(dir) = config_dir {
+            // 如果提供了目录，则从该目录加载
+            builder.add_source(config::File::from(dir.join("config.json")).required(false))
+        } else {
+            // 否则，从当前工作目录加载
+            builder.add_source(config::File::with_name("config.json").required(false))
+        };
 
         let mut config: ConfigFile = builder.build()?.try_deserialize()?;
 
@@ -265,53 +274,48 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    // 使用全局互斥锁来序列化所有修改全局状态（环境变量、当前目录）的测试，
-    // 以避免并行执行时产生数据竞争和状态污染。
+    // 我们仍然需要锁来序列化修改全局环境变量的测试，
+    // 以避免并行执行时产生数据竞争。
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// 测试能否成功加载默认配置
     #[test]
     fn test_load_defaults() {
+        // 此测试对环境变量敏感，因此我们使用锁来隔离它。
         let _lock = TEST_LOCK.lock().unwrap();
 
+        // 我们在一个空的临时目录中进行测试，以确保没有 config.json 文件被加载。
         let dir = tempdir().unwrap();
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(dir.path()).unwrap();
+        let config = ConfigManager::new(Some(dir.path())).unwrap();
 
-        let config = ConfigManager::new().unwrap();
+        // 在没有文件和环境变量（由于锁的存在）的情况下，结果应为默认配置。
         assert_eq!(config, ConfigFile::default());
-
-        env::set_current_dir(original_dir).unwrap();
     }
 
     /// 测试能否从 JSON 文件加载配置并覆盖默认值
     #[test]
     fn test_load_from_json_file() {
+        // 此测试也对环境变量敏感，所以我们也需要使用锁。
         let _lock = TEST_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(dir.path()).unwrap();
-
         let config_path = dir.path().join("config.json");
         let mut file = File::create(&config_path).unwrap();
         writeln!(file, r#"{{"crypto": {{"rsa_key_bits": 4096}} }}"#).unwrap();
 
-        let config = ConfigManager::new().unwrap();
+        // 将临时目录的路径传递给配置管理器
+        let config = ConfigManager::new(Some(dir.path())).unwrap();
 
         assert_eq!(config.crypto.rsa_key_bits, 4096);
-        assert_eq!(config.crypto.kyber_parameter_k, 768);
-        assert_eq!(config.storage.secure_delete, true);
-
-        env::set_current_dir(original_dir).unwrap();
+        assert_eq!(config.crypto.kyber_parameter_k, 768); // 检查默认值是否保留
+        assert_eq!(config.storage.secure_delete, true); // 检查默认值是否保留
     }
 
     /// 测试能否从环境变量加载配置，并验证其优先级高于 JSON 文件
     #[test]
     fn test_load_from_env_overrides_json() {
+        // 此测试修改全局环境变量，必须使用锁进行序列化
         let _lock = TEST_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(dir.path()).unwrap();
 
         let config_path = dir.path().join("config.json");
         let mut file = File::create(&config_path).unwrap();
@@ -321,50 +325,59 @@ mod tests {
         )
         .unwrap();
 
+        // 使用 RAII guard 确保环境变量在测试结束时被清理
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    std::env::remove_var(self.0);
+                }
+            }
+        }
+        let _guard1 = EnvGuard("Q_SEAL_CRYPTO__RSA_KEY_BITS");
         unsafe {
-            env::set_var("Q_SEAL_CRYPTO__RSA_KEY_BITS", "2048");
-            env::set_var("Q_SEAL_ROTATION__VALIDITY_PERIOD_DAYS", "180");
+            std::env::set_var("Q_SEAL_CRYPTO__RSA_KEY_BITS", "2048");
+        }
+        let _guard2 = EnvGuard("Q_SEAL_ROTATION__VALIDITY_PERIOD_DAYS");
+        unsafe {
+            std::env::set_var("Q_SEAL_ROTATION__VALIDITY_PERIOD_DAYS", "180");
         }
 
-        let config = ConfigManager::new().unwrap();
+        let config = ConfigManager::new(Some(dir.path())).unwrap();
 
-        assert_eq!(config.crypto.rsa_key_bits, 2048);
-        assert_eq!(config.storage.secure_delete, false);
-        assert_eq!(config.rotation.validity_period_days, 180);
-        assert_eq!(config.crypto.use_traditional, true);
-
-        unsafe {
-            env::remove_var("Q_SEAL_CRYPTO__RSA_KEY_BITS");
-            env::remove_var("Q_SEAL_ROTATION__VALIDITY_PERIOD_DAYS");
-        }
-        env::set_current_dir(original_dir).unwrap();
+        assert_eq!(config.crypto.rsa_key_bits, 2048); // 被环境变量覆盖
+        assert_eq!(config.storage.secure_delete, false); // 来自 JSON 文件
+        assert_eq!(config.rotation.validity_period_days, 180); // 来自环境变量
+        assert_eq!(config.crypto.use_traditional, true); // 来自默认值
     }
 
     /// 测试当环境变量类型不匹配时，该变量会被静默忽略。
     #[test]
     fn test_env_type_mismatch_is_ignored() {
+        // 此测试修改全局环境变量，必须使用锁进行序列化
         let _lock = TEST_LOCK.lock().unwrap();
-        let dir = tempdir().unwrap();
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(dir.path()).unwrap();
 
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    std::env::remove_var(self.0);
+                }
+            }
+        }
+        let _guard = EnvGuard("Q_SEAL_STORAGE__SECURE_DELETE");
         // 为一个布尔字段设置一个无法解析的值
         unsafe {
-            env::set_var("Q_SEAL_CRYPTO__USE_TRADITIONAL", "not-a-boolean");
+            std::env::set_var("Q_SEAL_STORAGE__SECURE_DELETE", "not-a-boolean");
         }
 
-        // 我们的新实现会静默忽略无法解析的值
-        let config = ConfigManager::new().unwrap();
+        // 我们的实现会静默忽略无法解析的值
+        let config = ConfigManager::new(None).unwrap();
 
         // 验证该字段的值仍然是其默认值，证明无效的环境变量已被忽略。
         assert_eq!(
-            config.crypto.use_traditional,
-            ConfigFile::default().crypto.use_traditional
+            config.storage.secure_delete,
+            ConfigFile::default().storage.secure_delete
         );
-
-        unsafe {
-            env::remove_var("Q_SEAL_CRYPTO__USE_TRADITIONAL");
-        }
-        env::set_current_dir(original_dir).unwrap();
     }
 }

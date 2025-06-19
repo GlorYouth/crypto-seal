@@ -57,7 +57,7 @@ impl Seal {
         let initial_payload = VaultPayload {
             master_seed,
             key_registry: HashMap::new(),
-            config: ConfigManager::new()?,
+            config: ConfigManager::new(path.parent())?,
         };
 
         // 3. 将初始载荷写入加密文件。
