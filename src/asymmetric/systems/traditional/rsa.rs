@@ -1,6 +1,7 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
-use crate::common::utils::{Base64String, CryptoConfig, ZeroizingVec, from_base64};
+use crate::common::utils::{Base64String, ZeroizingVec, from_base64};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::pss::{SigningKey, VerifyingKey};
 use rsa::rand_core::OsRng as RsaOsRng;
@@ -389,7 +390,7 @@ mod tests {
     mod async_tests {
         use super::*;
         use crate::asymmetric::traits::AsyncStreamingSystem;
-        use crate::common::streaming::StreamingConfig;
+        use crate::common::config::StreamingConfig;
         use crate::symmetric::systems::aes_gcm::AesGcmSystem;
         use std::io::Cursor;
 

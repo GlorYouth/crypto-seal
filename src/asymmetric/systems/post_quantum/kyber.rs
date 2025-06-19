@@ -1,5 +1,7 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
+use crate::common::utils::{Base64String, ZeroizingVec, from_base64, to_base64};
 use aes_gcm::aead::{AeadCore, KeyInit};
 #[cfg(not(feature = "chacha"))]
 use aes_gcm::{
@@ -16,8 +18,6 @@ use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 #[cfg(feature = "chacha")]
 use rsa::rand_core::OsRng;
 use serde::{Deserialize, Serialize};
-
-use crate::common::utils::{Base64String, CryptoConfig, ZeroizingVec, from_base64, to_base64};
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -276,7 +276,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
 
     fn setup_keys(k: usize) -> (KyberPublicKeyWrapper, KyberPrivateKeyWrapper) {
         let config = CryptoConfig {
@@ -450,7 +450,7 @@ mod tests {
     mod async_tests {
         use super::*;
         use crate::asymmetric::traits::AsyncStreamingSystem;
-        use crate::common::streaming::StreamingConfig;
+        use crate::common::config::StreamingConfig;
         use crate::symmetric::systems::aes_gcm::AesGcmSystem;
         use std::io::Cursor;
 

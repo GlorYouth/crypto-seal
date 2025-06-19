@@ -8,9 +8,10 @@ use chrono::Utc;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
+use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::traits::SecureKeyStorage;
-use crate::common::utils::{CryptoConfig, from_base64, to_base64};
+use crate::common::utils::{from_base64, to_base64};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},

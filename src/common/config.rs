@@ -4,13 +4,73 @@
 //! 包含 Seal 保险库所使用的核心配置结构。
 //! 这些结构定义了加密参数、存储行为和密钥轮换策略。
 //!
-use crate::common::utils::CryptoConfig;
 use crate::rotation::RotationPolicy;
-use std::env;
+use num_cpus;
 use serde::{Deserialize, Serialize};
-
+use std::env;
+use std::sync::Arc;
 // 注意：ConfigManager 相关的定义（如 ConfigListener, ConfigEvent, ConfigManager 本身）
 // 已被移除，因为它们的功能已被 Seal 的原子化状态管理所取代。
+
+/// 默认的并行度，通常等于CPU核心数
+fn default_parallelism() -> usize {
+    num_cpus::get()
+}
+
+/// 并行计算配置
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ParallelismConfig {
+    /// 并行处理的并行度
+    #[serde(default = "default_parallelism")]
+    pub parallelism: usize,
+}
+
+impl Default for ParallelismConfig {
+    fn default() -> Self {
+        Self {
+            parallelism: default_parallelism(),
+        }
+    }
+}
+
+/// 加密系统配置
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CryptoConfig {
+    /// 是否使用传统密码学（如RSA）
+    pub use_traditional: bool,
+    /// 是否使用后量子密码学
+    pub use_post_quantum: bool,
+    /// RSA密钥位数
+    pub rsa_key_bits: usize,
+    /// Kyber安全级别 (512/768/1024)
+    pub kyber_parameter_k: usize,
+    /// 是否使用认证加密
+    pub use_authenticated_encryption: bool,
+    /// 是否自动验证签名
+    pub auto_verify_signatures: bool,
+    /// 默认签名算法
+    pub default_signature_algorithm: String,
+    /// Argon2内存成本（默认19456 KB）
+    pub argon2_memory_cost: u32,
+    /// Argon2时间成本（默认2）
+    pub argon2_time_cost: u32,
+}
+
+impl Default for CryptoConfig {
+    fn default() -> Self {
+        Self {
+            use_traditional: true,
+            use_post_quantum: true,
+            rsa_key_bits: 3072,     // NIST建议的安全位数
+            kyber_parameter_k: 768, // NIST竞赛中的推荐级别
+            use_authenticated_encryption: true,
+            auto_verify_signatures: true,
+            default_signature_algorithm: "RSA-PSS-SHA256".to_string(),
+            argon2_memory_cost: 19456, // 19MB
+            argon2_time_cost: 2,
+        }
+    }
+}
 
 /// 存储配置
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -53,6 +113,9 @@ pub struct ConfigFile {
     /// 存储配置
     #[serde(default)]
     pub storage: StorageConfig,
+    /// 并行配置
+    #[serde(default)]
+    pub parallelism: ParallelismConfig,
 }
 
 /// 配置管理器，负责从多个源加载配置。
@@ -96,6 +159,68 @@ impl ConfigManager {
         Ok(config)
     }
 }
+
+
+/// 流式处理配置
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StreamingConfig {
+    /// 用于流式处理的缓冲区大小
+    pub buffer_size: usize,
+    /// 是否显示进度回调
+    pub show_progress: bool,
+    /// 是否在内存中保留处理后的数据
+    pub keep_in_memory: bool,
+    /// 进度回调函数
+    #[serde(skip)]
+    pub progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
+    /// 待处理的总字节数，用于进度计算
+    pub total_bytes: Option<u64>,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            buffer_size: 65536, // 64KB
+            show_progress: false,
+            keep_in_memory: false,
+            progress_callback: None,
+            total_bytes: None,
+        }
+    }
+}
+
+/// 为 StreamingConfig 添加 builder 方法：设置总字节数
+impl StreamingConfig {
+    /// 设置总字节大小（用于进度回调）
+    pub fn with_total_bytes(mut self, total: u64) -> Self {
+        self.total_bytes = Some(total);
+        self
+    }
+    /// 设置缓冲区大小
+    pub fn with_buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
+    }
+    /// 设置是否在控制台显示进度
+    pub fn with_show_progress(mut self, show: bool) -> Self {
+        self.show_progress = show;
+        self
+    }
+    /// 设置是否在内存保留完整数据
+    pub fn with_keep_in_memory(mut self, keep: bool) -> Self {
+        self.keep_in_memory = keep;
+        self
+    }
+    /// 设置进度回调
+    pub fn with_progress_callback(
+        mut self,
+        callback: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>,
+    ) -> Self {
+        self.progress_callback = Some(callback);
+        self
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

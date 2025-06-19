@@ -1,7 +1,7 @@
 //! AES-GCM 对称加密实现
+use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::to_base64;
-use crate::common::utils::CryptoConfig;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use aes_gcm::aead::{Aead, Payload, rand_core::OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce};
@@ -201,7 +201,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
 
     #[cfg(feature = "parallel")]
     #[test]

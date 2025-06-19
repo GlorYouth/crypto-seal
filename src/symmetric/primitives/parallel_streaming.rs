@@ -9,8 +9,9 @@
 //!
 //! 这种设计允许I/O操作和CPU密集型的加密操作同时进行，最大化吞吐量。
 
+use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelStreamingSystem};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -33,7 +34,8 @@ where
     reader: R,
     writer: W,
     key: &'a C::Key,
-    config: &'a StreamingConfig,
+    streaming_config: &'a StreamingConfig,
+    parallelism_config: &'a ParallelismConfig,
     additional_data: Option<&'a [u8]>,
     _phantom: std::marker::PhantomData<C>,
 }
@@ -51,14 +53,16 @@ where
         reader: R,
         writer: W,
         key: &'a C::Key,
-        config: &'a StreamingConfig,
+        streaming_config: &'a StreamingConfig,
+        parallelism_config: &'a ParallelismConfig,
         additional_data: Option<&'a [u8]>,
     ) -> Self {
         Self {
             reader,
             writer,
             key,
-            config,
+            streaming_config,
+            parallelism_config,
             additional_data,
             _phantom: std::marker::PhantomData,
         }
@@ -69,13 +73,14 @@ where
             mut reader,
             mut writer,
             key,
-            config,
+            streaming_config,
+            parallelism_config,
             additional_data,
             ..
         } = self;
 
         let additional_data = additional_data.map(|d| d.to_vec());
-        let channel_bound = config.parallelism; // 0 for unbounded in practice, though now a concrete value
+        let channel_bound = parallelism_config.parallelism;
 
         let (work_tx, work_rx) = mpsc::sync_channel::<WorkItem>(channel_bound);
         let (result_tx, result_rx) = mpsc::sync_channel::<EncryptResultItem>(channel_bound);
@@ -112,7 +117,7 @@ where
             let reader_handle = s.spawn(move || -> Result<(), Error> {
                 let mut chunk_index: u64 = 0;
                 loop {
-                    let mut buffer = vec![0u8; config.buffer_size];
+                    let mut buffer = vec![0u8; streaming_config.buffer_size];
                     let read_bytes = reader.read(&mut buffer)?;
                     if read_bytes == 0 {
                         break;
@@ -171,6 +176,8 @@ where
     reader: R,
     writer: W,
     key: &'a C::Key,
+    streaming_config: &'a StreamingConfig,
+    parallelism_config: &'a ParallelismConfig,
     additional_data: Option<&'a [u8]>,
     _phantom: std::marker::PhantomData<C>,
 }
@@ -188,13 +195,16 @@ where
         reader: R,
         writer: W,
         key: &'a C::Key,
-        _config: &'a StreamingConfig,
+        streaming_config: &'a StreamingConfig,
+        parallelism_config: &'a ParallelismConfig,
         additional_data: Option<&'a [u8]>,
     ) -> Self {
         Self {
             reader,
             writer,
             key,
+            streaming_config,
+            parallelism_config,
             additional_data,
             _phantom: std::marker::PhantomData,
         }
@@ -205,12 +215,14 @@ where
             mut reader,
             mut writer,
             key,
+            streaming_config,
+            parallelism_config,
             additional_data,
             ..
         } = self;
 
         let additional_data = additional_data.map(|d| d.to_vec());
-        let channel_bound = 128; // Arbitrary bound for backpressure
+        let channel_bound = parallelism_config.parallelism;
 
         let (work_tx, work_rx) = mpsc::sync_channel::<WorkItem>(channel_bound);
         let (result_tx, result_rx) = mpsc::sync_channel::<DecryptResultItem>(channel_bound);
@@ -293,22 +305,38 @@ where
         key: &Self::Key,
         reader: R,
         writer: W,
-        config: &StreamingConfig,
+        stream_config: &StreamingConfig,
+        parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error> {
-        ParallelStreamingEncryptor::<Self, R, W>::new(reader, writer, key, config, additional_data)
-            .process()
+        ParallelStreamingEncryptor::<Self, R, W>::new(
+            reader,
+            writer,
+            key,
+            stream_config,
+            parallel_config,
+            additional_data,
+        )
+        .process()
     }
 
     fn par_decrypt_stream<R: Read + Send, W: Write + Send>(
         key: &Self::Key,
         reader: R,
         writer: W,
-        config: &StreamingConfig,
+        stream_config: &StreamingConfig,
+        parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error> {
-        ParallelStreamingDecryptor::<Self, R, W>::new(reader, writer, key, config, additional_data)
-            .process()
+        ParallelStreamingDecryptor::<Self, R, W>::new(
+            reader,
+            writer,
+            key,
+            stream_config,
+            parallel_config,
+            additional_data,
+        )
+        .process()
     }
 }
 
@@ -331,7 +359,8 @@ mod async_impl {
             key: &Self::Key,
             reader: R,
             writer: W,
-            config: &StreamingConfig,
+            stream_config: &StreamingConfig,
+            parallel_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
         ) -> Result<(StreamingResult, W), Error>
         where
@@ -339,7 +368,8 @@ mod async_impl {
             W: AsyncWrite + Unpin + Send + 'static,
         {
             let key = key.clone();
-            let config = config.clone();
+            let stream_config = stream_config.clone();
+            let parallel_config = parallel_config.clone();
             let additional_data = additional_data.map(|d| d.to_vec());
 
             tokio::task::spawn_blocking(move || {
@@ -352,7 +382,8 @@ mod async_impl {
                     &key,
                     &mut sync_reader,
                     &mut sync_writer,
-                    &config,
+                    &stream_config,
+                    &parallel_config,
                     additional_data_slice,
                 )
                 .map(|r| (r, sync_writer.into_inner()))
@@ -365,7 +396,8 @@ mod async_impl {
             key: &Self::Key,
             reader: R,
             writer: W,
-            config: &StreamingConfig,
+            stream_config: &StreamingConfig,
+            parallel_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
         ) -> Result<(StreamingResult, W), Error>
         where
@@ -373,7 +405,8 @@ mod async_impl {
             W: AsyncWrite + Unpin + Send + 'static,
         {
             let key = key.clone();
-            let config = config.clone();
+            let stream_config = stream_config.clone();
+            let parallel_config = parallel_config.clone();
             let additional_data = additional_data.map(|d| d.to_vec());
 
             tokio::task::spawn_blocking(move || {
@@ -386,7 +419,8 @@ mod async_impl {
                     &key,
                     &mut sync_reader,
                     &mut sync_writer,
-                    &config,
+                    &stream_config,
+                    &parallel_config,
                     additional_data_slice,
                 )
                 .map(|r| (r, sync_writer.into_inner()))
@@ -400,34 +434,43 @@ mod async_impl {
 #[cfg(all(test, feature = "aes-gcm-feature"))]
 mod tests {
     use super::*;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
+    use crate::common::config::ParallelismConfig;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
 
     fn get_test_key_and_config() -> (
         <AesGcmSystem as SymmetricCryptographicSystem>::Key,
         StreamingConfig,
+        ParallelismConfig,
     ) {
         let key = AesGcmSystem::generate_key(&CryptoConfig::default()).unwrap();
-        let config = StreamingConfig {
+        let stream_config = StreamingConfig {
             buffer_size: 1024, // 1KB buffer for testing
             ..Default::default()
         };
-        (key, config)
+        let parallel_config = ParallelismConfig::default();
+        (key, stream_config, parallel_config)
     }
 
     #[test]
     fn test_parallel_streaming_roundtrip() {
-        let (key, config) = get_test_key_and_config();
+        let (key, stream_config, parallel_config) = get_test_key_and_config();
         // Use data larger than the buffer to ensure chunking
-        let original_data = vec![0x42; config.buffer_size * 5 + 123];
+        let original_data = vec![0x42; stream_config.buffer_size * 5 + 123];
 
         // Encrypt in parallel
         let mut source = Cursor::new(original_data.clone());
         let mut encrypted_dest = Cursor::new(Vec::new());
-        let enc_result =
-            AesGcmSystem::par_encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
-                .unwrap();
+        let enc_result = AesGcmSystem::par_encrypt_stream(
+            &key,
+            &mut source,
+            &mut encrypted_dest,
+            &stream_config,
+            &parallel_config,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(enc_result.bytes_processed, original_data.len() as u64);
 
@@ -438,7 +481,8 @@ mod tests {
             &key,
             &mut encrypted_source,
             &mut decrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             None,
         )
         .unwrap();
@@ -451,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_parallel_streaming_with_aad() {
-        let (key, config) = get_test_key_and_config();
+        let (key, stream_config, parallel_config) = get_test_key_and_config();
         let original_data = b"Some data to be encrypted with AAD.";
         let aad = b"additional authenticated data";
 
@@ -462,7 +506,8 @@ mod tests {
             &key,
             &mut source,
             &mut encrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             Some(aad),
         )
         .unwrap();
@@ -474,7 +519,8 @@ mod tests {
             &key,
             &mut encrypted_source,
             &mut decrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             Some(aad),
         )
         .unwrap();
@@ -484,14 +530,21 @@ mod tests {
 
     #[test]
     fn test_parallel_streaming_tampered_data_fails() {
-        let (key, config) = get_test_key_and_config();
-        let original_data = vec![0xAB; config.buffer_size * 2];
+        let (key, stream_config, parallel_config) = get_test_key_and_config();
+        let original_data = vec![0xAB; stream_config.buffer_size * 2];
 
         // Encrypt
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        AesGcmSystem::par_encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
-            .unwrap();
+        AesGcmSystem::par_encrypt_stream(
+            &key,
+            &mut source,
+            &mut encrypted_dest,
+            &stream_config,
+            &parallel_config,
+            None,
+        )
+        .unwrap();
 
         let mut tampered_data = encrypted_dest.into_inner();
         // Tamper with the last byte of the ciphertext
@@ -507,7 +560,8 @@ mod tests {
             &key,
             &mut encrypted_source,
             &mut decrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             None,
         );
 
@@ -516,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_parallel_streaming_wrong_aad_fails() {
-        let (key, config) = get_test_key_and_config();
+        let (key, stream_config, parallel_config) = get_test_key_and_config();
         let original_data = b"some secret data";
         let aad = b"correct aad";
         let wrong_aad = b"wrong aad";
@@ -528,7 +582,8 @@ mod tests {
             &key,
             &mut source,
             &mut encrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             Some(aad),
         )
         .unwrap();
@@ -540,7 +595,8 @@ mod tests {
             &key,
             &mut encrypted_source,
             &mut decrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             Some(wrong_aad),
         );
 
@@ -549,15 +605,21 @@ mod tests {
 
     #[test]
     fn test_parallel_streaming_empty_input() {
-        let (key, config) = get_test_key_and_config();
+        let (key, stream_config, parallel_config) = get_test_key_and_config();
         let original_data = b"";
 
         // Encrypt
         let mut source = Cursor::new(original_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
-        let enc_result =
-            AesGcmSystem::par_encrypt_stream(&key, &mut source, &mut encrypted_dest, &config, None)
-                .unwrap();
+        let enc_result = AesGcmSystem::par_encrypt_stream(
+            &key,
+            &mut source,
+            &mut encrypted_dest,
+            &stream_config,
+            &parallel_config,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(enc_result.bytes_processed, 0);
 
@@ -568,7 +630,8 @@ mod tests {
             &key,
             &mut encrypted_source,
             &mut decrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             None,
         )
         .unwrap();

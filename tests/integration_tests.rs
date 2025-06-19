@@ -2,7 +2,7 @@
 
 use seal_kit::Seal;
 use seal_kit::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-use seal_kit::common::streaming::StreamingConfig;
+use seal_kit::common::config::StreamingConfig;
 use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
 use secrecy::SecretString;
 use std::io::Cursor;

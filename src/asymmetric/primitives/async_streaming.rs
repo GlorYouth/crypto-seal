@@ -2,7 +2,7 @@
 
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsyncStreamingSystem};
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::primitives::async_streaming::{
     AsyncStreamingDecryptor as SymmetricAsyncDecryptor,
     AsyncStreamingEncryptor as SymmetricAsyncEncryptor,
@@ -10,6 +10,7 @@ use crate::symmetric::primitives::async_streaming::{
 use crate::symmetric::traits::SymmetricAsyncStreamingSystem;
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use crate::common::config::StreamingConfig;
 
 /// 异步混合流式加密器
 pub struct AsyncStreamingEncryptor<'a, C, R, W>
@@ -226,7 +227,7 @@ where
 mod tests {
     use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
     use tokio::io::BufReader;

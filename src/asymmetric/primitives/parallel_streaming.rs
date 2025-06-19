@@ -6,8 +6,9 @@
 //! 而自身只负责处理一次性的对称密钥的封装和恢复。
 
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricParallelStreamingSystem};
+use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::io::{Read, Write};
 
@@ -22,7 +23,8 @@ where
         public_key: &Self::PublicKey,
         reader: R,
         mut writer: W,
-        config: &StreamingConfig,
+        stream_config: &StreamingConfig,
+        parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -45,7 +47,14 @@ where
         writer.write_all(&encrypted_key_bytes)?;
 
         // 4. **关键**: 使用对称并行流加密器处理剩余的数据流
-        S::par_encrypt_stream(&symmetric_key, reader, writer, config, additional_data)
+        S::par_encrypt_stream(
+            &symmetric_key,
+            reader,
+            writer,
+            stream_config,
+            parallel_config,
+            additional_data,
+        )
     }
 
     /// 执行混合并行流式解密操作
@@ -53,7 +62,8 @@ where
         private_key: &Self::PrivateKey,
         mut reader: R,
         writer: W,
-        config: &StreamingConfig,
+        stream_config: &StreamingConfig,
+        parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
@@ -80,7 +90,14 @@ where
         let symmetric_key = S::import_key(&key_str)?;
 
         // 3. **关键**: 使用对称并行流解密器处理剩余的数据流
-        S::par_decrypt_stream(&symmetric_key, reader, writer, config, additional_data)
+        S::par_decrypt_stream(
+            &symmetric_key,
+            reader,
+            writer,
+            stream_config,
+            parallel_config,
+            additional_data,
+        )
     }
 }
 
@@ -104,7 +121,8 @@ mod async_impl {
             public_key: &Self::PublicKey,
             reader: R,
             mut writer: W,
-            config: &StreamingConfig,
+            streaming_config: &StreamingConfig,
+            parallelism_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
         ) -> Result<(StreamingResult, W), Error>
         where
@@ -124,15 +142,23 @@ mod async_impl {
             writer.write_all(&key_len).await?;
             writer.write_all(&encrypted_key_bytes).await?;
 
-            S::par_encrypt_stream_async(&symmetric_key, reader, writer, config, additional_data)
-                .await
+            S::par_encrypt_stream_async(
+                &symmetric_key,
+                reader,
+                writer,
+                streaming_config,
+                parallelism_config,
+                additional_data,
+            )
+            .await
         }
 
         async fn par_decrypt_stream_async<S, R, W>(
             private_key: &Self::PrivateKey,
             mut reader: R,
             writer: W,
-            config: &StreamingConfig,
+            streaming_config: &StreamingConfig,
+            parallelism_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
         ) -> Result<(StreamingResult, W), Error>
         where
@@ -156,8 +182,15 @@ mod async_impl {
             let key_str = String::from_utf8(decrypted_key_bytes)?;
             let symmetric_key = S::import_key(&key_str)?;
 
-            S::par_decrypt_stream_async(&symmetric_key, reader, writer, config, additional_data)
-                .await
+            S::par_decrypt_stream_async(
+                &symmetric_key,
+                reader,
+                writer,
+                streaming_config,
+                parallelism_config,
+                additional_data,
+            )
+            .await
         }
     }
 }
@@ -166,7 +199,8 @@ mod async_impl {
 mod tests {
     use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
+    use crate::common::config::ParallelismConfig;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
 
@@ -174,11 +208,12 @@ mod tests {
     fn test_hybrid_parallel_streaming_roundtrip() {
         // Setup
         let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&CryptoConfig::default()).unwrap();
-        let config = StreamingConfig {
+        let stream_config = StreamingConfig {
             buffer_size: 2048, // Use a small buffer to ensure multiple chunks
             ..Default::default()
         };
-        let original_data = vec![0xFE; config.buffer_size * 4 + 777]; // Data larger than buffer
+        let parallel_config = ParallelismConfig::default();
+        let original_data = vec![0xFE; stream_config.buffer_size * 4 + 777]; // Data larger than buffer
 
         // Encrypt in parallel
         let mut source = Cursor::new(original_data.clone());
@@ -187,7 +222,8 @@ mod tests {
             &pk,
             &mut source,
             &mut encrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             None,
         )
         .unwrap();
@@ -201,7 +237,8 @@ mod tests {
             &sk,
             &mut encrypted_source,
             &mut decrypted_dest,
-            &config,
+            &stream_config,
+            &parallel_config,
             None,
         )
         .unwrap();

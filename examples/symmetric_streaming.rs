@@ -3,7 +3,7 @@
 //! 运行: `cargo run --example symmetric_streaming --features="aes-gcm-feature"`
 
 use seal_kit::Seal;
-use seal_kit::common::streaming::StreamingConfig;
+use seal_kit::common::config::StreamingConfig;
 use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
 use secrecy::SecretString;
 use std::io::Cursor;

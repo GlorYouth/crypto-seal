@@ -1,12 +1,13 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::primitives::streaming::{
     SymmetricStreamingDecryptor, SymmetricStreamingEncryptor,
 };
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use crate::common::config::StreamingConfig;
 
 /// 使用混合加密实现流式加密器
 pub struct StreamingEncryptor<'a, C, R, W>
@@ -220,7 +221,7 @@ mod tests {
     use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
 

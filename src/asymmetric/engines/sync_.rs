@@ -1,8 +1,9 @@
 //! Q-Seal核心引擎，提供统一的高级API
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
+use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricSyncStreamingSystem;
 use secrecy::SecretString;
 use std::io::{Read, Write};
@@ -179,7 +180,8 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -203,8 +205,14 @@ where
         writer.write_all(key_metadata.id.as_bytes())?;
         writer.write_all(b":")?;
 
-        let result =
-            T::par_encrypt_stream::<S, _, _>(&public_key, &mut reader, &mut writer, config, None)?;
+        let result = T::par_encrypt_stream::<S, _, _>(
+            &public_key,
+            &mut reader,
+            &mut writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )?;
 
         self.key_manager.increment_usage_count(&self.password)?;
 
@@ -217,7 +225,8 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -245,7 +254,14 @@ where
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
 
-        T::par_decrypt_stream::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
+        T::par_decrypt_stream::<S, _, _>(
+            &private_key,
+            &mut reader,
+            &mut writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )
     }
 }
 
@@ -263,7 +279,7 @@ mod tests {
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{tempdir, TempDir};
 
     fn setup() -> (Arc<Seal>, SecretString, TempDir) {
         let dir = tempdir().unwrap();
@@ -285,10 +301,16 @@ mod tests {
         let mut source = Cursor::new(data.clone());
         let mut encrypted_dest = Cursor::new(Vec::new());
 
-        let config = StreamingConfig::default();
+        let streaming_config = StreamingConfig::default();
+        let parallelism_config = ParallelismConfig::default();
 
         engine
-            .par_encrypt_stream::<AesGcmSystem, _, _>(&mut source, &mut encrypted_dest, &config)
+            .par_encrypt_stream::<AesGcmSystem, _, _>(
+                &mut source,
+                &mut encrypted_dest,
+                &streaming_config,
+                &parallelism_config,
+            )
             .unwrap();
 
         let encrypted_data = encrypted_dest.into_inner();
@@ -299,7 +321,8 @@ mod tests {
             .par_decrypt_stream::<AesGcmSystem, _, _>(
                 &mut encrypted_source,
                 &mut decrypted_dest,
-                &config,
+                &streaming_config,
+                &parallelism_config,
             )
             .unwrap();
 

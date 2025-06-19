@@ -1,9 +1,9 @@
 //! 对称加密的同步流式处理实现
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-
+use crate::common::config::StreamingConfig;
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
 /// 对称流式加密器
 pub struct SymmetricStreamingEncryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
@@ -213,7 +213,7 @@ where
 #[cfg(all(test, feature = "aes-gcm-feature"))]
 mod tests {
     use super::*;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
     use std::sync::Arc;

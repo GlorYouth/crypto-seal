@@ -1,7 +1,8 @@
 use crate::Error;
-use crate::common::streaming::StreamingConfig;
+use crate::common::config::{CryptoConfig, StreamingConfig};
+use crate::common::config::ParallelismConfig;
 use crate::common::streaming::StreamingResult;
-use crate::common::utils::CryptoConfig;
+use crate::symmetric::traits::SymmetricParallelStreamingSystem;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::io::{Read, Write};
@@ -130,35 +131,34 @@ where
 }
 
 #[cfg(feature = "parallel")]
-/// 并行同步流式加密系统扩展
-pub trait AsymmetricParallelStreamingSystem: AsymmetricCryptographicSystem
-where
-    Error: From<Self::Error>,
-{
-    /// 同步并行流式加密
+/// 支持并行流式处理的非对称加密系统
+pub trait AsymmetricParallelStreamingSystem: AsymmetricCryptographicSystem {
+    /// 并行流式加密
     fn par_encrypt_stream<S, R, W>(
         public_key: &Self::PublicKey,
         reader: R,
         writer: W,
-        config: &StreamingConfig,
+        stream_config: &StreamingConfig,
+        parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
-        S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+        S: SymmetricParallelStreamingSystem,
         Error: From<S::Error>,
         R: Read + Send,
         W: Write + Send;
 
-    /// 同步并行流式解密
+    /// 并行流式解密
     fn par_decrypt_stream<S, R, W>(
         private_key: &Self::PrivateKey,
         reader: R,
         writer: W,
-        config: &StreamingConfig,
+        stream_config: &StreamingConfig,
+        parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<StreamingResult, Error>
     where
-        S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
+        S: SymmetricParallelStreamingSystem,
         Error: From<S::Error>,
         R: Read + Send,
         W: Write + Send;
@@ -179,7 +179,8 @@ where
         public_key: &Self::PublicKey,
         reader: R,
         writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<(StreamingResult, W), Error>
     where
@@ -195,7 +196,8 @@ where
         private_key: &Self::PrivateKey,
         reader: R,
         writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
     ) -> Result<(StreamingResult, W), Error>
     where

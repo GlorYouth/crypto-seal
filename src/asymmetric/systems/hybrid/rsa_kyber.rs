@@ -9,9 +9,10 @@ use crate::asymmetric::systems::traditional::rsa::{
     RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper,
 };
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use crate::common::config::CryptoConfig;
 use crate::common::errors::Error;
 use crate::common::traits::AuthenticatedCryptoSystem;
-use crate::common::utils::{Base64String, CryptoConfig, from_base64, to_base64};
+use crate::common::utils::{Base64String, from_base64, to_base64};
 use aes_gcm::KeyInit;
 use aes_gcm::aead::Aead;
 use aes_gcm::aead::AeadCore;
@@ -267,7 +268,7 @@ impl AuthenticatedCryptoSystem for RsaKyberCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::utils::CryptoConfig;
+    use crate::common::config::CryptoConfig;
 
     fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
         let config = CryptoConfig::default();
@@ -394,7 +395,7 @@ mod tests {
     mod async_tests {
         use super::*;
         use crate::asymmetric::traits::AsyncStreamingSystem;
-        use crate::common::streaming::StreamingConfig;
+        use crate::common::config::StreamingConfig;
         use crate::symmetric::systems::aes_gcm::AesGcmSystem;
         use std::io::Cursor;
 

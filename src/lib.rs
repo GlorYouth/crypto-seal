@@ -61,7 +61,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
 mod tests {
     use super::*;
-    use crate::common::utils::{CryptoConfig, constant_time_eq};
+    use crate::common::config::CryptoConfig;
+    use crate::common::utils::constant_time_eq;
 
     #[test]
     #[cfg(all(feature = "traditional", feature = "post-quantum"))]

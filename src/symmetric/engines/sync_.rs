@@ -1,6 +1,7 @@
 //! 对称加密引擎 `SymmetricQSealEngine`
+use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
 use memchr::memchr;
@@ -231,7 +232,8 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         T: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -246,7 +248,14 @@ where
         writer.write_all(key_metadata.id.as_bytes())?;
         writer.write_all(b":")?;
 
-        let result = T::par_encrypt_stream(&primary_key, &mut reader, &mut writer, config, None)?;
+        let result = T::par_encrypt_stream(
+            &primary_key,
+            &mut reader,
+            &mut writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )?;
 
         self.key_manager.increment_usage_count(&self.password)?;
 
@@ -261,7 +270,8 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         T: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -285,7 +295,14 @@ where
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
 
-        T::par_decrypt_stream(&key, &mut reader, &mut writer, config, None)
+        T::par_decrypt_stream(
+            &key,
+            &mut reader,
+            &mut writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )
     }
 }
 
@@ -297,7 +314,7 @@ mod tests {
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{tempdir, TempDir};
 
     // 辅助函数：设置一个全新的 Seal 和密码
     fn setup() -> (Arc<Seal>, SecretString, TempDir) {
@@ -436,10 +453,16 @@ mod tests {
         let mut source = Cursor::new(data.clone());
         let mut encrypted_dest = Cursor::new(Vec::new());
 
-        let config = StreamingConfig::default();
+        let streaming_config = StreamingConfig::default();
+        let parallelism_config = ParallelismConfig::default();
 
         engine
-            .par_encrypt_stream(&mut source, &mut encrypted_dest, &config)
+            .par_encrypt_stream(
+                &mut source,
+                &mut encrypted_dest,
+                &streaming_config,
+                &parallelism_config,
+            )
             .unwrap();
 
         let encrypted_data = encrypted_dest.into_inner();
@@ -447,7 +470,12 @@ mod tests {
         let mut decrypted_dest = Cursor::new(Vec::new());
 
         engine
-            .par_decrypt_stream(&mut encrypted_source, &mut decrypted_dest, &config)
+            .par_decrypt_stream(
+                &mut encrypted_source,
+                &mut decrypted_dest,
+                &streaming_config,
+                &parallelism_config,
+            )
             .unwrap();
 
         let decrypted = decrypted_dest.into_inner();

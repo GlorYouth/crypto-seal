@@ -3,8 +3,9 @@
 
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::AsyncStreamingSystem;
+use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
-use crate::common::streaming::{StreamingConfig, StreamingResult};
+use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricAsyncStreamingSystem;
 use secrecy::SecretString;
 use std::marker::PhantomData;
@@ -201,7 +202,8 @@ where
         &mut self,
         reader: R,
         mut writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<(StreamingResult, W), Error>
     where
         S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + Send + Sync + 'static,
@@ -229,9 +231,15 @@ where
         writer.write_all(key_metadata.id.as_bytes()).await?;
         writer.write_all(b":").await?;
 
-        let result =
-            T::par_encrypt_stream_async::<S, _, _>(&public_key, reader, writer, config, None)
-                .await?;
+        let result = T::par_encrypt_stream_async::<S, _, _>(
+            &public_key,
+            reader,
+            writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )
+        .await?;
 
         self.key_manager
             .increment_usage_count_async(&self.password)
@@ -246,7 +254,8 @@ where
         &self,
         mut reader: R,
         writer: W,
-        config: &StreamingConfig,
+        streaming_config: &StreamingConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<(StreamingResult, W), Error>
     where
         S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + Send + Sync + 'static,
@@ -276,7 +285,15 @@ where
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
 
-        T::par_decrypt_stream_async::<S, _, _>(&private_key, reader, writer, config, None).await
+        T::par_decrypt_stream_async::<S, _, _>(
+            &private_key,
+            reader,
+            writer,
+            streaming_config,
+            parallelism_config,
+            None,
+        )
+        .await
     }
 }
 
@@ -294,7 +311,7 @@ mod tests {
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{TempDir, tempdir};
+    use tempfile::{tempdir, TempDir};
 
     // 辅助函数：设置一个全新的 Seal 和密码
     async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
@@ -318,10 +335,16 @@ mod tests {
         let source = Cursor::new(data.clone());
         let encrypted_dest = Cursor::new(Vec::new());
 
-        let config = StreamingConfig::default();
+        let streaming_config = StreamingConfig::default();
+        let parallelism_config = ParallelismConfig::default();
 
         let writer = engine
-            .par_encrypt_stream_async::<AesGcmSystem, _, _>(source, encrypted_dest, &config)
+            .par_encrypt_stream_async::<AesGcmSystem, _, _>(
+                source,
+                encrypted_dest,
+                &streaming_config,
+                &parallelism_config,
+            )
             .await
             .unwrap()
             .1;
@@ -334,7 +357,8 @@ mod tests {
             .par_decrypt_stream_async::<AesGcmSystem, _, _>(
                 encrypted_source,
                 decrypted_dest,
-                &config,
+                &streaming_config,
+                &parallelism_config,
             )
             .await
             .unwrap()

@@ -123,45 +123,6 @@ impl AsRef<[u8]> for SecureBytes {
     }
 }
 
-/// 加密系统配置
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct CryptoConfig {
-    /// 是否使用传统密码学（如RSA）
-    pub use_traditional: bool,
-    /// 是否使用后量子密码学
-    pub use_post_quantum: bool,
-    /// RSA密钥位数
-    pub rsa_key_bits: usize,
-    /// Kyber安全级别 (512/768/1024)
-    pub kyber_parameter_k: usize,
-    /// 是否使用认证加密
-    pub use_authenticated_encryption: bool,
-    /// 是否自动验证签名
-    pub auto_verify_signatures: bool,
-    /// 默认签名算法
-    pub default_signature_algorithm: String,
-    /// Argon2内存成本（默认19456 KB）
-    pub argon2_memory_cost: u32,
-    /// Argon2时间成本（默认2）
-    pub argon2_time_cost: u32,
-}
-
-impl Default for CryptoConfig {
-    fn default() -> Self {
-        Self {
-            use_traditional: true,
-            use_post_quantum: true,
-            rsa_key_bits: 3072,     // NIST建议的安全位数
-            kyber_parameter_k: 768, // NIST竞赛中的推荐级别
-            use_authenticated_encryption: true,
-            auto_verify_signatures: true,
-            default_signature_algorithm: "RSA-PSS-SHA256".to_string(),
-            argon2_memory_cost: 19456, // 19MB
-            argon2_time_cost: 2,
-        }
-    }
-}
-
 /// 自动清零的字节向量，用于私钥等敏感数据
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct ZeroizingVec(#[serde(with = "serde_bytes")] pub Vec<u8>);
@@ -181,8 +142,9 @@ impl AsRef<[u8]> for ZeroizingVec {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::config::CryptoConfig;
     use crate::common::utils::{
-        Base64String, CryptoConfig, SecureBytes, constant_time_eq, from_base64, to_base64,
+        Base64String, SecureBytes, constant_time_eq, from_base64, to_base64,
     };
 
     #[test]
