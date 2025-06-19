@@ -1,5 +1,5 @@
-use crate::common::config::{CryptoConfig, StreamingConfig};
 use crate::common::config::ParallelismConfig;
+use crate::common::config::{CryptoConfig, StreamingConfig};
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use std::fmt::Debug;

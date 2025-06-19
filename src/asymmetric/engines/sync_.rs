@@ -1,7 +1,6 @@
 //! Q-Seal核心引擎，提供统一的高级API
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricSyncStreamingSystem};
-use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricSyncStreamingSystem;
@@ -100,7 +99,6 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: SymmetricSyncStreamingSystem,
@@ -127,8 +125,9 @@ where
         writer.write_all(b":")?;
 
         // 4. 流式加密剩余数据
+        let config = self.key_manager.config().streaming;
         let result =
-            T::encrypt_stream::<S, _, _>(&public_key, &mut reader, &mut writer, config, None)?;
+            T::encrypt_stream::<S, _, _>(&public_key, &mut reader, &mut writer, &config, None)?;
 
         // 5. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
@@ -141,7 +140,6 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: SymmetricSyncStreamingSystem,
@@ -171,7 +169,8 @@ where
             })?;
 
         // 3. 解密剩余的流数据
-        T::decrypt_stream::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
+        let config = self.key_manager.config().streaming;
+        T::decrypt_stream::<S, _, _>(&private_key, &mut reader, &mut writer, &config, None)
     }
 
     #[cfg(feature = "parallel")]
@@ -180,8 +179,6 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -209,8 +206,8 @@ where
             &public_key,
             &mut reader,
             &mut writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )?;
 
@@ -225,8 +222,6 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -258,8 +253,8 @@ where
             &private_key,
             &mut reader,
             &mut writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )
     }
@@ -272,14 +267,13 @@ where
     feature = "aes-gcm-feature"
 ))]
 mod tests {
-    use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use crate::seal::Seal;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     fn setup() -> (Arc<Seal>, SecretString, TempDir) {
         let dir = tempdir().unwrap();
@@ -301,16 +295,8 @@ mod tests {
         let mut source = Cursor::new(data.clone());
         let mut encrypted_dest = Cursor::new(Vec::new());
 
-        let streaming_config = StreamingConfig::default();
-        let parallelism_config = ParallelismConfig::default();
-
         engine
-            .par_encrypt_stream::<AesGcmSystem, _, _>(
-                &mut source,
-                &mut encrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_encrypt_stream::<AesGcmSystem, _, _>(&mut source, &mut encrypted_dest)
             .unwrap();
 
         let encrypted_data = encrypted_dest.into_inner();
@@ -318,12 +304,7 @@ mod tests {
         let mut decrypted_dest = Cursor::new(Vec::new());
 
         engine
-            .par_decrypt_stream::<AesGcmSystem, _, _>(
-                &mut encrypted_source,
-                &mut decrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_source, &mut decrypted_dest)
             .unwrap();
 
         let decrypted = decrypted_dest.into_inner();

@@ -113,6 +113,9 @@ pub struct ConfigFile {
     /// 存储配置
     #[serde(default)]
     pub storage: StorageConfig,
+    /// 流式处理配置
+    #[serde(default)]
+    pub streaming: StreamingConfig,
     /// 并行配置
     #[serde(default)]
     pub parallelism: ParallelismConfig,
@@ -160,7 +163,6 @@ impl ConfigManager {
     }
 }
 
-
 /// 流式处理配置
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StreamingConfig {
@@ -175,6 +177,36 @@ pub struct StreamingConfig {
     pub progress_callback: Option<Arc<dyn Fn(u64, Option<u64>) + Send + Sync>>,
     /// 待处理的总字节数，用于进度计算
     pub total_bytes: Option<u64>,
+}
+
+use std::fmt;
+
+impl fmt::Debug for StreamingConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamingConfig")
+            .field("buffer_size", &self.buffer_size)
+            .field("show_progress", &self.show_progress)
+            .field("keep_in_memory", &self.keep_in_memory)
+            .field(
+                "progress_callback",
+                &if self.progress_callback.is_some() {
+                    "Some(<function>)"
+                } else {
+                    "None"
+                },
+            )
+            .field("total_bytes", &self.total_bytes)
+            .finish()
+    }
+}
+
+impl PartialEq for StreamingConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.buffer_size == other.buffer_size
+            && self.show_progress == other.show_progress
+            && self.keep_in_memory == other.keep_in_memory
+            && self.total_bytes == other.total_bytes
+    }
 }
 
 impl Default for StreamingConfig {
@@ -220,7 +252,6 @@ impl StreamingConfig {
         self
     }
 }
-
 
 #[cfg(test)]
 mod tests {

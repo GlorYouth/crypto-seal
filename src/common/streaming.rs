@@ -6,4 +6,3 @@ pub struct StreamingResult {
     /// 如果配置了 keep_in_memory，则包含完整数据，否则为 None
     pub buffer: Option<Vec<u8>>,
 }
-

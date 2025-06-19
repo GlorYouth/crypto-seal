@@ -9,7 +9,6 @@ use crate::asymmetric::traits::{AsymmetricCryptographicSystem, AsymmetricParalle
 use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
-use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::io::{Read, Write};
 
 /// 为所有 `AsymmetricCryptographicSystem` 实现 `AsymmetricParallelStreamingSystem`。

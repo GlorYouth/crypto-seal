@@ -1,4 +1,5 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+use crate::common::config::StreamingConfig;
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::primitives::streaming::{
@@ -7,7 +8,6 @@ use crate::symmetric::primitives::streaming::{
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use crate::common::config::StreamingConfig;
 
 /// 使用混合加密实现流式加密器
 pub struct StreamingEncryptor<'a, C, R, W>

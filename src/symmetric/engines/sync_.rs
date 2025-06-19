@@ -1,5 +1,4 @@
 //! 对称加密引擎 `SymmetricQSealEngine`
-use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
@@ -106,7 +105,6 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         // 1. 获取主密钥
         let primary_key = self.key_manager.get_primary_key::<T>()?.ok_or_else(|| {
@@ -121,7 +119,8 @@ where
         writer.write_all(b":")?;
 
         // 3. 流式加密剩余数据
-        let result = T::encrypt_stream(&primary_key, &mut reader, &mut writer, config, None)?;
+        let config = self.key_manager.config().streaming;
+        let result = T::encrypt_stream(&primary_key, &mut reader, &mut writer, &config, None)?;
 
         // 4. 增加使用计数
         self.key_manager.increment_usage_count(&self.password)?;
@@ -134,7 +133,6 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error> {
         // 1. 从流中读取 key_id
         let mut key_id_buf = Vec::new();
@@ -158,7 +156,8 @@ where
             })?;
 
         // 3. 解密剩余的流数据
-        T::decrypt_stream(&key, &mut reader, &mut writer, config, None)
+        let config = self.key_manager.config().streaming;
+        T::decrypt_stream(&key, &mut reader, &mut writer, &config, None)
     }
 
     #[cfg(feature = "parallel")]
@@ -232,8 +231,6 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         T: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -252,8 +249,8 @@ where
             &primary_key,
             &mut reader,
             &mut writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )?;
 
@@ -270,8 +267,6 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<StreamingResult, Error>
     where
         T: crate::symmetric::traits::SymmetricParallelStreamingSystem,
@@ -295,12 +290,13 @@ where
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
 
+        let streaming_config = self.key_manager.config().streaming;
         T::par_decrypt_stream(
             &key,
             &mut reader,
             &mut writer,
-            streaming_config,
-            parallelism_config,
+            &streaming_config,
+            &self.key_manager.config().parallelism,
             None,
         )
     }
@@ -308,13 +304,12 @@ where
 
 #[cfg(all(test, feature = "aes-gcm-feature"))]
 mod tests {
-    use super::*;
     use crate::seal::Seal;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     // 辅助函数：设置一个全新的 Seal 和密码
     fn setup() -> (Arc<Seal>, SecretString, TempDir) {
@@ -404,25 +399,23 @@ mod tests {
             .symmetric_sync_engine::<AesGcmSystem>(password)
             .unwrap();
 
-        let plaintext = b"some very long secret data that should be streamed";
-        let mut reader = Cursor::new(plaintext);
+        let source_data = b"This is a test for streaming encryption and decryption.";
+        let mut reader = Cursor::new(source_data);
         let mut encrypted_writer = Cursor::new(Vec::new());
-
-        let config = StreamingConfig::default();
 
         // 加密
         engine
-            .encrypt_stream(&mut reader, &mut encrypted_writer, &config)
+            .encrypt_stream(&mut reader, &mut encrypted_writer)
             .unwrap();
 
         // 解密
         let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
         let mut decrypted_writer = Cursor::new(Vec::new());
         engine
-            .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer, &config)
+            .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer)
             .unwrap();
 
-        assert_eq!(decrypted_writer.into_inner(), plaintext);
+        assert_eq!(decrypted_writer.into_inner(), source_data);
     }
 
     #[cfg(feature = "parallel")]
@@ -446,39 +439,26 @@ mod tests {
     fn test_engine_parallel_streaming_roundtrip() {
         let (seal, password, _dir) = setup();
         let mut engine = seal
-            .symmetric_sync_engine::<AesGcmSystem>(password)
+            .symmetric_sync_engine::<AesGcmSystem>(password.clone())
             .unwrap();
 
-        let data = vec![2u8; 1024 * 5]; // 5KB data
-        let mut source = Cursor::new(data.clone());
+        let source_data = b"This is a longer test for parallel streaming encryption and decryption which needs to be larger than a single chunk size to be effective.";
+        let mut source = Cursor::new(source_data);
         let mut encrypted_dest = Cursor::new(Vec::new());
 
-        let streaming_config = StreamingConfig::default();
-        let parallelism_config = ParallelismConfig::default();
-
+        // 并行加密
         engine
-            .par_encrypt_stream(
-                &mut source,
-                &mut encrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_encrypt_stream(&mut source, &mut encrypted_dest)
             .unwrap();
 
-        let encrypted_data = encrypted_dest.into_inner();
-        let mut encrypted_source = Cursor::new(encrypted_data);
+        // 并行解密
+        let mut encrypted_source = Cursor::new(encrypted_dest.into_inner());
         let mut decrypted_dest = Cursor::new(Vec::new());
 
         engine
-            .par_decrypt_stream(
-                &mut encrypted_source,
-                &mut decrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_decrypt_stream(&mut encrypted_source, &mut decrypted_dest)
             .unwrap();
 
-        let decrypted = decrypted_dest.into_inner();
-        assert_eq!(decrypted, data);
+        assert_eq!(decrypted_dest.into_inner(), source_data);
     }
 }

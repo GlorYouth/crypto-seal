@@ -215,7 +215,7 @@ where
             mut reader,
             mut writer,
             key,
-            streaming_config,
+            streaming_config: _streaming_config,
             parallelism_config,
             additional_data,
             ..

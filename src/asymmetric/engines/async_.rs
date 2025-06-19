@@ -3,7 +3,6 @@
 
 use crate::asymmetric::rotation::AsymmetricKeyRotationManager;
 use crate::asymmetric::traits::AsyncStreamingSystem;
-use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricAsyncStreamingSystem;
@@ -112,7 +111,6 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: SymmetricAsyncStreamingSystem + Send + Sync + 'static,
@@ -143,9 +141,15 @@ where
         writer.write_all(b":").await?;
 
         // 4. 流式加密剩余数据
-        let result =
-            T::encrypt_stream_async::<S, _, _>(&public_key, &mut reader, &mut writer, config, None)
-                .await?;
+        let config = self.key_manager.config().streaming;
+        let result = T::encrypt_stream_async::<S, _, _>(
+            &public_key,
+            &mut reader,
+            &mut writer,
+            &config,
+            None,
+        )
+        .await?;
 
         // 5. 增加使用计数
         self.key_manager
@@ -160,7 +164,6 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         S: SymmetricAsyncStreamingSystem + Send + Sync + 'static,
@@ -192,7 +195,8 @@ where
             })?;
 
         // 3. 解密剩余的流数据
-        T::decrypt_stream_async::<S, _, _>(&private_key, &mut reader, &mut writer, config, None)
+        let config = self.key_manager.config().streaming;
+        T::decrypt_stream_async::<S, _, _>(&private_key, &mut reader, &mut writer, &config, None)
             .await
     }
 
@@ -202,8 +206,6 @@ where
         &mut self,
         reader: R,
         mut writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<(StreamingResult, W), Error>
     where
         S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + Send + Sync + 'static,
@@ -235,8 +237,8 @@ where
             &public_key,
             reader,
             writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )
         .await?;
@@ -254,8 +256,6 @@ where
         &self,
         mut reader: R,
         writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<(StreamingResult, W), Error>
     where
         S: crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem + Send + Sync + 'static,
@@ -289,8 +289,8 @@ where
             &private_key,
             reader,
             writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )
         .await
@@ -304,14 +304,13 @@ where
     feature = "aes-gcm-feature"
 ))]
 mod tests {
-    use super::*;
     use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
     use crate::seal::Seal;
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use secrecy::SecretString;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     // 辅助函数：设置一个全新的 Seal 和密码
     async fn setup() -> (Arc<Seal>, SecretString, TempDir) {
@@ -335,16 +334,8 @@ mod tests {
         let source = Cursor::new(data.clone());
         let encrypted_dest = Cursor::new(Vec::new());
 
-        let streaming_config = StreamingConfig::default();
-        let parallelism_config = ParallelismConfig::default();
-
         let writer = engine
-            .par_encrypt_stream_async::<AesGcmSystem, _, _>(
-                source,
-                encrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_encrypt_stream_async::<AesGcmSystem, _, _>(source, encrypted_dest)
             .await
             .unwrap()
             .1;
@@ -354,12 +345,7 @@ mod tests {
         let decrypted_dest = Cursor::new(Vec::new());
 
         let writer = engine
-            .par_decrypt_stream_async::<AesGcmSystem, _, _>(
-                encrypted_source,
-                decrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_decrypt_stream_async::<AesGcmSystem, _, _>(encrypted_source, decrypted_dest)
             .await
             .unwrap()
             .1;

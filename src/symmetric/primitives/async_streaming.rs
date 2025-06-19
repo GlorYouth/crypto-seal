@@ -1,11 +1,11 @@
 #![cfg(feature = "async-engine")]
 
+use crate::common::config::StreamingConfig;
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::{SymmetricAsyncStreamingSystem, SymmetricCryptographicSystem};
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use crate::common::config::StreamingConfig;
 
 /// 异步对称流式加密器
 pub struct AsyncStreamingEncryptor<'a, C, R, W>

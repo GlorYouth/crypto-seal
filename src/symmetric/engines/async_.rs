@@ -2,7 +2,6 @@
 
 // --- BEGIN Top-level imports ---
 // 这里只保留模块本身需要的 `use` 语句
-use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::rotation::SymmetricKeyRotationManager;
@@ -97,7 +96,6 @@ where
         &mut self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         R: AsyncRead + Unpin + Send,
@@ -111,8 +109,9 @@ where
         })?;
         writer.write_all(key_metadata.id.as_bytes()).await?;
         writer.write_all(b":").await?;
+        let config = self.key_manager.config().streaming;
         let result =
-            T::encrypt_stream_async(&primary_key, &mut reader, &mut writer, config, None).await?;
+            T::encrypt_stream_async(&primary_key, &mut reader, &mut writer, &config, None).await?;
         self.key_manager
             .increment_usage_count_async(&self.password)
             .await?;
@@ -123,7 +122,6 @@ where
         &self,
         mut reader: R,
         mut writer: W,
-        config: &StreamingConfig,
     ) -> Result<StreamingResult, Error>
     where
         R: AsyncRead + Unpin + Send,
@@ -146,7 +144,8 @@ where
             .ok_or_else(|| {
                 Error::KeyManagement(format!("Could not find or derive key for ID: {}", key_id))
             })?;
-        T::decrypt_stream_async(&key, &mut reader, &mut writer, config, None).await
+        let config = self.key_manager.config().streaming;
+        T::decrypt_stream_async(&key, &mut reader, &mut writer, &config, None).await
     }
 
     #[cfg(feature = "parallel")]
@@ -155,8 +154,6 @@ where
         &mut self,
         reader: R,
         mut writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<(StreamingResult, W), Error>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -175,8 +172,8 @@ where
             &primary_key,
             reader,
             writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )
         .await?;
@@ -192,8 +189,6 @@ where
         &self,
         mut reader: R,
         writer: W,
-        streaming_config: &StreamingConfig,
-        parallelism_config: &ParallelismConfig,
     ) -> Result<(StreamingResult, W), Error>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -221,8 +216,8 @@ where
             &key,
             reader,
             writer,
-            streaming_config,
-            parallelism_config,
+            &self.key_manager.config().streaming,
+            &self.key_manager.config().parallelism,
             None,
         )
         .await
@@ -238,7 +233,7 @@ mod tests {
     use crate::symmetric::systems::aes_gcm::AesGcmSystem;
     use std::io::Cursor;
     use std::sync::Arc;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
     // --- END Test-specific imports ---
 
     // 辅助函数：设置一个全新的 Seal 和密码
@@ -304,17 +299,16 @@ mod tests {
         let plaintext = b"some secret data for streaming";
         let mut reader = Cursor::new(plaintext);
         let mut encrypted_writer = Cursor::new(Vec::new());
-        let config = StreamingConfig::default();
 
         engine
-            .encrypt_stream(&mut reader, &mut encrypted_writer, &config)
+            .encrypt_stream(&mut reader, &mut encrypted_writer)
             .await
             .unwrap();
 
         let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
         let mut decrypted_writer = Cursor::new(Vec::new());
         engine
-            .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer, &config)
+            .decrypt_stream(&mut encrypted_reader, &mut decrypted_writer)
             .await
             .unwrap();
 
@@ -334,16 +328,8 @@ mod tests {
         let source = Cursor::new(data.clone());
         let encrypted_dest = Cursor::new(Vec::new());
 
-        let streaming_config = StreamingConfig::default();
-        let parallelism_config = ParallelismConfig::default();
-
         let writer = engine
-            .par_encrypt_stream_async(
-                source,
-                encrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_encrypt_stream_async(source, encrypted_dest)
             .await
             .unwrap()
             .1;
@@ -353,12 +339,7 @@ mod tests {
         let decrypted_dest = Cursor::new(Vec::new());
 
         let writer = engine
-            .par_decrypt_stream_async(
-                encrypted_source,
-                decrypted_dest,
-                &streaming_config,
-                &parallelism_config,
-            )
+            .par_decrypt_stream_async(encrypted_source, decrypted_dest)
             .await
             .unwrap()
             .1;

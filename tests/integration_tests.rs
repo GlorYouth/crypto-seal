@@ -2,7 +2,6 @@
 
 use seal_kit::Seal;
 use seal_kit::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-use seal_kit::common::config::StreamingConfig;
 use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
 use secrecy::SecretString;
 use std::io::Cursor;
@@ -37,16 +36,15 @@ fn integration_sync_engine() {
     let stream_data = b"Some very long data for sync streaming";
     let mut reader = Cursor::new(stream_data);
     let mut encrypted_writer = Cursor::new(Vec::new());
-    let config = StreamingConfig::default();
 
     engine
-        .encrypt_stream::<AesGcmSystem, _, _>(&mut reader, &mut encrypted_writer, &config)
+        .encrypt_stream::<AesGcmSystem, _, _>(&mut reader, &mut encrypted_writer)
         .unwrap();
 
     let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
     let mut decrypted_writer = Cursor::new(Vec::new());
     engine2
-        .decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_reader, &mut decrypted_writer, &config)
+        .decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_reader, &mut decrypted_writer)
         .unwrap();
 
     assert_eq!(decrypted_writer.into_inner(), stream_data.to_vec());
@@ -84,17 +82,16 @@ async fn integration_async_engine() {
     let stream_data = b"Some very long data for async streaming";
     let mut reader = Cursor::new(stream_data);
     let mut encrypted_writer = Cursor::new(Vec::new());
-    let config = StreamingConfig::default();
 
     engine
-        .encrypt_stream::<AesGcmSystem, _, _>(&mut reader, &mut encrypted_writer, &config)
+        .encrypt_stream::<AesGcmSystem, _, _>(&mut reader, &mut encrypted_writer)
         .await
         .unwrap();
 
     let mut encrypted_reader = Cursor::new(encrypted_writer.into_inner());
     let mut decrypted_writer = Cursor::new(Vec::new());
     engine2
-        .decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_reader, &mut decrypted_writer, &config)
+        .decrypt_stream::<AesGcmSystem, _, _>(&mut encrypted_reader, &mut decrypted_writer)
         .await
         .unwrap();
 

@@ -1,3 +1,4 @@
+use crate::common::config::ConfigFile;
 use crate::common::errors::Error;
 use crate::common::traits::{KeyMetadata, KeyStatus};
 use crate::rotation::RotationPolicy;
@@ -37,6 +38,11 @@ impl SymmetricKeyRotationManager {
             rotation_policy,
             key_prefix: key_prefix.to_string(),
         }
+    }
+
+    /// 返回 `seal` 实例的配置。
+    pub fn config(&self) -> ConfigFile {
+        self.seal.config()
     }
 
     /// 初始化管理器，从 Seal 保险库加载密钥元数据。

@@ -1,6 +1,6 @@
 use crate::Error;
-use crate::common::config::{CryptoConfig, StreamingConfig};
 use crate::common::config::ParallelismConfig;
+use crate::common::config::{CryptoConfig, StreamingConfig};
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::SymmetricParallelStreamingSystem;
 use serde::{Deserialize, Serialize};

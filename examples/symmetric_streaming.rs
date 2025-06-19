@@ -3,7 +3,6 @@
 //! 运行: `cargo run --example symmetric_streaming --features="aes-gcm-feature"`
 
 use seal_kit::Seal;
-use seal_kit::common::config::StreamingConfig;
 use seal_kit::symmetric::systems::aes_gcm::AesGcmSystem;
 use secrecy::SecretString;
 use std::io::Cursor;
@@ -20,29 +19,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seal = Seal::create(&seal_path, &password)?;
     let mut engine = seal.symmetric_sync_engine::<AesGcmSystem>(password)?;
 
-    // 2. 构建流式配置
-    let sc = StreamingConfig::default()
-        .with_buffer_size(16)
-        .with_keep_in_memory(true) // 在内存中保留结果以便验证
-        .with_show_progress(true)
-        .with_total_bytes(data.len() as u64);
-
-    // 3. 流式加密到内存缓冲区
+    // 2. 流式加密到内存缓冲区
     let mut encrypted_buf = Vec::new();
     let encrypt_result = engine.encrypt_stream(
         Cursor::new(&data),
         &mut encrypted_buf, // 直接写入 Vec
-        &sc,
     )?;
     println!(
         "\nEncryption complete. Processed {} original bytes.",
         encrypt_result.bytes_processed
     );
 
-    // 4. 流式解密回内存缓冲区
+    // 3. 流式解密回内存缓冲区
     let mut decrypted_buf = Vec::new();
-    let decrypt_result =
-        engine.decrypt_stream(Cursor::new(&encrypted_buf), &mut decrypted_buf, &sc)?;
+    let decrypt_result = engine.decrypt_stream(Cursor::new(&encrypted_buf), &mut decrypted_buf)?;
     println!(
         "\nDecryption complete. Processed {} encrypted bytes.",
         decrypt_result.bytes_processed

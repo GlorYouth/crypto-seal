@@ -1,10 +1,10 @@
 //! 对称加密的同步流式处理实现
-use std::io::{Read, Write};
-use std::marker::PhantomData;
 use crate::common::config::StreamingConfig;
 use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
+use std::io::{Read, Write};
+use std::marker::PhantomData;
 /// 对称流式加密器
 pub struct SymmetricStreamingEncryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
 where
