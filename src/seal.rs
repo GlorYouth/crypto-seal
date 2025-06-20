@@ -111,6 +111,7 @@ impl Seal {
     }
 
     /// (Async) 将给定的载荷加密并原子地写入文件。
+    #[allow(dead_code)]
     async fn write_payload_async(
         path: &Path,
         payload: &VaultPayload,

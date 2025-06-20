@@ -59,7 +59,7 @@ chacha20poly1305 = { version = "0.10.1", optional = true }
 
 # 密码学原语与安全
 sha2 = "0.10.9"
-rand_core = { version = "0.9.3", optional = true, features = ["os_rng"] }
+rand_core = { version = "0.9.3", optional = true, features = ["os_rng", "std"] }
 argon2 = { version = "0.5.3", features = ["std"], optional = true }
 secrecy = { version = "0.10.3", optional = true, features = ["serde"] }
 zeroize = { version = "1.8.1", features = ["derive"] }

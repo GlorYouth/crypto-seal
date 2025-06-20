@@ -6,9 +6,21 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum BincodeError {
     #[error("Encode error: {0}")]
-    Enc(#[from] bincode::error::EncodeError),
+    Enc(#[source] Box<bincode::error::EncodeError>),
     #[error("Decode error: {0}")]
-    Dec(#[from] bincode::error::DecodeError),
+    Dec(#[source] Box<bincode::error::DecodeError>),
+}
+
+impl From<bincode::error::EncodeError> for BincodeError {
+    fn from(err: bincode::error::EncodeError) -> Self {
+        BincodeError::Enc(Box::from(err))
+    }
+}
+
+impl From<bincode::error::DecodeError> for BincodeError {
+    fn from(err: bincode::error::DecodeError) -> Self {
+        BincodeError::Dec(Box::from(err))
+    }
 }
 
 /// 加密操作可能遇到的错误类型
@@ -24,7 +36,7 @@ pub enum Error {
     Bincode(#[from] BincodeError),
 
     #[error("Configuration error")]
-    Configuration(#[from] config::ConfigError),
+    Configuration(#[source] Box<config::ConfigError>),
 
     #[error("Secure storage container error")]
     Storage(#[from] ContainerError),
@@ -57,5 +69,11 @@ pub enum Error {
 impl From<std::string::FromUtf8Error> for Error {
     fn from(err: std::string::FromUtf8Error) -> Self {
         Error::Format(format!("UTF-8 conversion error: {}", err))
+    }
+}
+
+impl From<config::ConfigError> for Error {
+    fn from(err: config::ConfigError) -> Self {
+        Error::Configuration(Box::from(err))
     }
 }

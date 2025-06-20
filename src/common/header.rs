@@ -4,7 +4,6 @@ use crate::asymmetric::systems::traditional::rsa::RsaSignature;
 use crate::common::errors::BincodeError;
 use crate::common::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use bincode::config::Configuration;
-use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 

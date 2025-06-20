@@ -20,13 +20,13 @@ const PARALLEL_CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB
 #[derive(Error, Debug)]
 pub enum AesGcmSystemError {
     #[error("Key generation failed: {0}")]
-    KeyGeneration(#[from] rand_core::OsError),
+    KeyGeneration(Box<rand_core::OsError>),
 
     #[error("Invalid key size: expected {expected}, got {actual}")]
     InvalidKeySize { expected: usize, actual: usize },
 
     #[error("Encryption failed: {0}")]
-    EncryptionFailed(#[from] AeadError),
+    EncryptionFailed(Box<AeadError>),
 
     #[error("Decryption failed")]
     DecryptionFailed,
@@ -38,7 +38,7 @@ pub enum AesGcmSystemError {
     Base64Decode(#[from] base64::DecodeError),
 
     #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(Box<std::io::Error>),
 
     #[error("Parallel execution setup failed: {0}")]
     ParallelSetup(String),
@@ -61,7 +61,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     fn generate_key(_config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
         let mut key_bytes = vec![0u8; Self::KEY_SIZE];
         use rand_core::{OsRng, TryRngCore};
-        OsRng.try_fill_bytes(&mut key_bytes)?;
+        OsRng.try_fill_bytes(&mut key_bytes).map_err(|e| AesGcmSystemError::KeyGeneration(Box::new(e)))?;
         Ok(AesGcmKey(key_bytes))
     }
 
@@ -80,7 +80,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
             &nonce,
             additional_data.unwrap_or(&[]),
             &mut buffer,
-        )?;
+        ).map_err(|e| AesGcmSystemError::EncryptionFailed(Box::new(e)))?;
 
         let mut raw_ciphertext = Vec::with_capacity(NONCE_SIZE + TAG_SIZE + buffer.len());
         raw_ciphertext.extend_from_slice(nonce.as_slice());
@@ -216,7 +216,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
                 ));
             }
             let mut chunk_buf = vec![0u8; len];
-            reader.read_exact(&mut chunk_buf)?;
+            reader.read_exact(&mut chunk_buf).map_err(|e| AesGcmSystemError::Io(Box::new(e)))?;
 
             // 将 [长度][数据] 作为一个整体传递给解密器
             let mut final_chunk = len_buf.to_vec();

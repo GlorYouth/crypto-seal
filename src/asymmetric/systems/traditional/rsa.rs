@@ -18,16 +18,16 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum RsaSystemError {
     #[error("RSA key generation failed: {0}")]
-    KeyGeneration(rsa::errors::Error),
+    KeyGeneration(Box<rsa::errors::Error>),
 
     #[error("RSA encryption failed: {0}")]
-    Encryption(rsa::errors::Error),
+    Encryption(Box<rsa::errors::Error>),
 
     #[error("RSA decryption failed: {0}")]
-    Decryption(rsa::errors::Error),
+    Decryption(Box<rsa::errors::Error>),
 
     #[error("RSA signing failed: {0}")]
-    Signing(rsa::Error),
+    Signing(Box<rsa::Error>),
 
     #[error("RSA verification failed: {0}")]
     Verification(rsa::signature::Error),
@@ -36,10 +36,10 @@ pub enum RsaSystemError {
     InvalidSignatureFormat(rsa::signature::Error),
 
     #[error("PKCS#8 key encoding/decoding failed: {0}")]
-    Pkcs8(#[from] pkcs8::Error),
+    Pkcs8(Box<pkcs8::Error>),
 
     #[error("PEM key encoding/decoding failed: {0}")]
-    Pem(#[from] rsa::pkcs8::spki::Error),
+    Pem(Box<pkcs8::spki::Error>),
 }
 
 /// RSA公钥包装器，提供序列化支持
@@ -100,12 +100,12 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         let mut rsa_rng = RsaOsRng;
 
         let private_key =
-            RsaPrivateKey::new(&mut rsa_rng, bits).map_err(RsaSystemError::KeyGeneration)?;
+            RsaPrivateKey::new(&mut rsa_rng, bits).map_err(|e| RsaSystemError::KeyGeneration(Box::new(e)))?;
         let public_key = RsaPublicKey::from(&private_key);
 
         // 将密钥转换为DER格式，然后包装
-        let public_der = public_key.to_public_key_der()?;
-        let private_der = private_key.to_pkcs8_der()?;
+        let public_der = public_key.to_public_key_der().map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
+        let private_der = private_key.to_pkcs8_der().map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
 
         Ok((
             RsaPublicKeyWrapper(public_der.as_bytes().to_vec()),
@@ -119,11 +119,11 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         _additional_data: Option<&[u8]>, // RSA PKCS#1 v1.5不使用附加数据
     ) -> Result<Vec<u8>, Self::Error> {
         // 从DER数据恢复公钥
-        let public_key = RsaPublicKey::from_public_key_der(&public_key.0)?;
+        let public_key = RsaPublicKey::from_public_key_der(&public_key.0).map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
         let mut rng = RsaOsRng;
         public_key
             .encrypt(&mut rng, Pkcs1v15Encrypt, plaintext)
-            .map_err(RsaSystemError::Encryption)
+            .map_err(|e| RsaSystemError::Encryption(Box::new(e)))
     }
 
     fn decrypt(
@@ -132,17 +132,17 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         _additional_data: Option<&[u8]>, // RSA PKCS#1 v1.5不使用附加数据
     ) -> Result<Vec<u8>, Self::Error> {
         // 从DER数据恢复私钥
-        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)?;
+        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0).map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
         private_key
             .decrypt(Pkcs1v15Encrypt, ciphertext)
-            .map_err(RsaSystemError::Decryption)
+            .map_err(|e| RsaSystemError::Decryption(Box::new(e)))
     }
 
     fn sign(
         private_key: &Self::PrivateKey,
         message: &[u8],
     ) -> Result<Self::Signature, Self::Error> {
-        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)?;
+        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0).map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
         let signing_key = SigningKey::<Sha256>::new(rsa_private_key);
         let mut rng = RsaOsRng;
         let signature = signing_key.sign_with_rng(&mut rng, message);
@@ -154,36 +154,36 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         message: &[u8],
         signature: &Self::Signature,
     ) -> Result<(), Self::Error> {
-        let rsa_public_key = RsaPublicKey::from_public_key_der(&public_key.0)?;
+        let rsa_public_key = RsaPublicKey::from_public_key_der(&public_key.0).map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
         let verifying_key = VerifyingKey::<Sha256>::new(rsa_public_key);
         let rsa_signature = PssSignature::try_from(signature.as_ref())
-            .map_err(RsaSystemError::InvalidSignatureFormat)?;
+            .map_err(|e| RsaSystemError::InvalidSignatureFormat(e))?;
         verifying_key
             .verify(message, &rsa_signature)
-            .map_err(RsaSystemError::Verification)
+            .map_err(|e| RsaSystemError::Verification(e))
     }
 
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error> {
-        let public_key = RsaPublicKey::from_public_key_der(&public_key.0)?;
-        let pem = public_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF)?;
+        let public_key = RsaPublicKey::from_public_key_der(&public_key.0).map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
+        let pem = public_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF).map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
         Ok(pem)
     }
 
     fn export_private_key(private_key: &Self::PrivateKey) -> Result<String, Self::Error> {
-        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)?;
-        let pem = private_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)?;
+        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0).map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
+        let pem = private_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
         Ok(pem.to_string())
     }
 
     fn import_public_key(key_data: &str) -> Result<Self::PublicKey, Self::Error> {
-        let public_key = RsaPublicKey::from_public_key_pem(key_data)?;
-        let public_der = public_key.to_public_key_der()?;
+        let public_key = RsaPublicKey::from_public_key_pem(key_data).map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
+        let public_der = public_key.to_public_key_der().map_err(|e| RsaSystemError::Pem(Box::new(e)))?;
         Ok(RsaPublicKeyWrapper(public_der.as_bytes().to_vec()))
     }
 
     fn import_private_key(key_data: &str) -> Result<Self::PrivateKey, Self::Error> {
-        let private_key = RsaPrivateKey::from_pkcs8_pem(key_data)?;
-        let private_der = private_key.to_pkcs8_der()?;
+        let private_key = RsaPrivateKey::from_pkcs8_pem(key_data).map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
+        let private_der = private_key.to_pkcs8_der().map_err(|e| RsaSystemError::Pkcs8(Box::new(e)))?;
         Ok(RsaPrivateKeyWrapper(ZeroizingVec(
             private_der.as_bytes().to_vec(),
         )))
