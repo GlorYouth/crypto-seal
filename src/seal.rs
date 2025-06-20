@@ -4,21 +4,19 @@
 use arc_swap::ArcSwap;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs as tokio_fs;
 
-use crate::common::ConfigFile;
-use crate::common::config::ConfigManager;
-use crate::common::errors::CryptographyError;
-use crate::common::errors::Error;
-use crate::common::errors::KeyManagementError;
+use crate::common::config::{ConfigManager, ConfigFile};
+use crate::common::errors::{CryptographyError, Error, KeyManagementError};
 use crate::common::header::SealMode;
-use crate::common::traits::{AsymmetricAlgorithm, SecureKeyStorage};
+use crate::common::traits::AsymmetricAlgorithm;
 use crate::engine::SealEngine;
 use crate::rotation::manager::KeyManager;
-use crate::storage::EncryptedKeyContainer;
+#[cfg(feature = "secure-storage")]
+use crate::storage::encrypted_store::EncryptedVaultStore;
+use crate::storage::plaintext_store::PlaintextVaultStore;
+use crate::storage::traits::VaultPersistence;
 use crate::vault::{MasterSeed, VaultPayload};
 use hkdf::Hkdf;
 use rand_core::{OsRng, TryRngCore};
@@ -28,41 +26,67 @@ const MASTER_SEED_SIZE: usize = 32; // 256-bit master seed
 const SEAL_ALGORITHM_ID: &str = "seal-kit-v1-vault";
 // const SYMMETRIC_ENGINE_CONTEXT: &[u8] = b"seal-kit/symmetric-engine/v1";
 
-/// `Seal` is the main entry point for the `seal-kit` library.
+/// `Seal` is the main, thread-safe entry point for the `seal-kit` library.
 ///
-/// It provides lock-free management of a "vault" encrypted with a master password.
-/// The vault file is self-contained, securely storing the root key seed, metadata for all keys, and configuration.
-/// Once opened, `Seal` acts as a factory to create engines for symmetric and asymmetric cryptography on demand.
+/// It represents an entire cryptographic context, often called a "vault".
+/// This vault is a single, self-contained entity (typically a file) that securely stores:
+/// - A master seed from which all cryptographic keys are derived.
+/// - A registry of all generated keys (both symmetric and asymmetric) and their metadata.
+/// - Configuration for cryptographic operations.
 ///
-/// 中文: `Seal` 是 seal-kit 库的主入口点。
+/// `Seal` uses different persistence strategies (`VaultPersistence`) to handle storage,
+/// allowing it to operate in either a password-encrypted mode (`secure-storage` feature)
+/// or a plaintext JSON mode. Once initialized, `Seal` acts as a factory for creating
+/// stateful `SealEngine` instances that perform the actual encryption and decryption.
 ///
-/// 它以无锁方式管理一个由主密码加密的保险库（Vault）。
-/// 保险库文件是自包含的，安全地存储了根密钥种子、所有密钥的元数据以及配置。
-/// 成功打开后，`Seal` 可以作为工厂，按需创建用于对称和非对称加解密的引擎。
+/// Due to its use of `Arc` and `ArcSwap`, a `Seal` instance can be safely shared across threads.
+///
+/// 中文: `Seal` 是 `seal-kit` 库主要的、线程安全的入口点。
+///
+/// 它代表一个完整的加密上下文，通常称为"保险库"（Vault）。
+/// 这个保险库是一个独立的、自包含的实体（通常是一个文件），安全地存储了：
+/// - 一个主种子，所有加密密钥都由它派生而来。
+/// - 一个包含所有已生成密钥（对称和非对称）及其元数据的注册表。
+/// - 用于加密操作的配置。
+///
+/// `Seal` 使用不同的持久化策略 (`VaultPersistence`) 来处理存储，
+/// 使其既可以在密码加密模式下工作（`secure-storage` 特性），也可以在明文 JSON 模式下工作。
+/// 初始化后，`Seal` 充当工厂，用于创建执行实际加密和解密的状态化 `SealEngine` 实例。
+///
+/// 由于其内部使用了 `Arc` 和 `ArcSwap`，`Seal` 实例可以在多个线程之间安全地共享。
 pub struct Seal {
-    /// The path to the vault file for persistence.
-    /// 中文: 指向保险库文件的路径，用于持久化。
+    /// The file path to the vault, used for loading and saving.
+    /// 中文: 指向保险库文件的路径，用于加载和保存。
     path: PathBuf,
-    /// Uses `ArcSwap` for atomic, lock-free read/write access to the core payload.
-    /// This allows the vault's in-memory state (like keys and configuration) to be updated safely
-    /// across multiple threads without blocking read operations.
-    /// 中文: 使用 `ArcSwap` 实现对核心载荷的原子化、无锁读写。
+    /// Uses `ArcSwap` for atomic, lock-free read/write access to the core `VaultPayload`.
+    /// This allows the vault's in-memory state (like keys and configuration) to be updated
+    /// safely across multiple threads without blocking read operations.
+    /// 中文: 使用 `ArcSwap` 实现对核心 `VaultPayload` 的原子化、无锁读写。
     /// 这允许保险库的内存状态（如密钥和配置）在多个线程之间安全地更新，而不会阻塞读取操作。
     payload: Arc<ArcSwap<VaultPayload>>,
+    /// The persistence strategy (`EncryptedVaultStore` or `PlaintextVaultStore`) for loading and saving the vault.
+    /// 中文: 用于加载和保存保险库的持久化策略（`EncryptedVaultStore` 或 `PlaintextVaultStore`）。
+    persistence: Arc<dyn VaultPersistence>,
 }
 
 impl Seal {
-    /// Creates a new vault and saves it encrypted to the specified path.
+    /// The generic, internal constructor for creating a new vault.
     ///
-    /// # Arguments
-    /// * `path` - The file path where the new vault will be stored.
-    /// * `password` - The master password used to encrypt the entire vault.
+    /// This function handles the core logic of generating a master seed, creating a default payload,
+    /// and performing the initial save using the provided persistence strategy.
     ///
-    /// 中文: 创建一个新的保险库，并将其加密保存到指定的路径。
-    /// # 参数
-    /// * `path` - 用于存储新保险库的文件路径。
-    /// * `password` - 用于加密整个保险库的主密码。
-    pub fn create<P: AsRef<Path>>(path: P, password: &SecretString) -> Result<Arc<Self>, Error> {
+    /// For external use, the convenience methods `create_encrypted` and `create_plaintext` are preferred.
+    ///
+    /// 中文: 用于创建新保险库的通用内部构造函数。
+    ///
+    /// 此函数处理生成主种子、创建默认载荷以及使用所提供的持久化策略执行初始保存的核心逻辑。
+    ///
+    /// 对于外部使用，推荐使用更便捷的 `create_encrypted` 和 `create_plaintext` 方法。
+    pub fn create<P: AsRef<Path>>(
+        path: P,
+        password: Option<&SecretString>,
+        persistence: Arc<dyn VaultPersistence>,
+    ) -> Result<Arc<Self>, Error> {
         let path = path.as_ref();
         if path.exists() {
             return Err(Error::Io(std::io::Error::new(
@@ -79,134 +103,146 @@ impl Seal {
         let master_seed = SecretBox::new(Box::from(MasterSeed(seed_bytes)));
 
         // 2. Create a default VaultPayload.
-        // 中文: 2. 创建一个默认的 VaultPayload。
         let initial_payload = VaultPayload {
             master_seed,
             key_registry: HashMap::new(),
             config: ConfigManager::new(path.parent())?,
         };
 
-        // 3. Write the initial payload to the encrypted file.
-        Self::write_payload(path, &initial_payload, password)?;
+        // 3. Write the initial payload using the persistence strategy.
+        persistence.save(path, &initial_payload, password)?;
 
         // 4. Return a new Seal instance, wrapped in an Arc.
+        // 中文: 返回一个新的 Seal 实例，包装在 Arc 中。
         Ok(Arc::new(Self {
             path: path.to_path_buf(),
             payload: Arc::new(ArcSwap::new(Arc::new(initial_payload))),
+            persistence,
         }))
     }
 
-    /// Opens an existing vault from the specified path.
+    /// Creates a new, password-encrypted vault and saves it to the specified path.
     ///
-    /// # Arguments
-    /// * `path` - The file path of the vault to open.
-    /// * `password` - The master password required to decrypt the vault.
+    /// This is the standard, secure way to create a vault. It uses the `EncryptedVaultStore`
+    /// persistence strategy, which encrypts the entire vault file with a key derived from the provided password.
     ///
-    /// 中文: 从指定路径打开一个现有的保险库。
-    /// # 参数
-    /// * `path` - 要打开的保险库的文件路径。
-    /// * `password` - 解密保险库所需的主密码。
-    pub fn open<P: AsRef<Path>>(path: P, password: &SecretString) -> Result<Arc<Self>, Error> {
+    /// **This method is only available when the `secure-storage` feature is enabled.**
+    ///
+    /// 中文: 创建一个新的、由密码加密的保险库，并将其保存到指定路径。
+    ///
+    /// 这是创建保险库的标准、安全方式。它使用 `EncryptedVaultStore` 持久化策略，
+    /// 该策略使用从所提供密码派生的密钥来加密整个保险库文件。
+    ///
+    /// **此方法仅在 `secure-storage` 功能启用时可用。**
+    #[cfg(feature = "secure-storage")]
+    pub fn create_encrypted<P: AsRef<Path>>(
+        path: P,
+        password: &SecretString,
+    ) -> Result<Arc<Self>, Error> {
+        Self::create(path, Some(password), Arc::new(EncryptedVaultStore::new()))
+    }
+
+    /// Creates a new, plaintext vault and saves it to the specified path.
+    ///
+    /// The resulting vault is a human-readable JSON file. This is useful for environments where the
+    /// vault file is stored on an already-encrypted filesystem or for local tools where at-rest encryption is not needed.
+    ///
+    /// This method uses the `PlaintextVaultStore` and ignores any password.
+    ///
+    /// 中文: 创建一个新的明文保险库，并将其保存到指定的路径。
+    ///
+    /// 生成的保险库是一个人类可读的 JSON 文件。这对于保险库文件存储在已加密文件系统上，
+    /// 或静态加密非必需的本地工具等场景很有用。
+    ///
+    /// 此方法使用 `PlaintextVaultStore` 并忽略任何密码。
+    pub fn create_plaintext<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Error> {
+        Self::create(path, None, Arc::new(PlaintextVaultStore::new()))
+    }
+
+    /// The generic, internal constructor for opening an existing vault.
+    ///
+    /// This function loads the vault from the given path using the specified persistence strategy.
+    ///
+    /// For external use, the convenience methods `open_encrypted` and `open_plaintext` are preferred.
+    ///
+    /// 中文: 用于打开现有保险库的通用内部构造函数。
+    ///
+    /// 此函数使用指定的持久化策略从给定路径加载保险库。
+    ///
+    /// 对于外部使用，推荐使用更便捷的 `open_encrypted` 和 `open_plaintext` 方法。
+    pub fn open<P: AsRef<Path>>(
+        path: P,
+        password: Option<&SecretString>,
+        persistence: Arc<dyn VaultPersistence>,
+    ) -> Result<Arc<Self>, Error> {
         let path = path.as_ref();
 
         // 1. Read and decrypt the core payload from the file.
-        // 中文: 1. 从文件读取并解密核心载荷。
-        let payload_json = Self::read_and_decrypt_payload(path, password)?;
-        let payload: VaultPayload = serde_json::from_str(&payload_json)?;
+        let payload = persistence.load(path, password)?;
 
         // 2. Return a new Seal instance, wrapped in an Arc.
-        // 中文: 2. 返回一个新的 Seal 实例，包裹在 Arc 中。
+        // 中文: 返回一个新的 Seal 实例，包装在 Arc 中。
         Ok(Arc::new(Self {
             path: path.to_path_buf(),
             payload: Arc::new(ArcSwap::new(Arc::new(payload))),
+            persistence,
         }))
     }
 
-    /// Encrypts and atomically writes the given payload to a file.
+    /// Opens an existing encrypted vault from the specified path.
     ///
-    /// The atomic write is achieved by writing to a temporary file first,
-    /// and then renaming it to the final destination upon successful completion.
-    /// This prevents data corruption if the write operation is interrupted.
+    /// A correct password must be provided to successfully decrypt and load the vault.
+    /// This method uses the `EncryptedVaultStore`.
     ///
-    /// 中文: 将给定的载荷加密并原子地写入文件。
+    /// **This method is only available when the `secure-storage` feature is enabled.**
     ///
-    /// 原子写入通过先写入临时文件，成功后再将其重命名为最终目标来实现。
-    /// 这可以防止在写入操作被中断时发生数据损坏。
-    fn write_payload(
-        path: &Path,
-        payload: &VaultPayload,
+    /// 中文: 从指定路径打开一个现有的加密保险库。
+    ///
+    /// 必须提供正确的密码才能成功解密和加载保险库。
+    /// 此方法使用 `EncryptedVaultStore`。
+    ///
+    /// **此方法仅在 `secure-storage` 功能启用时可用。**
+    #[cfg(feature = "secure-storage")]
+    pub fn open_encrypted<P: AsRef<Path>>(
+        path: P,
         password: &SecretString,
-    ) -> Result<(), Error> {
-        let payload_json = serde_json::to_string(payload)?;
-
-        let container = EncryptedKeyContainer::encrypt_key(
-            password,
-            payload_json.as_bytes(),
-            SEAL_ALGORITHM_ID,
-            &payload.config.crypto,
-        )?;
-
-        let container_json = container.to_json()?;
-
-        // Atomic write: write to a temporary file first, then rename on success.
-        // 中文: 原子写入：先写入临时文件，成功后再重命名。
-        let temp_path = path.with_extension("tmp");
-        fs::write(&temp_path, container_json)?;
-        fs::rename(&temp_path, path)?;
-
-        Ok(())
+    ) -> Result<Arc<Self>, Error> {
+        Self::open(path, Some(password), Arc::new(EncryptedVaultStore::new()))
     }
 
-    /// (Async) Encrypts and atomically writes the given payload to a file.
+    /// Opens an existing plaintext vault from the specified path.
     ///
-    /// 中文: (Async) 将给定的载荷加密并原子地写入文件。
-    #[allow(dead_code)]
-    async fn write_payload_async(
-        path: &Path,
-        payload: &VaultPayload,
-        password: &SecretString,
-    ) -> Result<(), Error> {
-        let payload_json = serde_json::to_string(payload)?;
-
-        let container = EncryptedKeyContainer::encrypt_key(
-            password,
-            payload_json.as_bytes(),
-            SEAL_ALGORITHM_ID,
-            &payload.config.crypto,
-        )?;
-
-        let container_json = container.to_json()?;
-
-        // Atomic write: write to a temporary file first, then rename on success.
-        // 中文: 原子写入：先写入临时文件，成功后再重命名。
-        let temp_path = path.with_extension("tmp");
-        tokio_fs::write(&temp_path, container_json).await?;
-        tokio_fs::rename(&temp_path, path).await?;
-
-        Ok(())
+    /// This method uses the `PlaintextVaultStore` and does not require a password for the load operation.
+    ///
+    /// 中文: 从指定路径打开一个现有的明文保险库。
+    ///
+    /// 此方法使用 `PlaintextVaultStore`，加载操作不需要密码。
+    pub fn open_plaintext<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, Error> {
+        Self::open(path, None, Arc::new(PlaintextVaultStore::new()))
     }
 
-    /// Reads the vault from a file, decrypts it, and returns its content as a JSON string.
+    /// Creates and initializes a `SealEngine` for cryptographic operations.
     ///
-    /// 中文: 从文件读取保险库，解密并返回其JSON字符串形式的内容。
-    fn read_and_decrypt_payload(path: &Path, password: &SecretString) -> Result<String, Error> {
-        let container_json = fs::read_to_string(path)?;
-        let container = EncryptedKeyContainer::from_json(&container_json)?;
-
-        let decrypted_bytes = container.decrypt_key(password)?;
-        String::from_utf8(decrypted_bytes).map_err(Into::into)
-    }
-
-    /// Creates a unified, stateful encryption engine instance.
+    /// The engine is the stateful workhorse that performs encryption and decryption.
+    /// It is initialized for a specific `SealMode` (`Symmetric` or `Hybrid`).
     ///
-    /// This method initializes a `KeyManager` for the specified mode, performs an initial key rotation
-    /// if necessary, and then returns an engine that holds the state of the manager.
-    /// The engine is the primary tool for performing cryptographic operations.
+    /// # Arguments
+    /// * `self` - An `Arc` reference to `Seal`, allowing the engine to access the shared vault state.
+    /// * `mode` - The desired operational mode for the engine.
+    /// * `password` - The password for the vault. This is required to derive keys for cryptographic
+    ///   operations within the engine, such as decrypting private keys from the payload, even if
+    ///   the vault itself is stored in plaintext.
     ///
-    /// 中文: 创建一个统一的、有状态的加密引擎实例。
+    /// 中文: 创建并初始化一个用于加密操作的 `SealEngine`。
     ///
-    /// 这个方法会初始化一个指定模式的密钥管理器，执行首次必要的密钥轮换，
-    /// 然后返回一个持有该管理器状态的引擎。该引擎是执行加密操作的主要工具。
+    /// 引擎是执行加密和解密的状态化主力。
+    /// 它为特定的 `SealMode`（`Symmetric` 或 `Hybrid`）进行初始化。
+    ///
+    /// # 参数
+    /// * `self` - 对 `Seal` 的 `Arc` 引用，允许引擎访问共享的保险库状态。
+    /// * `mode` - 引擎期望的操作模式。
+    /// * `password` - 保险库的密码。即使保险库本身是以明文形式存储的，引擎内部的加密操作
+    ///   （例如从载荷中解密私钥）也需要此密码来派生密钥。
     pub fn engine(
         self: &Arc<Self>,
         mode: SealMode,
@@ -245,18 +281,15 @@ impl Seal {
         Ok(SealEngine::new(key_manager, self.clone(), password.clone()))
     }
 
-    /// Derives a new key from the master seed using HKDF.
+    /// Derives a key from the master seed using HKDF-SHA256.
     ///
-    /// # Arguments
-    /// * `master_seed` - The root seed from the vault.
-    /// * `context` - A context string to ensure derived keys are domain-separated.
-    /// * `output_len` - The desired length of the derived key in bytes.
+    /// This is an internal cryptographic primitive used throughout the library to generate specific keys
+    /// from the single master seed. It should not be called directly for application-level encryption.
     ///
-    /// 中文: 使用HKDF从主密钥派生出一个新的密钥。
-    /// # 参数
-    /// * `master_seed` - 来自保险库的根种子。
-    /// * `context` - 用于确保派生密钥在不同域中分离的上下文信息。
-    /// * `output_len` - 派生密钥的期望长度（字节）。
+    /// 中文: 使用 HKDF-SHA256 从主种子派生一个密钥。
+    ///
+    /// 这是库中广泛使用的内部加密原语，用于从单一的主种子生成特定的密钥。
+    /// 不应为应用级加密直接调用它。
     pub(crate) fn derive_key(
         &self,
         master_seed: &SecretBox<MasterSeed>,
@@ -271,121 +304,156 @@ impl Seal {
         Ok(okm)
     }
 
-    /// Gets the current configuration from within the vault.
+    /// Provides access to the vault's configuration manager.
     ///
-    /// 中文: 获取当前保险库内的配置。
+    /// This returns a snapshot of the current configuration. To modify the configuration,
+    /// you must use methods on the `ConfigManager` and then commit the changes.
+    ///
+    /// 中文: 提供对保险库配置管理器的访问。
+    ///
+    /// 这会返回当前配置的快照。要修改配置，您必须使用 `ConfigManager` 上的方法，然后提交更改。
     pub fn config(&self) -> ConfigFile {
         self.payload.load().config.clone()
     }
 
-    /// (crate-internal) Gets read-only access to the internal payload.
+    /// Returns a snapshot of the current `VaultPayload`.
     ///
-    /// 中文: (crate-internal) 获取对内部载荷的只读访问。
+    /// This provides read-only, thread-safe access to the entire in-memory state of the vault.
+    ///
+    /// 中文: 返回当前 `VaultPayload` 的一个快照。
+    ///
+    /// 这提供了对整个保险库内存状态的只读、线程安全的访问。
     pub(crate) fn payload(&self) -> Arc<VaultPayload> {
         self.payload.load_full()
     }
 
-    /// Re-encrypts the vault with a new password.
+    /// Atomically updates the `VaultPayload` and persists the changes to disk.
     ///
-    /// This operation is atomic. It reads the current payload, re-encrypts it with the new password,
-    /// and replaces the old file.
-    ///
-    /// 中文: 使用新的密码重新加密保险库。
-    ///
-    /// 这个操作是原子的。它会读取当前的载荷，用新密码重新加密，并替换旧文件。
-    pub fn change_password(&self, new_password: &SecretString) -> Result<(), Error> {
-        // "Read-Clone-Save" pattern.
-        // In this scenario, we don't need to modify the payload, just re-encrypt it with the new password.
-        // 中文: "读取-克隆-保存" 模式。
-        // 在此场景下，我们无需修改载荷，只需用新密码重新加密即可。
-        let current_payload = self.payload.load();
-        Self::write_payload(&self.path, &current_payload, new_password)?;
-        Ok(())
-    }
-
-    /// Atomically commits modifications to the vault payload.
-    ///
-    /// This method is central to making safe, concurrent modifications to the vault's state (e.g., key rotation, config changes).
-    /// It loads the current payload, clones it, and then passes a mutable reference to the `update_fn` closure.
-    /// After the closure finishes, the new payload is encrypted and atomically written to the file,
-    /// and then the in-memory `ArcSwap` is updated.
+    /// This is the central method for modifying the vault's state (e.g., adding a new key, changing config).
+    /// It takes a closure that receives a mutable draft of the payload. After the closure runs,
+    /// this function atomically swaps the old payload with the new one in memory and then saves it
+    /// to disk using the configured persistence strategy.
     ///
     /// # Arguments
-    /// * `password` - The master password used to encrypt the new payload.
-    /// * `update_fn` - A closure that receives a `&mut VaultPayload` to perform modifications.
+    /// * `password` - The vault password, which may be required by the persistence strategy to save the changes.
+    /// * `update_fn` - A closure that modifies the `VaultPayload`.
     ///
-    /// 中文: 以原子方式提交对保险库载荷的修改。
+    /// 中文: 原子地更新 `VaultPayload` 并将更改持久化到磁盘。
     ///
-    /// 此方法是实现对保险库状态（如密钥轮换、配置更改）进行安全并发修改的核心。
-    /// 它加载当前的载荷，克隆它，然后将可变引用传递给 `update_fn` 闭包。
-    /// 闭包执行完毕后，新的载荷将被加密并原子地写入文件，然后更新内存中的 `ArcSwap`。
+    /// 这是修改保险库状态（例如，添加新密钥、更改配置）的核心方法。
+    /// 它接受一个闭包，该闭包接收一个可变的载荷草稿。闭包运行后，
+    /// 此函数会在内存中原子地将旧载荷替换为新载荷，然后使用配置的持久化策略将其保存到磁盘。
     ///
-    /// # Arguments
-    /// * `password` - 用于加密新载荷的主密码。
-    /// * `update_fn` - 一个接收 `&mut VaultPayload` 的闭包，用于执行修改。
+    /// # 参数
+    /// * `password` - 保险库密码，持久化策略可能需要它来保存更改。
+    /// * `update_fn` - 一个修改 `VaultPayload` 的闭包。
     pub(crate) fn commit_payload<F>(
         &self,
-        password: &SecretString,
+        password: Option<&SecretString>,
         update_fn: F,
     ) -> Result<(), Error>
     where
         F: FnOnce(&mut VaultPayload),
     {
-        let current_payload = self.payload.load();
-        let mut new_payload = (**current_payload).clone();
+        // 1. Clone the *inner data* of the Arc to create a mutable working copy.
+        let mut new_payload = (**self.payload.load()).clone();
 
+        // 2. Apply the update function to the mutable clone.
         update_fn(&mut new_payload);
 
-        // First, atomically write the modified payload to disk.
-        // 中文: 首先，将修改后的载荷原子地写入磁盘。
-        Self::write_payload(&self.path, &new_payload, password)?;
+        // 3. Persist the updated payload to disk using the vault's strategy.
+        // The password might be ignored by plaintext strategies.
+        self.persistence
+            .save(&self.path, &new_payload, password)?;
 
-        // Only after the write is successful, update the in-memory state.
-        // 中文: 写入成功后，才更新内存中的状态。
+        // 4. If persistence is successful, atomically swap the in-memory payload.
         self.payload.store(Arc::new(new_payload));
 
         Ok(())
     }
 
-    /// Manually rotates to a specified primary asymmetric key algorithm.
+    /// Changes the master password for an encrypted vault.
     ///
-    /// This method first updates the primary asymmetric algorithm configuration in the vault,
-    /// then immediately generates a new key pair of that type and sets it as active.
+    /// This function re-encrypts the vault file with the new password. It does not affect
+    /// the master seed or any cryptographic keys within the vault.
+    ///
+    /// **This operation is only meaningful for encrypted vaults.**
+    ///
+    /// 中文: 更改加密保险库的主密码。
+    ///
+    /// 此函数使用新密码重新加密保险库文件。它不会影响保险库内的主种子或任何加密密钥。
+    ///
+    /// **此操作仅对加密保险库有意义。**
+    #[cfg(feature = "secure-storage")]
+    pub fn change_password(
+        &self,
+        old_password: &SecretString,
+        new_password: &SecretString,
+    ) -> Result<(), Error> {
+        // This operation first verifies the old password before re-encrypting with the new one.
+        // 中文: 此操作会先验证旧密码，然后再用新密码重新加密。
+        if !self.persistence.is_encrypted() {
+            return Err(Error::Config(
+                "Password changes are only supported for encrypted vaults.".to_string(),
+            ));
+        }
+
+        // 1. Verify the old password by attempting to load (and decrypt) the vault from disk.
+        // This confirms the user knows the current password before allowing a change.
+        // We discard the resulting payload; this is purely for verification.
+        // 中文: 1. 通过尝试从磁盘加载（并解密）保险库来验证旧密码。
+        // 这能确保用户在允许更改密码之前知道当前密码。
+        // 我们会丢弃加载结果，此步骤纯粹用于验证。
+        self.persistence.load(&self.path, Some(old_password))?;
+
+        // 2. If verification is successful, save the current in-memory payload with the new password.
+        // The persistence layer handles the re-encryption.
+        // 中文: 2. 如果验证成功，则使用新密码保存当前的内存中载荷。
+        // 持久化层会处理重新加密。
+        self.persistence
+            .save(&self.path, &self.payload(), Some(new_password))
+    }
+
+    /// Rotates the primary asymmetric key for the vault.
+    ///
+    /// This is a high-level convenience method that:
+    /// 1. Sets the specified algorithm as the default in the configuration.
+    /// 2. Creates a new `KeyManager` for the `Hybrid` mode.
+    /// 3. Triggers the key rotation process within the manager, which generates a new key pair
+    ///    and commits it to the vault.
     ///
     /// # Arguments
-    /// * `algorithm` - The target asymmetric algorithm to rotate to.
-    /// * `password` - The password to unlock the vault.
+    /// * `algorithm` - The asymmetric algorithm to generate a new key for.
+    /// * `password` - The vault password, required to commit the changes.
     ///
-    /// 中文: 手动轮换到指定的主非对称密钥。
+    /// 中文: 轮换保险库的主非对称密钥。
     ///
-    /// 这个方法会首先更新保险库中的主非对称算法配置，
-    /// 然后立即生成一个该类型的新密钥对，并将其设为活动状态。
+    /// 这是一个高级便利方法，它会：
+    /// 1. 在配置中将指定的算法设置为默认值。
+    /// 2. 为 `Hybrid` 模式创建一个新的 `KeyManager`。
+    /// 3. 在管理器内部触发密钥轮换过程，该过程会生成一个新的密钥对并将其提交到保险库。
     ///
-    /// # Arguments
-    /// * `algorithm` - 要轮换到的目标非对称算法。
-    /// * `password` - 用于解锁保险库的密码。
+    /// # 参数
+    /// * `algorithm` - 要为其生成新密钥的非对称算法。
+    /// * `password` - 保险库密码，提交更改时需要。
     pub fn rotate_asymmetric_key(
         self: &Arc<Self>,
         algorithm: AsymmetricAlgorithm,
         password: &SecretString,
     ) -> Result<(), Error> {
-        // 1. Atomically update the configuration.
-        // 中文: 1. 原子地更新配置。
-        self.commit_payload(password, |payload| {
+        // First, atomically update the configuration to set the new primary algorithm.
+        // 中文: 首先，原子地更新配置以设置新的主算法。
+        self.commit_payload(Some(password), |payload| {
             payload.config.crypto.primary_asymmetric_algorithm = algorithm;
         })?;
 
-        // 2. Create a KeyManager to perform the rotation.
-        //    We always use Hybrid mode for asymmetric keys.
-        // 中文: 2. 创建一个 KeyManager 来执行轮换。
-        //    我们总是为非对称密钥使用 Hybrid 模式。
-        let mut key_manager = KeyManager::new(Arc::clone(self), "seal-engine", SealMode::Hybrid);
-        key_manager.initialize();
-
-        // 3. Force a rotation, which will generate a key based on the new configuration.
-        // 中文: 3. 强制开始轮换，这将根据新的配置生成密钥。
-        key_manager.start_rotation(password)?;
-
+        // After the config is committed, create a manager and start the rotation.
+        // The manager will read the updated configuration.
+        // 中文: 配置提交后，创建一个管理器并开始轮换。
+        // 管理器将读取更新后的配置。
+        let mut manager = KeyManager::new(self.clone(), "default", SealMode::Hybrid);
+        manager.initialize();
+        manager.start_rotation(password)?;
         Ok(())
     }
 }

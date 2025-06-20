@@ -16,7 +16,6 @@ use crate::symmetric::traits::SymmetricCryptographicSystem;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -160,7 +159,7 @@ impl KeyManager {
             let key_id = meta.id.clone();
             let new_count = meta.usage_count + 1;
 
-            self.seal.commit_payload(password, |payload| {
+            self.seal.commit_payload(Some(password), |payload| {
                 if let Some(m) = payload.key_registry.get_mut(&key_id) {
                     m.usage_count = new_count;
                 }
@@ -261,10 +260,13 @@ impl KeyManager {
             }
         };
 
-        // Encrypt the private key for secure storage.
-        // A dedicated key for this purpose is derived from the master seed.
-        // 中文: 加密私钥以便安全存储。
-        // 从主种子派生一个专用于此目的的密钥。
+        // Encrypt the private key for secure storage within the vault payload.
+        // This is a critical security measure: even if the vault is stored as plaintext JSON,
+        // the asymmetric private key itself is never in cleartext. It is encrypted using a key
+        // derived from the master seed.
+        // 中文: 加密私钥以便安全地存储在保险库载荷中。
+        // 这是一个关键的安全措施：即使保险库以明文 JSON 形式存储，
+        // 非对称私钥本身也绝不会是明文。它使用从主种子派生的密钥进行加密。
         let encrypted_private_key = {
             let payload = self.seal.payload();
             let key_derivation_key =
@@ -303,40 +305,38 @@ impl KeyManager {
 
     /// Commits new metadata to the Seal vault and updates the manager's in-memory state.
     ///
-    /// This is an atomic operation. It first updates the status of the old primary key (if any) to `Rotating`,
+    /// This is an atomic operation. It first updates the status of the old primary key (if any) to `Expired`,
     /// then inserts the new primary key metadata. Finally, it updates the in-memory state of the manager.
     ///
     /// 中文: 提交新的元数据到 Seal 并更新管理器在内存中的状态。
     ///
-    /// 这是一个原子操作。它首先将旧的主密钥（如果存在）状态更新为 `Rotating`，
+    /// 这是一个原子操作。它首先将旧的主密钥（如果存在）状态更新为 `Expired`，
     /// 然后插入新的主密钥元数据。最后，它更新管理器在内存中的状态。
     fn commit_and_update_metadata(
         &mut self,
         password: &SecretString,
         new_metadata: KeyMetadata,
     ) -> Result<(), Error> {
-        let old_primary_metadata = self.primary_key_metadata.clone();
+        let new_id = new_metadata.id.clone();
+        let old_primary_id = self.primary_key_metadata.as_ref().map(|m| m.id.clone());
 
-        self.seal.commit_payload(password, |payload| {
-            // 1. Update the status of the old primary key (if it exists) to Rotating.
-            // 中文: 1. 将旧的主密钥（如果存在）状态更新为 Rotating。
-            if let Some(mut old_meta) = old_primary_metadata {
-                old_meta.status = KeyStatus::Rotating;
-                payload.key_registry.insert(old_meta.id.clone(), old_meta);
+        self.seal.commit_payload(Some(password), |payload| {
+            // Demote the old primary key to "Expired" status.
+            if let Some(old_id) = &old_primary_id {
+                if let Some(old_meta) = payload.key_registry.get_mut(old_id) {
+                    old_meta.status = KeyStatus::Expired;
+                }
             }
-            // 2. Insert the new primary key metadata.
-            // 中文: 2. 插入新的主密钥元数据。
+
+            // Add the new key metadata to the registry.
             payload
                 .key_registry
-                .insert(new_metadata.id.clone(), new_metadata.clone());
+                .insert(new_id, new_metadata.clone());
         })?;
 
-        // 3. Update the in-memory state.
-        // 中文: 3. 更新内存状态。
+        // After a successful commit, update the in-memory state of the manager.
         if let Some(old_meta) = self.primary_key_metadata.take() {
-            let mut rotating_meta = old_meta.clone();
-            rotating_meta.status = KeyStatus::Rotating;
-            self.secondary_keys_metadata.push(rotating_meta);
+            self.secondary_keys_metadata.push(old_meta);
         }
         self.primary_key_metadata = Some(new_metadata);
 
@@ -402,6 +402,12 @@ impl KeyManager {
             })?;
             let public_key = T::import_public_key(public_key_b64).map_err(AsymmetricError::from)?;
 
+            // The private key is stored encrypted within the vault payload.
+            // It must be decrypted on-demand using a key derived from the master seed.
+            // This ensures the private key is not exposed, even in a plaintext vault.
+            // 中文: 私钥在保险库载荷中是加密存储的。
+            // 必须使用从主种子派生的密钥按需解密。
+            // 这确保了即使在明文保险库中，私钥也不会被暴露。
             let encrypted_private_key_container =
                 metadata.encrypted_private_key.as_ref().ok_or_else(|| {
                     Error::KeyNotFound(

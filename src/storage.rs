@@ -1,5 +1,14 @@
-//! 加密数据存储模块
+//! The storage module, defining how vaults are persisted.
+// English: The storage module, defining how vaults are persisted.
 
-pub(crate) mod container;
+pub mod traits;
+
+#[cfg(feature = "secure-storage")]
+pub mod container;
+
+#[cfg(feature = "secure-storage")]
+pub mod encrypted_store;
+
+pub mod plaintext_store;
 
 pub use container::EncryptedKeyContainer;
