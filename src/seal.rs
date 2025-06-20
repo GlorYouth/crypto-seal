@@ -99,6 +99,7 @@ impl Seal {
             password,
             payload_json.as_bytes(),
             SEAL_ALGORITHM_ID,
+            &payload.config.crypto,
         )?;
 
         let container_json = container.to_json()?;
@@ -123,6 +124,7 @@ impl Seal {
             password,
             payload_json.as_bytes(),
             SEAL_ALGORITHM_ID,
+            &payload.config.crypto,
         )?;
 
         let container_json = container.to_json()?;

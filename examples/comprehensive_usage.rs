@@ -5,7 +5,6 @@ use seal_kit::{
 use secrecy::SecretString;
 use std::fs;
 use std::io::Cursor;
-use std::sync::Arc;
 
 /// A helper function to demonstrate in-memory encryption and decryption.
 /// It handles vault creation, configuration, encryption, decryption, and cleanup.

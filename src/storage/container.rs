@@ -61,8 +61,9 @@ impl EncryptedKeyContainer {
         password: &SecretString,
         key_data: K,
         algorithm_id: &str,
+        config: &CryptoConfig,
     ) -> Result<Self, Error> {
-        Self::encrypt_key(password, key_data, algorithm_id)
+        Self::encrypt_key(password, key_data, algorithm_id, config)
     }
 
     /// 使用自定义配置生成新的密钥容器
@@ -149,9 +150,10 @@ impl SecureKeyStorage for EncryptedKeyContainer {
         password: &SecretString,
         key_data: K,
         algorithm_id: &str,
+        config: &CryptoConfig,
     ) -> Result<Self, Self::Error> {
-        // 使用默认配置
-        Self::encrypt_key_with_config(password, key_data, algorithm_id, &CryptoConfig::default())
+        // 使用传入的配置
+        Self::encrypt_key_with_config(password, key_data, algorithm_id, config)
     }
 
     fn decrypt_key(&self, password: &SecretString) -> Result<Vec<u8>, Self::Error> {
@@ -231,8 +233,13 @@ mod tests {
         let algorithm_id = "test-algorithm";
 
         // 加密密钥
-        let container =
-            EncryptedKeyContainer::encrypt_key(&password, key_data, algorithm_id).unwrap();
+        let container = EncryptedKeyContainer::encrypt_key(
+            &password,
+            key_data,
+            algorithm_id,
+            &CryptoConfig::default(),
+        )
+        .unwrap();
 
         // 解密密钥
         let decrypted = container.decrypt_key(&password).unwrap();
@@ -250,8 +257,13 @@ mod tests {
         let algorithm_id = "test-algorithm";
 
         // 创建并序列化容器
-        let container =
-            EncryptedKeyContainer::encrypt_key(&password, key_data, algorithm_id).unwrap();
+        let container = EncryptedKeyContainer::encrypt_key(
+            &password,
+            key_data,
+            algorithm_id,
+            &CryptoConfig::default(),
+        )
+        .unwrap();
         let json = container.to_json().unwrap();
 
         // 反序列化和解密
@@ -267,10 +279,16 @@ mod tests {
     fn wrong_password_fails() {
         let password = SecretString::new(Box::from("correct-password"));
         let wrong_password = SecretString::new(Box::from("wrong-password"));
-        let key_data = b"this-is-a-secret-key";
+        let key_data = b"some secret data";
 
         // 加密密钥
-        let container = EncryptedKeyContainer::encrypt_key(&password, key_data, "test").unwrap();
+        let container = EncryptedKeyContainer::encrypt_key(
+            &password,
+            key_data,
+            "test",
+            &CryptoConfig::default(),
+        )
+        .unwrap();
 
         // 使用错误密码尝试解密
         let result = container.decrypt_key(&wrong_password);
@@ -279,15 +297,14 @@ mod tests {
 
     #[test]
     fn custom_config_works() {
-        let password = SecretString::new(Box::from("secure-password"));
-        let key_data = b"this-is-a-secret-key";
-        let algorithm_id = "test-algorithm";
+        let password = SecretString::new(Box::from("test-password"));
+        let key_data = b"secret-key-data";
+        let algorithm_id = "custom-algo";
 
-        // 创建自定义配置
         let config = CryptoConfig {
             argon2_memory_cost: 32768, // 32MB
             argon2_time_cost: 3,       // 3次迭代
-            ..CryptoConfig::default()
+            ..Default::default()
         };
 
         // 使用自定义配置加密
@@ -295,7 +312,6 @@ mod tests {
             EncryptedKeyContainer::new_with_config(&password, key_data, algorithm_id, &config)
                 .unwrap();
 
-        // 验证配置参数已应用
         assert_eq!(container.memory_cost, config.argon2_memory_cost);
         assert_eq!(container.time_cost, config.argon2_time_cost);
 

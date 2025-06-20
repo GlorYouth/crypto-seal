@@ -1,17 +1,16 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput, SamplingMode};
-use rand::{RngCore};
+use criterion::BatchSize;
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
+use rand::RngCore;
 use seal_kit::common::traits::AsymmetricAlgorithm;
 use seal_kit::{Error, Seal, SealMode};
 use secrecy::SecretString;
+use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
-use tempfile::tempdir;
 use std::time::Duration;
-use std::hint::black_box;
-use criterion::BatchSize;
-use std::fs;
-
-const AAD: &[u8] = b"CriterionProfileAAD";
+use tempfile::tempdir;
 
 /// Helper function to create a temporary Seal instance.
 /// 辅助函数：创建一个临时的 Seal 实例。
@@ -84,7 +83,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                 BenchmarkId::new(format!("{:?}-Memory-Decrypt", alg), size_name),
                 &ciphertext,
                 |b, c| {
-                    let mut mut_engine = engine.clone();
+                    let mut_engine = engine.clone();
                     b.iter(|| {
                         black_box(mut_engine.unseal_bytes(c, None).unwrap());
                     })
@@ -92,7 +91,8 @@ fn seal_kit_benchmark(c: &mut Criterion) {
             );
 
             // Parallel Streaming
-            if data_size > 1024 * 1024 { // Only run parallel on larger data
+            if data_size > 1024 * 1024 {
+                // Only run parallel on larger data
                 group.bench_with_input(
                     BenchmarkId::new(format!("{:?}-Parallel-Stream", alg), size_name),
                     &data,
@@ -101,7 +101,9 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                         b.iter_batched(
                             || (Cursor::new(d.clone()), Vec::new()),
                             |(mut reader, mut writer): (Cursor<Vec<u8>>, Vec<u8>)| {
-                                mut_engine.par_seal_stream(&mut reader, &mut writer, None).unwrap();
+                                mut_engine
+                                    .par_seal_stream(&mut reader, &mut writer, None)
+                                    .unwrap();
                                 black_box(writer);
                             },
                             BatchSize::SmallInput,
@@ -116,7 +118,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
         {
             // Create a separate engine for caching tests to not interfere with standard ones
             let mut caching_engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-            
+
             // Pre-warm the cache by performing one small encryption.
             // This calls the internal, private `ensure_dek_cached` implicitly.
             let warm_up_data = [0u8; 16];
@@ -141,9 +143,10 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                         })
                     },
                 );
-                
+
                 // Parallel Streaming with cached DEK
-                if data_size > 1024 * 1024 { // Only run parallel on larger data
+                if data_size > 1024 * 1024 {
+                    // Only run parallel on larger data
                     group.bench_with_input(
                         BenchmarkId::new(format!("{:?}-Cached-Parallel-Stream", alg), size_name),
                         &data,
@@ -151,7 +154,13 @@ fn seal_kit_benchmark(c: &mut Criterion) {
                             b.iter_batched(
                                 || (Cursor::new(d.clone()), Vec::new()),
                                 |(mut reader, mut writer): (Cursor<Vec<u8>>, Vec<u8>)| {
-                                    caching_engine.par_seal_stream_with_cached_dek(&mut reader, &mut writer, None).unwrap();
+                                    caching_engine
+                                        .par_seal_stream_with_cached_dek(
+                                            &mut reader,
+                                            &mut writer,
+                                            None,
+                                        )
+                                        .unwrap();
                                     black_box(writer);
                                 },
                                 BatchSize::SmallInput,
@@ -168,4 +177,4 @@ fn seal_kit_benchmark(c: &mut Criterion) {
 }
 
 criterion_group!(benches, seal_kit_benchmark);
-criterion_main!(benches); 
+criterion_main!(benches);

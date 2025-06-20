@@ -125,12 +125,6 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
-    use rsa::{
-        pss::{SigningKey, VerifyingKey},
-        signature::{RandomizedSigner, Verifier},
-    };
-    use sha2::{Digest, Sha256};
 
     fn setup_keys() -> (RsaKyberPublicKey, RsaKyberPrivateKey) {
         let config = CryptoConfig::default();

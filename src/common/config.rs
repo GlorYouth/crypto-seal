@@ -4,11 +4,10 @@
 //! 包含 Seal 保险库所使用的核心配置结构。
 //! 这些结构定义了加密参数、存储行为和密钥轮换策略。
 //!
-use crate::common::traits::AsymmetricAlgorithm;
+use crate::common::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use crate::rotation::RotationPolicy;
 use num_cpus;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::sync::Arc;
 // 注意：ConfigManager 相关的定义（如 ConfigListener, ConfigEvent, ConfigManager 本身）
 // 已被移除，因为它们的功能已被 Seal 的原子化状态管理所取代。
@@ -43,16 +42,12 @@ pub struct CryptoConfig {
     pub use_post_quantum: bool,
     /// 默认使用的非对称算法
     pub primary_asymmetric_algorithm: AsymmetricAlgorithm,
+    /// 默认使用的对称算法
+    pub primary_symmetric_algorithm: SymmetricAlgorithm,
     /// RSA密钥位数
     pub rsa_key_bits: usize,
     /// Kyber安全级别 (512/768/1024)
     pub kyber_parameter_k: usize,
-    /// 是否使用认证加密
-    pub use_authenticated_encryption: bool,
-    /// 是否自动验证签名
-    pub auto_verify_signatures: bool,
-    /// 默认签名算法
-    pub default_signature_algorithm: String,
     /// Argon2内存成本（默认19456 KB）
     pub argon2_memory_cost: u32,
     /// Argon2时间成本（默认2）
@@ -65,42 +60,11 @@ impl Default for CryptoConfig {
             use_traditional: true,
             use_post_quantum: true,
             primary_asymmetric_algorithm: AsymmetricAlgorithm::Rsa2048,
-            rsa_key_bits: 3072,     // NIST建议的安全位数
-            kyber_parameter_k: 768, // NIST竞赛中的推荐级别
-            use_authenticated_encryption: true,
-            auto_verify_signatures: true,
-            default_signature_algorithm: "RSA-PSS-SHA256".to_string(),
+            primary_symmetric_algorithm: SymmetricAlgorithm::Aes256Gcm,
+            rsa_key_bits: 3072,        // NIST建议的安全位数
+            kyber_parameter_k: 768,    // NIST竞赛中的推荐级别
             argon2_memory_cost: 19456, // 19MB
             argon2_time_cost: 2,
-        }
-    }
-}
-
-/// 存储配置
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct StorageConfig {
-    /// 密钥存储目录（此字段可能已废弃，因为 Seal 使用单一文件）
-    pub key_storage_dir: String,
-    /// 是否启用元数据缓存
-    pub use_metadata_cache: bool,
-    /// 是否使用安全删除（擦除）
-    pub secure_delete: bool,
-    /// 持久化文件权限（Unix文件模式，如0o600）
-    #[serde(default = "default_file_permissions")]
-    pub file_permissions: u32,
-}
-
-fn default_file_permissions() -> u32 {
-    0o600 // 等同于 -rw-------
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            key_storage_dir: "./keys".to_string(),
-            use_metadata_cache: true,
-            secure_delete: true,
-            file_permissions: 0o600,
         }
     }
 }
@@ -114,9 +78,6 @@ pub struct ConfigFile {
     /// 轮换配置
     #[serde(default)]
     pub rotation: RotationPolicy,
-    /// 存储配置
-    #[serde(default)]
-    pub storage: StorageConfig,
     /// 流式处理配置
     #[serde(default)]
     pub streaming: StreamingConfig,
@@ -134,10 +95,8 @@ impl ConfigManager {
     /// 加载顺序 (后续的会覆盖之前的):
     /// 1. `ConfigFile` 的默认值。
     /// 2. `config.json` 文件 (如果存在)。
-    /// 3. 手动解析的环境变量。
-    pub fn new(
-        config_dir: Option<&std::path::Path>,
-    ) -> Result<ConfigFile, config::ConfigError> {
+    /// 3. 环境变量 (前缀 `Q_SEAL`，分隔符 `__`)。
+    pub fn new(config_dir: Option<&std::path::Path>) -> Result<ConfigFile, config::ConfigError> {
         let builder = config::Config::builder()
             // 1. 从默认结构开始
             .add_source(config::Config::try_from(&ConfigFile::default())?);
@@ -151,28 +110,14 @@ impl ConfigManager {
             builder.add_source(config::File::with_name("config.json").required(false))
         };
 
-        let mut config: ConfigFile = builder.build()?.try_deserialize()?;
+        // 3. 从环境变量加载
+        let builder = builder.add_source(
+            config::Environment::with_prefix("Q_SEAL")
+                .prefix_separator("_")
+                .separator("__"),
+        );
 
-        // 3. 手动从环境变量加载，覆盖现有配置
-        // 这种方法更明确，且不依赖于 config 库的环境变量特性
-        if let Ok(val) = env::var("Q_SEAL_CRYPTO__RSA_KEY_BITS") {
-            if let Ok(parsed) = val.parse::<usize>() {
-                config.crypto.rsa_key_bits = parsed;
-            }
-        }
-        if let Ok(val) = env::var("Q_SEAL_ROTATION__VALIDITY_PERIOD_DAYS") {
-            if let Ok(parsed) = val.parse::<u32>() {
-                config.rotation.validity_period_days = parsed;
-            }
-        }
-        if let Ok(val) = env::var("Q_SEAL_STORAGE__SECURE_DELETE") {
-            if let Ok(parsed) = val.parse::<bool>() {
-                config.storage.secure_delete = parsed;
-            }
-        }
-        // ... 在这里可以为其他需要支持的环境变量添加类似逻辑 ...
-
-        Ok(config)
+        builder.build()?.try_deserialize()
     }
 }
 
@@ -307,7 +252,6 @@ mod tests {
 
         assert_eq!(config.crypto.rsa_key_bits, 4096);
         assert_eq!(config.crypto.kyber_parameter_k, 768); // 检查默认值是否保留
-        assert_eq!(config.storage.secure_delete, true); // 检查默认值是否保留
     }
 
     /// 测试能否从环境变量加载配置，并验证其优先级高于 JSON 文件
@@ -319,11 +263,7 @@ mod tests {
 
         let config_path = dir.path().join("config.json");
         let mut file = File::create(&config_path).unwrap();
-        writeln!(
-            file,
-            r#"{{"crypto": {{"rsa_key_bits": 4096}}, "storage": {{"secure_delete": false}} }}"#
-        )
-        .unwrap();
+        writeln!(file, r#"{{"crypto": {{"rsa_key_bits": 4096}} }}"#).unwrap();
 
         // 使用 RAII guard 确保环境变量在测试结束时被清理
         struct EnvGuard(&'static str);
@@ -334,6 +274,7 @@ mod tests {
                 }
             }
         }
+
         let _guard1 = EnvGuard("Q_SEAL_CRYPTO__RSA_KEY_BITS");
         unsafe {
             std::env::set_var("Q_SEAL_CRYPTO__RSA_KEY_BITS", "2048");
@@ -342,12 +283,16 @@ mod tests {
         unsafe {
             std::env::set_var("Q_SEAL_ROTATION__VALIDITY_PERIOD_DAYS", "180");
         }
+        let _guard3 = EnvGuard("Q_SEAL_STREAMING__BUFFER_SIZE");
+        unsafe {
+            std::env::set_var("Q_SEAL_STREAMING__BUFFER_SIZE", "8192");
+        }
 
         let config = ConfigManager::new(Some(dir.path())).unwrap();
 
         assert_eq!(config.crypto.rsa_key_bits, 2048); // 被环境变量覆盖
-        assert_eq!(config.storage.secure_delete, false); // 来自 JSON 文件
         assert_eq!(config.rotation.validity_period_days, 180); // 来自环境变量
+        assert_eq!(config.streaming.buffer_size, 8192); // 新增：测试深层结构
         assert_eq!(config.crypto.use_traditional, true); // 来自默认值
     }
 
@@ -365,19 +310,14 @@ mod tests {
                 }
             }
         }
-        let _guard = EnvGuard("Q_SEAL_STORAGE__SECURE_DELETE");
-        // 为一个布尔字段设置一个无法解析的值
+        let _guard = EnvGuard("Q_SEAL_CRYPTO__RSA_KEY_BITS");
+        // 为一个 usize 字段设置一个无法解析的值
         unsafe {
-            std::env::set_var("Q_SEAL_STORAGE__SECURE_DELETE", "not-a-boolean");
+            std::env::set_var("Q_SEAL_CRYPTO__RSA_KEY_BITS", "not-a-number");
         }
 
-        // 我们的实现会静默忽略无法解析的值
-        let config = ConfigManager::new(None).unwrap();
-
-        // 验证该字段的值仍然是其默认值，证明无效的环境变量已被忽略。
-        assert_eq!(
-            config.storage.secure_delete,
-            ConfigFile::default().storage.secure_delete
-        );
+        // config-rs 在遇到无法解析的值时会返回错误
+        let config_result = ConfigManager::new(None);
+        assert!(config_result.is_err());
     }
 }

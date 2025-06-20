@@ -1,7 +1,9 @@
 #[cfg(any(feature = "traditional", feature = "post-quantum"))]
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
+#[cfg(feature = "secure-storage")]
+use crate::common::CryptoConfig;
 use bincode::{Decode, Encode};
-use secrecy::{CloneableSecret, SecretBox, SerializableSecret};
+use secrecy::{CloneableSecret, SecretBox, SecretString, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use zeroize::Zeroize;
@@ -108,21 +110,21 @@ pub trait AuthenticatedCryptoSystem: AsymmetricCryptographicSystem {
 
 #[cfg(feature = "secure-storage")]
 /// 密钥容器特征，提供密钥的安全存储能力
-pub trait SecureKeyStorage {
-    /// 错误类型
-    type Error: std::error::Error;
+pub trait SecureKeyStorage: Sized {
+    type Error: std::error::Error + From<serde_json::Error> + From<base64::DecodeError>;
 
-    /// 加密并存储密钥
+    /// 使用给定的密码和算法标识符来加密一个密钥。
     fn encrypt_key<K: AsRef<[u8]>>(
-        password: &secrecy::SecretString,
+        password: &SecretString,
         key_data: K,
         algorithm_id: &str,
+        config: &CryptoConfig,
     ) -> Result<Self, Self::Error>
     where
         Self: Sized;
 
-    /// 解密并获取密钥数据
-    fn decrypt_key(&self, password: &secrecy::SecretString) -> Result<Vec<u8>, Self::Error>;
+    /// 从容器中解密并返回密钥。
+    fn decrypt_key(&self, password: &SecretString) -> Result<Vec<u8>, Self::Error>;
 
     /// 获取算法标识符
     fn algorithm_id(&self) -> &str;

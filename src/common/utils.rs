@@ -128,8 +128,5 @@ mod tests {
         assert!(config.use_traditional);
         assert_eq!(config.rsa_key_bits, 3072);
         assert_eq!(config.kyber_parameter_k, 768);
-        assert!(config.use_authenticated_encryption);
-        assert!(config.auto_verify_signatures);
-        assert_eq!(config.default_signature_algorithm, "RSA-PSS-SHA256");
     }
 }

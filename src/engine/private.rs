@@ -1,10 +1,8 @@
 use crate::common::header::{Header, HeaderPayload, SealMode};
 use crate::common::traits::{Algorithm, AsymmetricAlgorithm, SymmetricAlgorithm};
 use crate::engine::SealEngine;
-use crate::rotation::manager::KeyManager;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use crate::{AsymmetricCryptographicSystem, Error};
-use std::sync::Arc;
 
 impl SealEngine {
     /// 从输入流中读取并解析出一个 Header。

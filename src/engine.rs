@@ -4,7 +4,6 @@ use crate::common::header::Header;
 use crate::rotation::manager::KeyManager;
 use crate::{Error, Seal};
 use secrecy::SecretString;
-use std::io::{Read, Write};
 use std::sync::Arc;
 
 /// `SealEngine` 是执行实际加密和解密操作的统一接口。

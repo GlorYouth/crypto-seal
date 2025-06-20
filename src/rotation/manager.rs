@@ -3,7 +3,7 @@ use crate::common::config::ConfigFile;
 use crate::common::errors::Error;
 use crate::common::header::SealMode;
 use crate::common::traits::{
-    Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage, SymmetricAlgorithm,
+    Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage,
 };
 use crate::rotation::RotationPolicy;
 use crate::seal::Seal;
@@ -138,6 +138,7 @@ impl KeyManager {
         let new_id = format!("{}-{}", self.key_prefix, Uuid::new_v4());
         let now = Utc::now();
         let expires_at = now + Duration::days(self.rotation_policy.validity_period_days as i64);
+        let crypto_config = self.seal.config().crypto;
 
         // 对称模式下，我们只创建元数据。密钥是按需派生的，不存储。
         let new_metadata = KeyMetadata {
@@ -147,7 +148,7 @@ impl KeyManager {
             usage_count: 0,
             status: KeyStatus::Active,
             version: new_version,
-            algorithm: Algorithm::Symmetric(SymmetricAlgorithm::Aes256Gcm), // TODO: 从配置中获取
+            algorithm: Algorithm::Symmetric(crypto_config.primary_symmetric_algorithm),
             public_key: None,
             encrypted_private_key: None,
         };
@@ -202,6 +203,7 @@ impl KeyManager {
                 &SecretString::new(BASE64.encode(&key_derivation_key).into_boxed_str()),
                 private_key_b64.as_bytes(),
                 "asymmetric-private-key",
+                &crypto_config,
             )?;
             SecretBox::new(Box::new(crate::common::traits::SecString(
                 container.to_json()?,
