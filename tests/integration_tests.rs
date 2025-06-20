@@ -18,7 +18,7 @@ fn setup_engine() -> (seal_kit::SealEngine, tempfile::TempDir) {
     let seal_path = dir.path().join("my_seal.seal");
     let password = SecretString::from("test-password".to_string());
 
-    let seal = Seal::create(&seal_path, &password).unwrap();
+    let seal = Seal::create_encrypted(&seal_path, &password).unwrap();
 
     // 显式轮换密钥到 RsaKyber768
     seal.rotate_asymmetric_key(
@@ -248,36 +248,153 @@ fn test_manual_key_rotation() {
     let password = SecretString::from("test-password".to_string());
     let data = b"data for rotation test".to_vec();
 
-    // 1. 创建 Seal
-    let seal = Seal::create(&seal_path, &password).unwrap();
-
-    // 2. 轮换到 RSA-Kyber 并加密
-    seal.rotate_asymmetric_key(AsymmetricAlgorithm::RsaKyber768, &password)
+    // 1. 创建并使用 RSA-2048
+    let seal = Seal::create_encrypted(&seal_path, &password).unwrap();
+    seal.rotate_asymmetric_key(
+        AsymmetricAlgorithm::Rsa2048,
+        &password,
+    )
+    .unwrap();
+    let ciphertext_rsa = seal
+        .engine(SealMode::Hybrid, &password)
+        .unwrap()
+        .seal_bytes(&data, None)
         .unwrap();
-    let ciphertext_hybrid = {
-        let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-        engine.seal_bytes(&data, None).unwrap()
-    };
 
-    // 3. 轮换到纯 RSA 并用新密钥加密
-    seal.rotate_asymmetric_key(AsymmetricAlgorithm::Rsa2048, &password)
+    // 2. 轮换到 Kyber-768
+    seal.rotate_asymmetric_key(
+        AsymmetricAlgorithm::Kyber768,
+        &password,
+    )
+    .unwrap();
+    let ciphertext_kyber = seal
+        .engine(SealMode::Hybrid, &password)
+        .unwrap()
+        .seal_bytes(&data, None)
         .unwrap();
-    let ciphertext_rsa = {
+
+    assert_ne!(ciphertext_rsa, ciphertext_kyber, "Ciphertexts should differ after key rotation");
+
+    // 3. 重新打开 Seal，验证它能解密两种密文
+    let reopened_seal = Seal::open_encrypted(&seal_path, &password).unwrap();
+    let engine = reopened_seal
+        .engine(SealMode::Hybrid, &password)
+        .unwrap();
+
+    assert_eq!(
+        data,
+        engine.unseal_bytes(&ciphertext_rsa, None).unwrap(),
+        "Should decrypt data sealed with old (RSA) key"
+    );
+    assert_eq!(
+        data,
+        engine.unseal_bytes(&ciphertext_kyber, None).unwrap(),
+        "Should decrypt data sealed with new (Kyber) key"
+    );
+}
+
+#[test]
+fn test_open_and_change_password() {
+    let dir = tempdir().unwrap();
+    let seal_path = dir.path().join("my_seal.seal");
+    let old_password = SecretString::from("old-password".to_string());
+    let new_password = SecretString::from("new-password".to_string());
+
+    // 1. 用旧密码创建一个 Seal
+    Seal::create_encrypted(&seal_path, &old_password).unwrap();
+
+    // 2. 用旧密码打开，然后修改密码
+    let seal = Seal::open_encrypted(&seal_path, &old_password).unwrap();
+    seal.change_password(&old_password, &new_password).unwrap();
+
+    // 3. 尝试用旧密码打开，应该失败
+    let result = Seal::open_encrypted(&seal_path, &old_password);
+    assert!(
+        result.is_err(),
+        "Opening with old password should fail after change"
+    );
+
+    // 4. 用新密码打开，应该成功
+    Seal::open_encrypted(&seal_path, &new_password).unwrap();
+}
+
+mod plaintext_mode_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_plaintext_creation_and_seal_unseal() {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("plaintext.seal");
+        let password = SecretString::from("a-dummy-password-that-will-be-ignored");
+
+        // 1. 创建明文保险库
+        let seal = Seal::create_plaintext(&seal_path).unwrap();
+
+        // 轮换密钥，即使是明文模式，密钥管理依然有效
+        seal.rotate_asymmetric_key(
+            seal_kit::common::traits::AsymmetricAlgorithm::Rsa2048,
+            &password, // 密码在内部 commit_payload 中仍需传递，但存储时会被忽略
+        )
+        .unwrap();
+
+        let data = b"plaintext mode data";
         let mut engine = seal.engine(SealMode::Hybrid, &password).unwrap();
-        engine.seal_bytes(&data, None).unwrap()
-    };
+        
+        // 加密和解密
+        let ciphertext = engine.seal_bytes(data, None).unwrap();
+        let decrypted = engine.unseal_bytes(&ciphertext, None).unwrap();
+        
+        assert_eq!(data.as_ref(), decrypted.as_slice());
+    }
 
-    // 4. 验证不同密钥加密的密文不同
-    assert_ne!(ciphertext_hybrid, ciphertext_rsa);
+    #[test]
+    fn test_plaintext_is_actually_plaintext() {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("plaintext.seal");
 
-    // 5. 获取一个最终状态的引擎，它应该知道所有历史密钥
-    let final_engine = seal.engine(SealMode::Hybrid, &password).unwrap();
+        let seal = Seal::create_plaintext(&seal_path).unwrap();
+        let password = SecretString::from("dummy");
+        seal.rotate_asymmetric_key(
+            seal_kit::common::traits::AsymmetricAlgorithm::Rsa2048,
+            &password
+        ).unwrap();
+        
+        // 读取文件内容并验证它是可读的 JSON
+        let content = fs::read_to_string(seal_path).unwrap();
+        let json_value: serde_json::Value = serde_json::from_str(&content).expect("File content should be valid JSON");
 
-    // 6. 验证最终引擎可以解密由最新密钥（RSA）创建的密文
-    let decrypted_rsa = final_engine.unseal_bytes(&ciphertext_rsa, None).unwrap();
-    assert_eq!(data, decrypted_rsa);
+        // 验证 JSON 中包含预期的字段
+        assert!(json_value.get("master_seed").is_some());
+        assert!(json_value.get("key_registry").is_some());
+        assert!(json_value.get("config").is_some());
+    }
 
-    // 7. 验证最终引擎仍然可以解密由旧密钥（RSA-Kyber）创建的密文
-    let decrypted_hybrid = final_engine.unseal_bytes(&ciphertext_hybrid, None).unwrap();
-    assert_eq!(data, decrypted_hybrid);
+    #[test]
+    fn test_cannot_open_plaintext_as_encrypted() {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("plaintext.seal");
+        let password = SecretString::from("dummy-password");
+
+        // 1. 创建一个明文保险库
+        Seal::create_plaintext(&seal_path).unwrap();
+
+        // 2. 尝试用加密模式打开它，应该失败
+        let result = Seal::open_encrypted(&seal_path, &password);
+        assert!(result.is_err(), "Should not be able to open a plaintext vault in encrypted mode");
+    }
+
+    #[test]
+    fn test_cannot_open_encrypted_as_plaintext() {
+        let dir = tempdir().unwrap();
+        let seal_path = dir.path().join("encrypted.seal");
+        let password = SecretString::from("real-password");
+
+        // 1. 创建一个加密保险库
+        Seal::create_encrypted(&seal_path, &password).unwrap();
+
+        // 2. 尝试用明文模式打开它，应该失败
+        let result = Seal::open_plaintext(&seal_path);
+        assert!(result.is_err(), "Should not be able to open an encrypted vault in plaintext mode");
+    }
 }

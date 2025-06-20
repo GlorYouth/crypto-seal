@@ -51,3 +51,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use common::config::ConfigFile;
 pub use common::header::SealMode;
 pub use engine::SealEngine;
+
+pub use symmetric::traits as symmetric_traits;
+
+pub const SEAL_ALGORITHM_ID: &str = "seal-kit-v1-vault";

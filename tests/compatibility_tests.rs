@@ -32,7 +32,7 @@ fn setup_seal_with_key(
     let dir = tempdir().unwrap();
     let seal_path = dir.path().join("my_seal.seal");
     let password = SecretString::from("test-password-matrix");
-    let seal = Seal::create(&seal_path, &password).unwrap();
+    let seal = Seal::create_encrypted(&seal_path, &password).unwrap();
     seal.rotate_asymmetric_key(algorithm, &password).unwrap();
     (seal, dir, password)
 }

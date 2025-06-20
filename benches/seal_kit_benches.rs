@@ -20,7 +20,7 @@ fn setup_seal(
     let dir = tempdir().map_err(|e| Error::Io(e))?;
     let seal_path = dir.path().join("criterion_seal.seal");
     let password = SecretString::new("criterion-test-password".to_string().into_boxed_str());
-    let seal = Seal::create(&seal_path, &password)?;
+    let seal = Seal::create_encrypted(&seal_path, &password)?;
     seal.rotate_asymmetric_key(algorithm, &password)?;
     Ok((seal, password, dir))
 }
@@ -38,7 +38,7 @@ fn seal_kit_benchmark(c: &mut Criterion) {
     let vault_path = dir.path().join("benchmark_vault.seal");
 
     let password = SecretString::new("password".to_string().into_boxed_str());
-    let seal = Seal::create(&vault_path, &password).unwrap();
+    let seal = Seal::create_encrypted(&vault_path, &password).unwrap();
 
     let mut group = c.benchmark_group("Seal-Kit Performance");
     group.sampling_mode(SamplingMode::Flat);
