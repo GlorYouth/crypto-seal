@@ -1,4 +1,6 @@
-//! 对称加密的同步流式处理实现
+//! Implements synchronous streaming for symmetric encryption.
+// English: Implements synchronous streaming for symmetric encryption.
+
 use crate::common::config::StreamingConfig;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::errors::SymmetricError;
@@ -6,7 +8,11 @@ use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStream
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 
-/// 对称流式加密器
+/// `SymmetricStreamingEncryptor` handles the process of encrypting a stream of data.
+/// It reads data in chunks, encrypts each chunk, and writes it to an output stream.
+///
+/// 中文: `SymmetricStreamingEncryptor` 负责处理加密数据流的过程。
+/// 它以块的形式读取数据，加密每个块，然后将其写入输出流。
 pub struct SymmetricStreamingEncryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write> {
     reader: R,
     writer: W,
@@ -23,7 +29,9 @@ impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
 where
     SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
-    /// 创建新的对称流式加密器
+    /// Creates a new `SymmetricStreamingEncryptor`.
+    ///
+    /// 中文: 创建一个新的 `SymmetricStreamingEncryptor`。
     pub fn new(
         reader: R,
         writer: W,
@@ -43,7 +51,18 @@ where
         }
     }
 
-    /// 执行流式加密
+    /// Processes the entire input stream, encrypting it chunk by chunk.
+    ///
+    /// For each chunk, a unique Additional Authenticated Data (AAD) is constructed by combining
+    /// the global AAD (if any) with the little-endian representation of the chunk index.
+    /// This ensures that each chunk is authenticated with its position in the stream,
+    /// preventing reordering or replay attacks.
+    ///
+    /// 中文: 逐块处理整个输入流，对其进行加密。
+    ///
+    /// 对于每个块，通过将全局 AAD（如果有）与块索引的小端表示形式相结合，
+    /// 来构造一个唯一的附加认证数据 (AAD)。这确保了每个数据块都与其在流中的位置一起被认证，
+    /// 从而防止重排序或重放攻击。
     pub fn process(mut self) -> Result<StreamingResult, SymmetricError> {
         let mut buffer = vec![0u8; self.config.buffer_size];
         let mut total_written = 0;
@@ -62,6 +81,8 @@ where
 
             let plaintext = &buffer[..read_bytes];
 
+            // Construct AAD with chunk index to prevent reordering attacks.
+            // 中文: 构造包含块索引的 AAD 以防止重排序攻击。
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
@@ -92,7 +113,11 @@ where
     }
 }
 
-/// 对称流式解密器
+/// `SymmetricStreamingDecryptor` handles the process of decrypting a stream of data.
+/// It reads encrypted chunks, decrypts them, and writes the plaintext to an output stream.
+///
+/// 中文: `SymmetricStreamingDecryptor` 负责处理解密数据流的过程。
+/// 它读取加密的块，解密它们，然后将明文写入输出流。
 pub struct SymmetricStreamingDecryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write> {
     reader: R,
     writer: W,
@@ -109,7 +134,9 @@ impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
 where
     SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
-    /// 创建新的对称流式解密器
+    /// Creates a new `SymmetricStreamingDecryptor`.
+    ///
+    /// 中文: 创建一个新的 `SymmetricStreamingDecryptor`。
     pub fn new(
         reader: R,
         writer: W,
@@ -129,7 +156,18 @@ where
         }
     }
 
-    /// 执行流式解密
+    /// Processes the entire encrypted stream, decrypting it chunk by chunk.
+    ///
+    /// It reads the length-prefixed chunks from the input stream. For each chunk, it reconstructs
+    /// the exact same AAD used during encryption (global AAD + chunk index) to ensure
+    /// data integrity and authenticity. If the AAD doesn't match or the data is tampered with,
+    /// decryption for that chunk will fail.
+    ///
+    /// 中文: 逐块处理整个加密流，对其进行解密。
+    ///
+    /// 它从输入流中读取带有长度前缀的块。对于每个块，它会重建加密期间使用的
+    /// 完全相同的 AAD（全局 AAD + 块索引），以确保数据的完整性和真实性。
+    /// 如果 AAD 不匹配或数据被篡改，该块的解密将失败。
     pub fn process(mut self) -> Result<StreamingResult, SymmetricError> {
         let mut total_written = 0;
         let mut mem_buffer = if self.config.keep_in_memory {
@@ -151,6 +189,8 @@ where
             self.reader.read_exact(&mut ciphertext_buffer)?;
             self.bytes_processed += (4 + block_size) as u64;
 
+            // Reconstruct the exact same AAD as used in encryption.
+            // 中文: 重构与加密时完全相同的 AAD。
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
@@ -180,7 +220,12 @@ where
     }
 }
 
-/// 为所有实现 `SymmetricCryptographicSystem` 的类型提供 `SymmetricSyncStreamingSystem` 的默认实现
+/// Provides a default implementation of `SymmetricSyncStreamingSystem` for any type
+/// that implements `SymmetricCryptographicSystem`. This allows any core symmetric
+/// algorithm to be used for streaming out-of-the-box.
+///
+/// 中文: 为任何实现了 `SymmetricCryptographicSystem` 的类型提供 `SymmetricSyncStreamingSystem` 的默认实现。
+/// 这使得任何核心对称算法都可以开箱即用地用于流式处理。
 impl<T> SymmetricSyncStreamingSystem for T
 where
     T: SymmetricCryptographicSystem,

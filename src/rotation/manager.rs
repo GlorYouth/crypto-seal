@@ -1,4 +1,6 @@
-//! 统一的密钥轮换管理器
+//! Unified key rotation manager.
+// English: Unified key rotation manager.
+
 use crate::Error;
 use crate::asymmetric::errors::AsymmetricError;
 use crate::common::config::ConfigFile;
@@ -19,25 +21,51 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// `KeyManager` 是 seal-kit 中用于管理所有加密密钥（对称和非对称）的统一接口。
+/// `KeyManager` is the unified interface in `seal-kit` for managing all cryptographic keys (both symmetric and asymmetric).
+///
+/// It internally selects the appropriate key storage and management strategy based on the `SealMode`
+/// and handles the entire lifecycle of keys, including generation, storage, rotation, and on-demand retrieval.
+/// It is instantiated by `Seal` and used by `SealEngine`.
+///
+/// 中文: `KeyManager` 是 seal-kit 中用于管理所有加密密钥（对称和非对称）的统一接口。
 ///
 /// 它根据 `SealMode` 在内部选择合适的密钥存储和管理策略，
 /// 并处理密钥的整个生命周期，包括生成、存储、轮换和按需检索。
+/// 它由 `Seal` 实例化并由 `SealEngine` 使用。
 #[derive(Clone)]
 pub struct KeyManager {
     mode: SealMode,
-    // 未来这里会持有一个具体的 KeyStore 实现
-    // store: Box<dyn KeyStore>,
+    // A reference to the master `Seal` instance, providing access to the vault's payload and configuration.
+    // 中文: 对主 `Seal` 实例的引用，提供对保险库载荷和配置的访问。
     seal: Arc<Seal>,
+    // The rotation policy that determines when keys should be rotated.
+    // 中文: 决定何时应轮换密钥的轮换策略。
     rotation_policy: RotationPolicy,
+    // A prefix to namespace keys within the vault, allowing multiple independent managers.
+    // 中文: 用于在保险库中为密钥提供命名空间的前缀，允许多个独立的管理器。
     key_prefix: String,
 
+    // The currently active key for encryption.
+    // 中文: 当前用于加密的活动主密钥。
     primary_key_metadata: Option<KeyMetadata>,
+    // A list of older keys kept for decryption purposes.
+    // 中文: 为解密目的而保留的旧密钥列表。
     secondary_keys_metadata: Vec<KeyMetadata>,
 }
 
 impl KeyManager {
-    /// 创建一个新的统一密钥管理器。
+    /// Creates a new unified key manager.
+    ///
+    /// # Arguments
+    /// * `seal` - An Arc reference to the `Seal` instance.
+    /// * `key_prefix` - A string to prefix key IDs, namespacing them for this manager.
+    /// * `mode` - The operational mode (`Symmetric` or `Hybrid`).
+    ///
+    /// 中文: 创建一个新的统一密钥管理器。
+    /// # 参数
+    /// * `seal` - 对 `Seal` 实例的 Arc 引用。
+    /// * `key_prefix` - 用于为该管理器的密钥 ID 添加前缀的字符串，以实现命名空间。
+    /// * `mode` - 操作模式（`Symmetric` 或 `Hybrid`）。
     pub fn new(seal: Arc<Seal>, key_prefix: &str, mode: SealMode) -> Self {
         let rotation_policy = seal.config().rotation.clone();
         Self {
@@ -50,19 +78,27 @@ impl KeyManager {
         }
     }
 
-    /// 初始化管理器，从 Seal 保险库加载特定模式的密钥元数据。
+    /// Initializes the manager by loading key metadata for a specific mode from the Seal vault.
+    /// It filters keys by `key_prefix`, identifies the latest active key as primary,
+    /// and collects the rest as secondary keys.
+    ///
+    /// 中文: 初始化管理器，从 Seal 保险库加载特定模式的密钥元数据。
+    /// 它通过 `key_prefix` 筛选密钥，将最新的活动密钥识别为主密钥，
+    /// 并将其余密钥收集为次要密钥。
     pub fn initialize(&mut self) {
         let payload = self.seal.payload();
         let mut relevant_keys = BTreeMap::new();
 
-        // 根据 key_prefix 筛选出相关的密钥
+        // Filter relevant keys based on the key_prefix.
+        // 中文: 根据 key_prefix 筛选出相关的密钥。
         for (key_id, metadata) in &payload.key_registry {
             if key_id.starts_with(&self.key_prefix) {
                 relevant_keys.insert(metadata.version, metadata.clone());
             }
         }
 
-        // 最新版本的为 Primary Key
+        // The latest version is the primary key.
+        // 中文: 最新版本的为 Primary Key。
         if let Some((_, primary_metadata)) = relevant_keys.pop_last() {
             if primary_metadata.status == KeyStatus::Active {
                 self.primary_key_metadata = Some(primary_metadata.clone());
@@ -72,15 +108,23 @@ impl KeyManager {
         self.secondary_keys_metadata = relevant_keys.into_values().collect();
     }
 
-    /// 返回 `seal` 实例的配置。
+    /// Returns the configuration from the `seal` instance.
+    ///
+    /// 中文: 返回 `seal` 实例的配置。
     pub fn config(&self) -> ConfigFile {
         self.seal.config()
     }
 
-    /// 检查主密钥是否根据策略需要轮换。
+    /// Checks if the primary key needs rotation based on the configured policy.
+    /// Rotation is needed if the key is expired, nearing expiry, has exceeded its usage count,
+    /// or if no primary key exists.
+    ///
+    /// 中文: 检查主密钥是否根据策略需要轮换。
+    /// 如果密钥已过期、临近过期、已超过其使用次数，或者不存在主密钥，则需要轮换。
     pub fn needs_rotation(&self) -> bool {
         if let Some(metadata) = &self.primary_key_metadata {
-            // 检查过期时间
+            // Check expiry time.
+            // 中文: 检查过期时间。
             if let Some(expires_at) = &metadata.expires_at {
                 if let Ok(expiry_time) = DateTime::parse_from_rfc3339(expires_at) {
                     let now = Utc::now();
@@ -91,7 +135,8 @@ impl KeyManager {
                     }
                 }
             }
-            // 检查使用次数
+            // Check usage count.
+            // 中文: 检查使用次数。
             if let Some(max_count) = self.rotation_policy.max_usage_count {
                 if metadata.usage_count >= max_count {
                     return true;
@@ -99,12 +144,17 @@ impl KeyManager {
             }
             false
         } else {
-            // 没有主密钥，就需要"轮换"（即创建第一个）
+            // No primary key, so "rotation" is needed to create the first one.
+            // 中文: 没有主密钥，就需要"轮换"（即创建第一个）。
             true
         }
     }
 
-    /// 增加主密钥的使用计数。
+    /// Increments the usage count of the primary key.
+    /// This is an atomic operation that commits the change to the vault.
+    ///
+    /// 中文: 增加主密钥的使用计数。
+    /// 这是一个原子操作，会将更改提交到保险库。
     pub fn increment_usage_count(&mut self, password: &SecretString) -> Result<(), Error> {
         if let Some(meta) = &mut self.primary_key_metadata {
             let key_id = meta.id.clone();
@@ -116,19 +166,28 @@ impl KeyManager {
                 }
             })?;
 
-            // 更新内存状态
+            // Update in-memory state.
+            // 中文: 更新内存状态。
             meta.usage_count = new_count;
         }
         Ok(())
     }
 
-    /// 开始密钥轮换过程。
+    /// Starts the key rotation process.
+    ///
+    /// Depending on the manager's mode, this method will:
+    /// - **Symmetric**: Create new key metadata and set it to active. The key material itself is derived on demand.
+    /// - **Hybrid**: Generate a new asymmetric key pair (KEK), store its public key, encrypt the private key,
+    ///   and then set the metadata as active.
+    ///
+    /// 中文: 开始密钥轮换过程。
     ///
     /// 根据管理器的模式，此方法将：
     /// - **Symmetric**: 创建新的密钥元数据，并将其设为活动状态。密钥材料本身是按需派生的。
     /// - **Hybrid**: 生成一个新的非对称密钥对 (KEK)，将其公钥存储并加密私钥，然后将元数据设为活动状态。
     pub fn start_rotation(&mut self, password: &SecretString) -> Result<(), Error> {
-        // 分支处理不同模式下的密钥生成和存储逻辑
+        // Branch to handle key generation and storage logic for different modes.
+        // 中文: 分支处理不同模式下的密钥生成和存储逻辑。
         match self.mode {
             SealMode::Symmetric => self.start_symmetric_rotation(password),
             SealMode::Hybrid => self.start_hybrid_rotation(password),
@@ -144,7 +203,8 @@ impl KeyManager {
         let expires_at = now + Duration::days(self.rotation_policy.validity_period_days as i64);
         let crypto_config = self.seal.config().crypto;
 
-        // 对称模式下，我们只创建元数据。密钥是按需派生的，不存储。
+        // In symmetric mode, we only create metadata. The key is derived on demand, not stored.
+        // 中文: 对称模式下，我们只创建元数据。密钥是按需派生的，不存储。
         let new_metadata = KeyMetadata {
             id: new_id.clone(),
             created_at: now.to_rfc3339(),
@@ -201,7 +261,10 @@ impl KeyManager {
             }
         };
 
-        // 加密私钥以便安全存储
+        // Encrypt the private key for secure storage.
+        // A dedicated key for this purpose is derived from the master seed.
+        // 中文: 加密私钥以便安全存储。
+        // 从主种子派生一个专用于此目的的密钥。
         let encrypted_private_key = {
             let payload = self.seal.payload();
             let key_derivation_key =
@@ -238,7 +301,15 @@ impl KeyManager {
         self.commit_and_update_metadata(password, new_metadata)
     }
 
-    /// 提交新的元数据到 Seal 并更新管理器在内存中的状态
+    /// Commits new metadata to the Seal vault and updates the manager's in-memory state.
+    ///
+    /// This is an atomic operation. It first updates the status of the old primary key (if any) to `Rotating`,
+    /// then inserts the new primary key metadata. Finally, it updates the in-memory state of the manager.
+    ///
+    /// 中文: 提交新的元数据到 Seal 并更新管理器在内存中的状态。
+    ///
+    /// 这是一个原子操作。它首先将旧的主密钥（如果存在）状态更新为 `Rotating`，
+    /// 然后插入新的主密钥元数据。最后，它更新管理器在内存中的状态。
     fn commit_and_update_metadata(
         &mut self,
         password: &SecretString,
@@ -247,18 +318,21 @@ impl KeyManager {
         let old_primary_metadata = self.primary_key_metadata.clone();
 
         self.seal.commit_payload(password, |payload| {
-            // 1. 将旧的主密钥（如果存在）状态更新为 Rotating。
+            // 1. Update the status of the old primary key (if it exists) to Rotating.
+            // 中文: 1. 将旧的主密钥（如果存在）状态更新为 Rotating。
             if let Some(mut old_meta) = old_primary_metadata {
                 old_meta.status = KeyStatus::Rotating;
                 payload.key_registry.insert(old_meta.id.clone(), old_meta);
             }
-            // 2. 插入新的主密钥元数据。
+            // 2. Insert the new primary key metadata.
+            // 中文: 2. 插入新的主密钥元数据。
             payload
                 .key_registry
                 .insert(new_metadata.id.clone(), new_metadata.clone());
         })?;
 
-        // 3. 更新内存状态。
+        // 3. Update the in-memory state.
+        // 中文: 3. 更新内存状态。
         if let Some(old_meta) = self.primary_key_metadata.take() {
             let mut rotating_meta = old_meta.clone();
             rotating_meta.status = KeyStatus::Rotating;
@@ -271,7 +345,11 @@ impl KeyManager {
 
     // --- Public methods for key retrieval ---
 
-    /// 根据ID派生对称密钥。仅在对称模式下有效。
+    /// Derives a symmetric key by its ID. Only valid in symmetric mode.
+    /// The key material is derived from the master seed using the key ID as context/salt.
+    ///
+    /// 中文: 根据ID派生对称密钥。仅在对称模式下有效。
+    /// 密钥材料是使用密钥ID作为上下文/盐，从主种子派生出来的。
     pub fn derive_symmetric_key<T: SymmetricCryptographicSystem>(
         &self,
         key_id: &str,
@@ -298,7 +376,12 @@ impl KeyManager {
         }
     }
 
-    /// 根据ID获取非对称密钥对。仅在混合模式下有效。
+    /// Retrieves an asymmetric key pair by its ID. Only valid in hybrid mode.
+    /// The public key is stored in plaintext, while the private key is decrypted on-demand
+    /// using a key derived from the master seed.
+    ///
+    /// 中文: 根据ID获取非对称密钥对。仅在混合模式下有效。
+    /// 公钥以明文形式存储，而私钥则使用从主种子派生的密钥按需解密。
     pub fn get_asymmetric_keypair<T: crate::asymmetric::traits::AsymmetricCryptographicSystem>(
         &self,
         key_id: &str,
@@ -352,12 +435,16 @@ impl KeyManager {
         }
     }
 
-    /// 获取主密钥的元数据
+    /// Gets the metadata for the primary key.
+    ///
+    /// 中文: 获取主密钥的元数据。
     pub fn get_primary_key_metadata(&self) -> Option<&KeyMetadata> {
         self.primary_key_metadata.as_ref()
     }
 
-    /// 在所有已知密钥中（主密钥和次要密钥）按ID查找元数据。
+    /// Finds key metadata by ID across all known keys (primary and secondary).
+    ///
+    /// 中文: 在所有已知密钥中（主密钥和次要密钥）按ID查找元数据。
     fn find_key_metadata_by_id(&self, key_id: &str) -> Option<&KeyMetadata> {
         if let Some(meta) = &self.primary_key_metadata {
             if meta.id == key_id {
@@ -369,7 +456,9 @@ impl KeyManager {
             .find(|&meta| meta.id == key_id)
     }
 
-    /// 获取下一个可用的密钥版本号。
+    /// Gets the next available key version number.
+    ///
+    /// 中文: 获取下一个可用的密钥版本号。
     fn get_next_version(&self) -> u32 {
         let max_version = self
             .primary_key_metadata
@@ -381,6 +470,9 @@ impl KeyManager {
         max_version + 1
     }
 
+    /// Returns the current operational mode of the manager.
+    ///
+    /// 中文: 返回管理器的当前操作模式。
     pub fn mode(&self) -> SealMode {
         self.mode
     }

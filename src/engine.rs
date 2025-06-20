@@ -1,3 +1,5 @@
+//! The core cryptographic engine for `seal-kit`.
+// English: The core cryptographic engine for `seal-kit`.
 mod private;
 
 use crate::common::header::Header;
@@ -9,19 +11,39 @@ use secrecy::SecretString;
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-/// `SealEngine` 是执行实际加密和解密操作的统一接口。
+/// `SealEngine` is the unified interface for performing actual encryption and decryption operations.
+///
+/// It holds the state of the `KeyManager` to efficiently handle consecutive cryptographic operations
+/// and automatic key rotation. An engine is created by `Seal::engine()` and is typically short-lived
+/// for a specific set of operations.
+///
+/// 中文: `SealEngine` 是执行实际加密和解密操作的统一接口。
 ///
 /// 它持有密钥管理器的状态，以高效地处理连续的加密操作和自动密钥轮换。
+/// 引擎由 `Seal::engine()` 创建，通常用于一组特定的操作，生命周期较短。
 #[derive(Clone)]
 pub struct SealEngine {
+    /// The manager responsible for the lifecycle of keys.
+    /// 中文: 负责密钥生命周期的管理器。
     pub(crate) key_manager: KeyManager,
-    // 我们需要一个对 Seal 的引用来访问配置等信息，但它不参与状态管理
+    /// A reference to the `Seal` instance, needed for accessing configuration etc.
+    /// It does not participate in state management itself.
+    /// 中文: 对 `Seal` 实例的引用，用于访问配置等信息，但它不参与状态管理。
     pub(crate) _seal: Arc<Seal>,
-    // 引擎在创建时 "解锁"，存储密码以供内部需要写入的操作（如密钥轮换）使用。
+    /// The engine is "unlocked" upon creation, storing the password for internal operations
+    /// that require writing, such as key rotation.
+    /// 中文: 引擎在创建时 "解锁"，存储密码以供内部需要写入的操作（如密钥轮换）使用。
     pub(crate) password: SecretString,
 
-    /// 可选的DEK缓存，用于高性能、低安全性的场景。
-    /// An optional DEK cache for high-performance, lower-security scenarios.
+    /// Optional DEK cache for high-performance, lower-security scenarios.
+    /// When this feature is enabled, the engine can reuse a Data Encryption Key (DEK)
+    /// across multiple encryption calls to avoid the overhead of KEM for each operation.
+    /// **Warning**: This violates cryptographic best practices and reduces security.
+    ///
+    /// 中文: 可选的DEK缓存，用于高性能、低安全性的场景。
+    /// 启用此功能后，引擎可以在多个加密调用中重用数据加密密钥（DEK），
+    /// 以避免每次操作都执行密钥封装机制（KEM）的开销。
+    /// **警告**：这违反了密码学最佳实践，会降低安全性。
     #[cfg(feature = "dek-caching")]
     dek_cache: Option<(Header, Vec<u8>)>,
 }
@@ -29,7 +51,8 @@ pub struct SealEngine {
 impl SealEngine {
     /// Creates a new `SealEngine`.
     /// This is the correct way to instantiate the engine, as it handles internal state and feature flags.
-    /// 创建一个新的 `SealEngine`。
+    ///
+    /// 中文: 创建一个新的 `SealEngine`。
     /// 这是实例化引擎的正确方法，因为它能处理内部状态和功能标志。
     pub(crate) fn new(key_manager: KeyManager, seal: Arc<Seal>, password: SecretString) -> Self {
         Self {
@@ -43,14 +66,17 @@ impl SealEngine {
 
     /// Clears the cached Data Encryption Key (DEK).
     /// This forces the engine to generate a new DEK on the next `_with_cached_dek` encryption call.
-    /// 清除缓存的数据加密密钥（DEK）。
+    ///
+    /// 中文: 清除缓存的数据加密密钥（DEK）。
     /// 这将强制引擎在下一次调用 `_with_cached_dek` 加密方法时生成一个新的DEK。
     #[cfg(feature = "dek-caching")]
     pub fn clear_dek_cache(&mut self) {
         self.dek_cache = None;
     }
 
-    /// （内部方法）确保缓存中有一个可用的DEK，如果不存在则生成一个。
+    /// (Internal) Ensures a DEK is available in the cache, generating one if it's not present.
+    ///
+    /// 中文: （内部方法）确保缓存中有一个可用的DEK，如果不存在则生成一个。
     #[cfg(feature = "dek-caching")]
     fn ensure_dek_cached(&mut self) -> Result<(), Error> {
         if self.dek_cache.is_none() {
@@ -65,7 +91,8 @@ impl SealEngine {
 
     /// [DEK Caching] Encrypts a byte slice using a cached DEK for high performance.
     /// **Warning:** Reusing a DEK for multiple encryption operations is against cryptographic best practices.
-    /// [DEK 缓存] 使用缓存的DEK加密字节切片以实现高性能。
+    ///
+    /// 中文: [DEK 缓存] 使用缓存的DEK加密字节切片以实现高性能。
     /// **警告：** 对多个加密操作重用DEK违反了密码学的最佳实践。
     #[cfg(feature = "dek-caching")]
     pub fn seal_bytes_with_cached_dek(
@@ -97,7 +124,8 @@ impl SealEngine {
 
     /// [DEK Caching] Encrypts a stream using a cached DEK for high performance.
     /// **Warning:** Reusing a DEK for multiple encryption operations is against cryptographic best practices.
-    /// [DEK 缓存] 使用缓存的DEK加密流以实现高性能。
+    ///
+    /// 中文: [DEK 缓存] 使用缓存的DEK加密流以实现高性能。
     /// **警告：** 对多个加密操作重用DEK违反了密码学的最佳实践。
     #[cfg(feature = "dek-caching")]
     pub fn seal_stream_with_cached_dek<R: Read, W: Write>(
@@ -127,7 +155,8 @@ impl SealEngine {
 
     /// [DEK Caching] Encrypts a stream in parallel using a cached DEK for high performance.
     /// **Warning:** Reusing a DEK for multiple encryption operations is against cryptographic best practices.
-    /// [DEK 缓存] 使用缓存的DEK并行加密流以实现高性能。
+    ///
+    /// 中文: [DEK 缓存] 使用缓存的DEK并行加密流以实现高性能。
     /// **警告：** 对多个加密操作重用DEK违反了密码学的最佳实践。
     #[cfg(feature = "dek-caching")]
     pub fn par_seal_stream_with_cached_dek<R: Read + Send, W: Write + Send>(
@@ -163,35 +192,44 @@ impl SealEngine {
         Ok(())
     }
 
-    /// 使用当前引擎的模式来加密（封印）一个字节切片。
+    /// Encrypts ("seals") a byte slice using the engine's current mode.
+    /// This is a convenience method for in-memory encryption. It internally uses the streaming implementation for code reuse.
     ///
-    /// 这是一个便捷的内存加密方法。
+    /// 中文: 使用当前引擎的模式来加密（封印）一个字节切片。
+    /// 这是一个便捷的内存加密方法。它在内部使用流式加密的实现以复用代码。
     pub fn seal_bytes(&mut self, plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>, Error> {
-        // 为了代码复用，我们可以在内部使用流式加密的实现
+        // For code reuse, we can use the streaming encryption implementation internally.
+        // 中文: 为了代码复用，我们可以在内部使用流式加密的实现。
         let mut reader = std::io::Cursor::new(plaintext);
         let mut writer = Vec::new();
         self.seal_stream(&mut reader, &mut writer, aad)?;
         Ok(writer)
     }
 
-    /// [并行] 使用当前引擎的模式来加密（封印）一个字节切片。
+    /// [Parallel] Encrypts ("seals") a byte slice using the engine's current mode.
+    ///
+    /// 中文: [并行] 使用当前引擎的模式来加密（封印）一个字节切片。
     pub fn par_seal_bytes(
         &mut self,
         plaintext: &[u8],
         aad: Option<&[u8]>,
     ) -> Result<Vec<u8>, Error> {
-        // 1. 检查并执行密钥轮换
+        // 1. Check and perform key rotation if needed.
+        // 中文: 1. 检查并执行密钥轮换。
         if self.key_manager.needs_rotation() {
             self.key_manager.start_rotation(&self.password)?;
         }
 
-        // 2. 构建 Header 和 DEK
+        // 2. Build the Header and Data Encryption Key (DEK).
+        // 中文: 2. 构建 Header 和 DEK。
         let (header, dek) = self.build_header_and_dek()?;
 
-        // 3. 序列化
+        // 3. Serialize the header.
+        // 中文: 3. 序列化 Header。
         let header_bytes = header.encode_to_vec()?;
 
-        // 4. 调用底层的并行加密原语
+        // 4. Call the underlying parallel encryption primitive.
+        // 中文: 4. 调用底层的并行加密原语。
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricParallelSystem;
 
@@ -201,7 +239,8 @@ impl SealEngine {
             AesGcmSystem::par_encrypt(&dek_key, plaintext, aad, parallelism_config)
                 .map_err(SymmetricError::from)?;
 
-        // 5. 组合 Header 和加密后的载荷
+        // 5. Combine the header and the encrypted payload.
+        // 中文: 5. 组合 Header 和加密后的载荷。
         let mut final_output =
             Vec::with_capacity(4 + header_bytes.len() + ciphertext_payload.len());
         final_output.extend_from_slice(&(header_bytes.len() as u32).to_le_bytes());
@@ -213,7 +252,9 @@ impl SealEngine {
         Ok(final_output)
     }
 
-    /// [并行] 使用当前引擎的模式来流式加密（封印）一个数据流。
+    /// [Parallel] Encrypts ("seals") a data stream using the engine's current mode.
+    ///
+    /// 中文: [并行] 使用当前引擎的模式来流式加密（封印）一个数据流。
     pub fn par_seal_stream<R, W>(
         &mut self,
         reader: R,
@@ -224,20 +265,24 @@ impl SealEngine {
         R: std::io::Read + Send,
         W: std::io::Write + Send,
     {
-        // 1. 检查并执行密钥轮换
+        // 1. Check and perform key rotation if needed.
+        // 中文: 1. 检查并执行密钥轮换。
         if self.key_manager.needs_rotation() {
             self.key_manager.start_rotation(&self.password)?;
         }
 
-        // 2. 构建 Header 和 DEK
+        // 2. Build the Header and Data Encryption Key (DEK).
+        // 中文: 2. 构建 Header 和 DEK。
         let (header, dek) = self.build_header_and_dek()?;
 
-        // 3. 序列化并写入 Header
+        // 3. Serialize and write the header.
+        // 中文: 3. 序列化并写入 Header。
         let header_bytes = header.encode_to_vec()?;
         writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
         writer.write_all(&header_bytes)?;
 
-        // 4. 调用底层的并行流式加密原语
+        // 4. Call the underlying parallel streaming encryption primitive.
+        // 中文: 4. 调用底层的并行流式加密原语。
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricParallelStreamingSystem;
 
@@ -259,10 +304,17 @@ impl SealEngine {
         Ok(())
     }
 
-    /// 使用当前引擎的模式来流式加密（封印）一个数据流。
+    /// Encrypts ("seals") a data stream using the engine's current mode.
+    ///
+    /// This method automatically handles key rotation, metadata generation, and data encryption,
+    /// writing the uniformly formatted ciphertext to the output stream.
+    /// The format is `[header_len][header][encrypted_payload_stream]`.
+    ///
+    /// 中文: 使用当前引擎的模式来流式加密（封印）一个数据流。
     ///
     /// 此方法会自动处理密钥轮换、元数据生成和数据加密，
     /// 并将统一格式的密文写入输出流。
+    /// 格式为 `[header_len][header][encrypted_payload_stream]`。
     pub fn seal_stream<R, W>(
         &mut self,
         reader: R,
@@ -273,20 +325,24 @@ impl SealEngine {
         R: std::io::Read,
         W: std::io::Write,
     {
-        // 1. 检查并执行密钥轮换
+        // 1. Check and perform key rotation if needed.
+        // 中文: 1. 检查并执行密钥轮换。
         if self.key_manager.needs_rotation() {
             self.key_manager.start_rotation(&self.password)?;
         }
 
-        // 2. 构建 Header
+        // 2. Build the Header.
+        // 中文: 2. 构建 Header。
         let (header, dek) = self.build_header_and_dek()?;
 
-        // 3. 序列化并写入 Header
+        // 3. Serialize and write the Header.
+        // 中文: 3. 序列化并写入 Header。
         let header_bytes = header.encode_to_vec()?;
         writer.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
         writer.write_all(&header_bytes)?;
 
-        // 4. 使用 DEK 加密数据流
+        // 4. Encrypt the data stream using the DEK.
+        // 中文: 4. 使用 DEK 加密数据流。
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricSyncStreamingSystem;
 
@@ -300,7 +356,12 @@ impl SealEngine {
         Ok(())
     }
 
-    /// 使用当前引擎的模式解密（解封）一个字节切片。
+    /// Decrypts ("unseals") a byte slice using the engine's current mode.
+    ///
+    /// This method automatically parses the ciphertext header to retrieve the correct key for decryption.
+    /// This is a convenience method for in-memory decryption.
+    ///
+    /// 中文: 使用当前引擎的模式解密（解封）一个字节切片。
     ///
     /// 此方法会自动解析密文头部，获取正确的密钥进行解密。
     /// 这是一个便捷的内存解密方法。
@@ -311,26 +372,30 @@ impl SealEngine {
         Ok(writer)
     }
 
-    /// [并行] 使用当前引擎的模式解密（解封）一个字节切片。
+    /// [Parallel] Decrypts ("unseals") a byte slice using the engine's current mode.
+    ///
+    /// 中文: [并行] 使用当前引擎的模式解密（解封）一个字节切片。
     pub fn par_unseal_bytes(
         &self,
         ciphertext: &[u8],
         aad: Option<&[u8]>,
     ) -> Result<Vec<u8>, Error> {
-        // 1. 解析 Header
+        // 1. Parse the header.
+        // 中文: 1. 解析 Header。
         let mut reader = std::io::Cursor::new(ciphertext);
         let header = self.read_and_parse_header(&mut reader)?;
 
-        // 2. 根据 Header 派生/解密 DEK
+        // 2. Derive/decrypt the DEK based on the header.
+        // 中文: 2. 根据 Header 派生/解密 DEK。
         let dek = self.derive_dek_from_header(&header)?;
 
-        // 3. 读取剩余的载荷并使用并行原语解密
+        // 3. Read the remaining payload and decrypt using the parallel primitive.
+        // 中文: 3. 读取剩余的载荷并使用并行原语解密。
         let mut payload = Vec::new();
         reader.read_to_end(&mut payload)?;
 
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricParallelSystem;
-        use std::io::Read;
 
         let dek_key = AesGcmKey(dek);
         let parallelism_config = &self.key_manager.config().parallelism;
@@ -341,7 +406,9 @@ impl SealEngine {
         Ok(decrypted_payload)
     }
 
-    /// [并行] 使用当前引擎的模式来流式解密（解封）一个数据流。
+    /// [Parallel] Decrypts ("unseals") a data stream using the engine's current mode.
+    ///
+    /// 中文: [并行] 使用当前引擎的模式来流式解密（解封）一个数据流。
     pub fn par_unseal_stream<R, W>(
         &self,
         mut reader: R,
@@ -352,13 +419,16 @@ impl SealEngine {
         R: std::io::Read + Send,
         W: std::io::Write + Send,
     {
-        // 1. 解析 Header
+        // 1. Parse the header.
+        // 中文: 1. 解析 Header。
         let header = self.read_and_parse_header(&mut reader)?;
 
-        // 2. 根据 Header 派生/解密 DEK
+        // 2. Derive/decrypt the DEK based on the header.
+        // 中文: 2. 根据 Header 派生/解密 DEK。
         let dek = self.derive_dek_from_header(&header)?;
 
-        // 3. 调用底层的并行流式解密原语
+        // 3. Call the underlying parallel streaming decryption primitive.
+        // 中文: 3. 调用底层的并行流式解密原语。
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricParallelStreamingSystem;
 
@@ -378,9 +448,15 @@ impl SealEngine {
         Ok(())
     }
 
-    /// 解密（解封）一个数据流。
+    /// Decrypts ("unseals") a data stream.
+    ///
+    /// This method automatically parses the ciphertext header and uses the correct key to decrypt the subsequent data stream.
+    /// It reads from `[header_len][header][encrypted_payload_stream]` format.
+    ///
+    /// 中文: 解密（解封）一个数据流。
     ///
     /// 此方法会自动解析密文头，并用正确的密钥解密后续的数据流。
+    /// 它从 `[header_len][header][encrypted_payload_stream]` 格式读取。
     pub fn unseal_stream<R, W>(
         &self,
         mut reader: R,
@@ -391,14 +467,17 @@ impl SealEngine {
         R: std::io::Read,
         W: std::io::Write,
     {
-        // 1. 解析 Header
+        // 1. Parse the header.
+        // 中文: 1. 解析 Header。
         let header = self.read_and_parse_header(&mut reader)?;
 
-        // 2. 根据 Header 派生/解密 DEK
+        // 2. Derive/decrypt the DEK based on the header.
+        // 中文: 2. 根据 Header 派生/解密 DEK。
         let dek = self.derive_dek_from_header(&header)?;
 
         use crate::common::header::HeaderPayload;
-        use crate::common::traits::SymmetricAlgorithm; // 3. 使用 DEK 解密数据流
+        use crate::common::traits::SymmetricAlgorithm; // 3. Use the DEK to decrypt the data stream.
+        // 中文: 3. 使用 DEK 解密数据流。
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
         use crate::symmetric::traits::SymmetricSyncStreamingSystem;
 
@@ -433,7 +512,9 @@ mod async_engine_impls {
     use tokio::io::{AsyncRead, AsyncWrite};
 
     impl SealEngine {
-        /// [异步] 使用当前引擎的模式来流式加密（封印）一个数据流。
+        /// [Async] Encrypts ("seals") a data stream using the engine's current mode.
+        ///
+        /// 中文: [异步] 使用当前引擎的模式来流式加密（封印）一个数据流。
         pub async fn seal_stream_async<R, W>(
             &mut self,
             reader: R,
@@ -474,7 +555,9 @@ mod async_engine_impls {
             Ok(writer)
         }
 
-        /// [异步] 使用当前引擎的模式来流式解密（解封）一个数据流。
+        /// [Async] Decrypts ("unseals") a data stream using the engine's current mode.
+        ///
+        /// 中文: [异步] 使用当前引擎的模式来流式解密（解封）一个数据流。
         pub async fn unseal_stream_async<R, W>(
             &self,
             mut reader: R,
@@ -498,7 +581,9 @@ mod async_engine_impls {
             Ok(writer)
         }
 
-        /// [异步/并行] 使用当前引擎的模式来流式加密（封印）一个数据流。
+        /// [Async/Parallel] Encrypts ("seals") a data stream using the engine's current mode.
+        ///
+        /// 中文: [异步/并行] 使用当前引擎的模式来流式加密（封印）一个数据流。
         pub async fn par_seal_stream_async<R, W>(
             &mut self,
             reader: R,
@@ -540,7 +625,9 @@ mod async_engine_impls {
             Ok(writer)
         }
 
-        /// [异步/并行] 使用当前引擎的模式来流式解密（解封）一个数据流。
+        /// [Async/Parallel] Decrypts ("unseals") a data stream using the engine's current mode.
+        ///
+        /// 中文: [异步/并行] 使用当前引擎的模式来流式解密（解封）一个数据流。
         pub async fn par_unseal_stream_async<R, W>(
             &self,
             mut reader: R,
@@ -577,7 +664,9 @@ mod async_engine_impls {
 // In private.rs, or a new async_private.rs, we need an async version of read_and_parse_header
 #[cfg(feature = "async-engine")]
 impl SealEngine {
-    /// [异步] 从输入流中读取并解析出一个 Header。
+    /// [Async] Reads and parses a Header from an input stream.
+    ///
+    /// 中文: [异步] 从输入流中读取并解析出一个 Header。
     pub(crate) async fn read_and_parse_header_async<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         mut reader: R,

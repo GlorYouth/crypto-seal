@@ -1,5 +1,8 @@
 #![cfg(feature = "async-engine")]
 
+//! Implements asynchronous streaming for symmetric encryption using Tokio.
+// English: Implements asynchronous streaming for symmetric encryption using Tokio.
+
 use crate::common::config::StreamingConfig;
 use crate::common::streaming::StreamingResult;
 use crate::symmetric::errors::SymmetricError;
@@ -7,7 +10,13 @@ use crate::symmetric::traits::{SymmetricAsyncStreamingSystem, SymmetricCryptogra
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// 异步对称流式加密器
+/// `AsyncStreamingEncryptor` handles the process of encrypting a stream of data asynchronously.
+/// It reads data in chunks from an `AsyncRead`, encrypts each chunk, and writes it to an `AsyncWrite`.
+/// This implementation is non-blocking.
+///
+/// 中文: `AsyncStreamingEncryptor` 异步地处理加密数据流的过程。
+/// 它从一个 `AsyncRead` 中以块的形式读取数据，加密每个块，然后将其写入一个 `AsyncWrite`。
+/// 这个实现是非阻塞的。
 pub struct AsyncStreamingEncryptor<'a, C, R, W>
 where
     C: SymmetricCryptographicSystem,
@@ -31,6 +40,9 @@ where
     W: AsyncWrite + Unpin,
     SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
+    /// Creates a new `AsyncStreamingEncryptor`.
+    ///
+    /// 中文: 创建一个新的 `AsyncStreamingEncryptor`。
     pub fn new(
         reader: R,
         writer: W,
@@ -49,6 +61,16 @@ where
         }
     }
 
+    /// Processes the entire input stream asynchronously, encrypting it chunk by chunk.
+    ///
+    /// Similar to its synchronous counterpart, it constructs a unique AAD for each chunk
+    /// by combining the global AAD with the chunk index. This prevents reordering and replay attacks
+    /// in a streaming context. All I/O operations are `await`ed.
+    ///
+    /// 中文: 异步地逐块处理整个输入流并进行加密。
+    ///
+    /// 与其同步版本类似，它通过将全局 AAD 与块索引相结合，为每个块构造一个唯一的 AAD。
+    /// 这可以防止在流式传输上下文中的重排序和重放攻击。所有的 I/O 操作都是 `await` 的。
     pub async fn process(mut self) -> Result<(StreamingResult, W), SymmetricError> {
         let mut buffer = vec![0u8; self.config.buffer_size];
         let mut total_written = 0;
@@ -62,15 +84,18 @@ where
 
             let plaintext = &buffer[..read_bytes];
 
-            // 构造包含块序号的 AAD
+            // Construct AAD with chunk index to prevent reordering attacks.
+            // 中文: 构造包含块索引的 AAD 以防止重排序攻击。
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
             let ciphertext = C::encrypt(self.key, plaintext, Some(&aad))?;
             let ciphertext_bytes = ciphertext.as_ref();
 
-            // C::encrypt 返回的 ciphertext_bytes 已经包含了长度前缀,
-            // 我们只需要直接将其写入流中。
+            // The ciphertext from C::encrypt already contains the length prefix.
+            // We just need to write it directly to the stream.
+            // 中文: C::encrypt 返回的密文已经包含了长度前缀，
+            // 我们只需要直接将其写入流中即可。
             self.writer
                 .write_all(ciphertext_bytes)
                 .await
@@ -94,7 +119,11 @@ where
     }
 }
 
-/// 异步对称流式解密器
+/// `AsyncStreamingDecryptor` handles the process of decrypting a stream of data asynchronously.
+/// It reads encrypted chunks from an `AsyncRead`, decrypts them, and writes the plaintext to an `AsyncWrite`.
+///
+/// 中文: `AsyncStreamingDecryptor` 异步地处理解密数据流的过程。
+/// 它从一个 `AsyncRead` 中读取加密的块，解密它们，然后将明文写入一个 `AsyncWrite`。
 pub struct AsyncStreamingDecryptor<'a, C, R, W>
 where
     C: SymmetricCryptographicSystem,
@@ -118,6 +147,9 @@ where
     W: AsyncWrite + Unpin,
     SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
+    /// Creates a new `AsyncStreamingDecryptor`.
+    ///
+    /// 中文: 创建一个新的 `AsyncStreamingDecryptor`。
     pub fn new(
         reader: R,
         writer: W,
@@ -136,6 +168,16 @@ where
         }
     }
 
+    /// Processes the entire encrypted stream asynchronously, decrypting it chunk by chunk.
+    ///
+    /// It reads length-prefixed chunks and reconstructs the same AAD (global AAD + chunk index)
+    /// used during encryption to verify the integrity and authenticity of each chunk.
+    /// All I/O operations are non-blocking and `await`ed.
+    ///
+    /// 中文: 异步地逐块处理整个加密流并进行解密。
+    ///
+    /// 它读取带有长度前缀的块，并重建加密时使用的相同 AAD（全局 AAD + 块索引），
+    /// 以验证每个块的完整性和真实性。所有 I/O 操作都是非阻塞的并 `await` 的。
     pub async fn process(mut self) -> Result<(StreamingResult, W), SymmetricError> {
         let mut total_written = 0;
         let mut bytes_processed = 0;
@@ -150,11 +192,13 @@ where
                 .map_err(SymmetricError::Io)?;
             bytes_processed += (4 + block_size) as u64;
 
-            // 构造与加密时完全相同的 AAD
+            // Reconstruct the exact same AAD as used in encryption.
+            // 中文: 重构与加密时完全相同的 AAD。
             let mut aad = self.additional_data.map_or_else(Vec::new, |d| d.to_vec());
             aad.extend_from_slice(&self.chunk_index.to_le_bytes());
 
-            // C::decrypt 需要一个完整的、带有长度前缀的块
+            // C::decrypt needs a complete block with length prefix.
+            // 中文: C::decrypt 需要一个带有长度前缀的完整块。
             let mut block_with_len = len_buf.to_vec();
             block_with_len.extend_from_slice(&ciphertext_buffer);
 
@@ -182,7 +226,14 @@ where
     }
 }
 
-/// 为所有实现 `SymmetricCryptographicSystem` 的类型提供 `SymmetricAsyncStreamingSystem` 的默认实现
+/// Provides a default implementation of `SymmetricAsyncStreamingSystem` for any type
+/// that implements `SymmetricCryptographicSystem`. This blanket implementation allows any
+/// core symmetric algorithm to be used for asynchronous streaming out-of-the-box,
+/// provided the `async-engine` feature is enabled.
+///
+/// 中文: 为任何实现了 `SymmetricCryptographicSystem` 的类型提供 `SymmetricAsyncStreamingSystem` 的默认实现。
+/// 这个毯式实现允许任何核心对称算法在启用 `async-engine` 功能的情况下，
+/// 开箱即用地用于异步流式处理。
 #[async_trait::async_trait]
 impl<T> SymmetricAsyncStreamingSystem for T
 where

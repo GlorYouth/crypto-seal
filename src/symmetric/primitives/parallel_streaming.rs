@@ -1,13 +1,22 @@
 #![cfg(feature = "parallel")]
 
-//! 对称加密的并行同步流式处理实现。
+//! Implements parallel synchronous streaming for symmetric encryption.
 //!
-//! 该模块基于生产者-消费者模型，利用 `rayon` 实现并行化。
-//! - **生产者 (Reader Thread)**: 从输入流中读取数据块。
-//! - **处理器 (Rayon Pool)**: 并行地对数据块进行加解密。
-//! - **消费者 (Writer Thread)**: 接收处理后的数据块，进行重新排序，然后写入输出流。
+//! This module utilizes a producer-consumer model with `rayon` for parallelization.
+//! - **Producer (Reader Thread)**: Reads data chunks from the input stream.
+//! - **Processor (Rayon Pool)**: Encrypts/decrypts data chunks in parallel.
+//! - **Consumer (Writer Thread)**: Receives processed chunks, reorders them, and writes to the output stream.
 //!
-//! 这种设计允许I/O操作和CPU密集型的加密操作同时进行，最大化吞吐量。
+//! This design allows I/O operations and CPU-intensive cryptographic operations to run concurrently, maximizing throughput.
+//
+// 中文: //! 对称加密的并行同步流式处理实现。
+// //!
+// //! 该模块基于生产者-消费者模型，利用 `rayon` 实现并行化。
+// //! - **生产者 (Reader Thread)**: 从输入流中读取数据块。
+// //! - **处理器 (Rayon Pool)**: 并行地对数据块进行加解密。
+// //! - **消费者 (Writer Thread)**: 接收处理后的数据块，进行重新排序，然后写入输出流。
+// //!
+// //! 这种设计允许I/O操作和CPU密集型的加密操作同时进行，最大化吞吐量。
 
 use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::streaming::StreamingResult;
@@ -19,12 +28,25 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread;
 
-// 定义工作项和结果项的类型别名
-type WorkItem = (u64, Vec<u8>); // (块索引, 数据)
-type EncryptResultItem = (u64, usize, Result<Vec<u8>, SymmetricError>); // (块索引, 原始大小, 加密结果)
-type DecryptResultItem = (u64, Result<Vec<u8>, SymmetricError>); // (块索引, 解密结果)
+// Type aliases for work and result items passed through channels.
+// 中文: 定义在通道中传递的工作项和结果项的类型别名。
+type WorkItem = (u64, Vec<u8>); // (chunk_index, data)
+type EncryptResultItem = (u64, usize, Result<Vec<u8>, SymmetricError>); // (chunk_index, original_size, encrypted_result)
+type DecryptResultItem = (u64, Result<Vec<u8>, SymmetricError>); // (chunk_index, decrypted_result)
 
-/// 并行流式加密器
+/// `ParallelStreamingEncryptor` orchestrates the parallel encryption of a stream.
+///
+/// It sets up three main components running in separate threads/contexts:
+/// 1. A reader thread to read from the source.
+/// 2. A `rayon` parallel bridge to consume and encrypt chunks.
+/// 3. A writer thread to reorder and write chunks to the destination.
+///
+/// 中文: `ParallelStreamingEncryptor` 协调数据流的并行加密。
+///
+/// 它设置了三个在独立线程/上下文中运行的主要组件：
+/// 1. 一个读取线程，用于从源读取数据。
+/// 2. 一个 `rayon` 并行桥，用于消费和加密数据块。
+/// 3. 一个写入线程，用于对数据块进行重排序并写入目的地。
 struct ParallelStreamingEncryptor<'a, C, R, W>
 where
     C: SymmetricCryptographicSystem,
@@ -86,7 +108,12 @@ where
         let (result_tx, result_rx) = mpsc::sync_channel::<EncryptResultItem>(channel_bound);
 
         thread::scope(|s| {
-            // --- 1. 写入线程 ---
+            // --- 1. Writer Thread ---
+            // This thread receives encrypted chunks, which may arrive out of order.
+            // It uses a HashMap as a reordering buffer to ensure chunks are written sequentially.
+            // 中文: --- 1. 写入线程 ---
+            // 该线程接收可能乱序到达的加密块。
+            // 它使用 HashMap 作为重排序缓冲区，以确保存储块按顺序写入。
             let writer_handle = s.spawn(move || -> Result<StreamingResult, SymmetricError> {
                 let mut reorder_buffer = HashMap::new();
                 let mut next_chunk_to_write: u64 = 0;
@@ -96,6 +123,8 @@ where
                     let ciphertext = result?;
                     reorder_buffer.insert(index, (original_size, ciphertext));
 
+                    // Write all contiguous chunks from the buffer.
+                    // 中文: 从缓冲区写入所有连续的块。
                     while let Some((size, data)) = reorder_buffer.remove(&next_chunk_to_write) {
                         writer.write_all(&data)?;
                         total_bytes_processed += size as u64;
@@ -109,7 +138,11 @@ where
                 })
             });
 
-            // --- 2. 读取线程 ---
+            // --- 2. Reader Thread ---
+            // This thread reads from the source in a loop, sending chunks
+            // along with their sequential index to the processing pipeline.
+            // 中文: --- 2. 读取线程 ---
+            // 该线程循环从源读取数据，将数据块及其顺序索引发送到处理管道。
             let reader_handle = s.spawn(move || -> Result<(), SymmetricError> {
                 let mut chunk_index: u64 = 0;
                 loop {
@@ -130,7 +163,14 @@ where
                 Ok(())
             });
 
-            // --- 3. 处理线程 (主线程/Rayon) ---
+            // --- 3. Processing Pipeline (Main Thread using Rayon) ---
+            // `par_bridge` converts the MPSC iterator into a parallel iterator.
+            // Rayon's thread pool then processes the chunks in parallel.
+            // A unique AAD is constructed for each chunk to ensure security.
+            // 中文: --- 3. 处理管道 (主线程使用 Rayon) ---
+            // `par_bridge` 将 MPSC 迭代器转换为并行迭代器。
+            // Rayon 的线程池随后并行处理这些块。
+            // 为每个块构造唯一的 AAD 以确保安全。
             work_rx
                 .into_iter()
                 .par_bridge()
@@ -150,10 +190,14 @@ where
                         ))
                         .is_err()
                     {
-                        // 写入线程已终止
+                        // Writer thread has terminated, no more processing needed.
+                        // 中文: 写入线程已终止，无需更多处理。
                     }
                 });
 
+            // Wait for reader to finish, then close the result channel,
+            // and finally wait for the writer to finish.
+            // 中文: 等待读取线程完成，然后关闭结果通道，最后等待写入线程完成。
             reader_handle.join().unwrap()?;
             drop(result_tx);
             writer_handle.join().unwrap()
@@ -161,7 +205,15 @@ where
     }
 }
 
-/// 并行流式解密器
+/// `ParallelStreamingDecryptor` orchestrates the parallel decryption of a stream.
+///
+/// It follows the same producer-consumer model as the encryptor. The reader thread
+/// is responsible for parsing the length-prefixed encrypted chunks from the input stream.
+///
+/// 中文: `ParallelStreamingDecryptor` 协调数据流的并行解密。
+///
+/// 它遵循与加密器相同的生产者-消费者模型。读取线程负责从输入流中
+/// 解析带有长度前缀的加密块。
 struct ParallelStreamingDecryptor<'a, C, R, W>
 where
     C: SymmetricCryptographicSystem,
@@ -219,7 +271,10 @@ where
         let (result_tx, result_rx) = mpsc::sync_channel::<DecryptResultItem>(channel_bound);
 
         thread::scope(|s| {
-            // --- 1. 写入线程 ---
+            // --- 1. Writer Thread ---
+            // Same logic as encryptor: receives decrypted chunks, reorders, and writes.
+            // 中文: --- 1. 写入线程 ---
+            // 与加密器逻辑相同：接收解密的块，重排序，然后写入。
             let writer_handle = s.spawn(move || -> Result<StreamingResult, SymmetricError> {
                 let mut reorder_buffer = HashMap::new();
                 let mut next_chunk_to_write: u64 = 0;
@@ -242,7 +297,12 @@ where
                 })
             });
 
-            // --- 2. 读取线程 ---
+            // --- 2. Reader Thread ---
+            // This thread reads the custom-formatted encrypted stream. It reads a 4-byte
+            // length prefix, then the ciphertext block, and sends the complete block for decryption.
+            // 中文: --- 2. 读取线程 ---
+            // 该线程读取自定义格式的加密流。它读取一个4字节的长度前缀，
+            // 然后是密文块，并将完整的块发送以进行解密。
             let reader_handle = s.spawn(move || -> Result<(), SymmetricError> {
                 let mut chunk_index: u64 = 0;
                 let mut len_buf = [0u8; 4];
@@ -264,7 +324,11 @@ where
                 Ok(())
             });
 
-            // --- 3. 处理线程 (主线程/Rayon) ---
+            // --- 3. Processing Pipeline (Main Thread using Rayon) ---
+            // Decrypts chunks in parallel. The AAD must be reconstructed exactly
+            // as it was during encryption to ensure integrity.
+            // 中文: --- 3. 处理管道 (主线程使用 Rayon) ---
+            // 并行解密块。必须精确地重构加密期间的 AAD，以确保完整性。
             work_rx
                 .into_iter()
                 .par_bridge()
@@ -277,7 +341,8 @@ where
                         .send((index, result.map_err(SymmetricError::from)))
                         .is_err()
                     {
-                        // 写入线程已终止
+                        // Writer thread has terminated.
+                        // 中文: 写入线程已终止。
                     }
                 });
 
@@ -288,7 +353,10 @@ where
     }
 }
 
-/// 为所有实现了 `SymmetricCryptographicSystem` 的类型提供 `SymmetricParallelStreamingSystem` 的默认实现。
+/// Provides a default implementation of `SymmetricParallelStreamingSystem` for any type
+/// that implements `SymmetricCryptographicSystem`.
+///
+/// 中文: 为任何实现了 `SymmetricCryptographicSystem` 的类型提供 `SymmetricParallelStreamingSystem` 的默认实现。
 impl<T> SymmetricParallelStreamingSystem for T
 where
     T: SymmetricCryptographicSystem + Send + Sync,
@@ -369,7 +437,10 @@ mod async_impl {
             let additional_data = additional_data.map(|d| d.to_vec());
             let stream_config = stream_config.clone();
 
-            // --- 1. 读取线程 ---
+            // --- 1. Reader Task (Tokio) ---
+            // Asynchronously reads chunks and sends them to the processing pipeline.
+            // 中文: --- 1. 读取任务 (Tokio) ---
+            // 异步读取块并将其发送到处理管道。
             let reader_handle = tokio::spawn(async move {
                 let mut chunk_index: u64 = 0;
                 loop {
@@ -389,7 +460,15 @@ mod async_impl {
                 Ok(())
             });
 
-            // --- 2. 处理线程 (Rayon) ---
+            // --- 2. Processing Task (Rayon via spawn_blocking) ---
+            // This is the bridge between Tokio's async world and Rayon's sync, parallel world.
+            // A standard MPSC channel is used to feed work to Rayon.
+            // `spawn_blocking` runs the Rayon loop on a dedicated thread pool for blocking tasks.
+            //
+            // 中文: --- 2. 处理任务 (通过 spawn_blocking 使用 Rayon) ---
+            // 这是 Tokio 的异步世界和 Rayon 的同步、并行世界之间的桥梁。
+            // 使用一个标准的 MPSC 通道将工作送入 Rayon。
+            // `spawn_blocking` 在专用于阻塞任务的线程池上运行 Rayon 循环。
             let (rayon_tx, rayon_rx) = std_mpsc::sync_channel(parallel_config.parallelism);
             let key_clone = key.clone();
             let additional_data_clone = additional_data.clone();
@@ -412,6 +491,8 @@ mod async_impl {
                     });
             });
 
+            // This task pulls work from the Tokio MPSC and sends it to the Rayon MPSC.
+            // 中文: 这个任务从 Tokio MPSC 中拉取工作并发送到 Rayon MPSC。
             tokio::spawn(async move {
                 while let Some(item) = work_rx.recv().await {
                     if rayon_tx.send(item).is_err() {
@@ -420,7 +501,10 @@ mod async_impl {
                 }
             });
 
-            // --- 3. 写入线程 ---
+            // --- 3. Writer Task (Tokio) ---
+            // Asynchronously receives results, reorders them, and writes to the destination.
+            // 中文: --- 3. 写入任务 (Tokio) ---
+            // 异步接收结果，对其进行重排序，并写入目的地。
             let writer_handle: JoinHandle<Result<(u64, W), SymmetricError>> =
                 tokio::spawn(async move {
                     let mut reorder_buffer = HashMap::new();
@@ -477,7 +561,10 @@ mod async_impl {
 
             let additional_data = additional_data.map(|d| d.to_vec());
 
-            // --- 1. 读取线程 ---
+            // --- 1. Reader Task (Tokio) ---
+            // Asynchronously reads length-prefixed chunks.
+            // 中文: --- 1. 读取任务 (Tokio) ---
+            // 异步读取带长度前缀的块。
             let reader_handle = tokio::spawn(async move {
                 let mut chunk_index: u64 = 0;
                 loop {
@@ -506,7 +593,10 @@ mod async_impl {
                 Ok(())
             });
 
-            // --- 2. 处理线程 (Rayon) ---
+            // --- 2. Processing Task (Rayon via spawn_blocking) ---
+            // Bridges async input to parallel, synchronous decryption.
+            // 中文: --- 2. 处理任务 (通过 spawn_blocking 使用 Rayon) ---
+            // 将异步输入桥接到并行的同步解密。
             let (rayon_tx, rayon_rx) = std_mpsc::sync_channel(parallel_config.parallelism);
             let key_clone = key.clone();
             let additional_data_clone = additional_data.clone();
@@ -536,7 +626,10 @@ mod async_impl {
                 }
             });
 
-            // --- 3. 写入线程 ---
+            // --- 3. Writer Task (Tokio) ---
+            // Asynchronously reorders and writes decrypted plaintext.
+            // 中文: --- 3. 写入任务 (Tokio) ---
+            // 异步地重排序并写入解密后的明文。
             let writer_handle: JoinHandle<Result<(u64, W), SymmetricError>> =
                 tokio::spawn(async move {
                     let mut reorder_buffer = HashMap::new();
