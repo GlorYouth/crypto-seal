@@ -1,4 +1,4 @@
-#![cfg(feature = "async-engine")]
+#![cfg(feature = "async")]
 
 //! Implements asynchronous streaming for symmetric encryption using Tokio.
 // English: Implements asynchronous streaming for symmetric encryption using Tokio.

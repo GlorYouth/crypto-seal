@@ -25,7 +25,7 @@ jobs:
           - --no-default-features --features "chacha"
           - --no-default-features --features "symmetric"
           - --no-default-features --features "secure-storage"
-          - --no-default-features --features "async-engine"
+          - --no-default-features --features "async"
           - --no-default-features --features "parallel"
           - --no-default-features --features "asymmetric,async-engine"
           - --no-default-features --features "symmetric,async-engine"

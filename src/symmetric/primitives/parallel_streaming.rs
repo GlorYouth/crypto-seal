@@ -401,7 +401,7 @@ where
     }
 }
 
-#[cfg(all(feature = "parallel", feature = "async-engine"))]
+#[cfg(all(feature = "parallel", feature = "async"))]
 mod async_impl {
     use super::*;
     use crate::symmetric::traits::SymmetricAsyncParallelStreamingSystem;

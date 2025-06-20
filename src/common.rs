@@ -16,5 +16,5 @@ pub use self::utils::constant_time_eq;
 pub use self::traits::AuthenticatedCryptoSystem;
 
 pub use self::config::CryptoConfig;
-#[cfg(feature = "async-engine")]
+#[cfg(feature = "async")]
 pub use self::config::StreamingConfig;

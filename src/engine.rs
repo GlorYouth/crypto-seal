@@ -392,6 +392,7 @@ impl SealEngine {
         // 3. Read the remaining payload and decrypt using the parallel primitive.
         // 中文: 3. 读取剩余的载荷并使用并行原语解密。
         let mut payload = Vec::new();
+        use std::io::Read;
         reader.read_to_end(&mut payload)?;
 
         use crate::symmetric::systems::aes_gcm::{AesGcmKey, AesGcmSystem};
@@ -503,7 +504,7 @@ impl SealEngine {
     }
 }
 
-#[cfg(feature = "async-engine")]
+#[cfg(feature = "async")]
 mod async_engine_impls {
     use super::*;
     use crate::symmetric::traits::{
@@ -662,7 +663,7 @@ mod async_engine_impls {
 }
 
 // In private.rs, or a new async_private.rs, we need an async version of read_and_parse_header
-#[cfg(feature = "async-engine")]
+#[cfg(feature = "async")]
 impl SealEngine {
     /// [Async] Reads and parses a Header from an input stream.
     ///

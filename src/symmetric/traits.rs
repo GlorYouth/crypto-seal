@@ -8,7 +8,7 @@ use std::fmt::Debug;
 use std::io::{Read, Write};
 
 use crate::symmetric::errors::SymmetricError;
-#[cfg(feature = "async-engine")]
+#[cfg(feature = "async")]
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// `SymmetricCryptographicSystem` defines the common interface for symmetric encryption algorithms.
@@ -150,7 +150,7 @@ pub trait SymmetricSyncStreamingSystem: SymmetricCryptographicSystem {
 /// 中文: `SymmetricAsyncStreamingSystem` 提供异步流式处理能力。
 /// 需要 `async-engine` 特性。该 trait 专为非阻塞 I/O 操作设计，
 /// 适用于高性能网络服务和应用。
-#[cfg(feature = "async-engine")]
+#[cfg(feature = "async")]
 #[async_trait::async_trait]
 pub trait SymmetricAsyncStreamingSystem: SymmetricCryptographicSystem + Send + Sync
 where
@@ -281,7 +281,7 @@ pub trait SymmetricParallelStreamingSystem: SymmetricCryptographicSystem {
 /// 这是最高级的 trait，结合了非阻塞I/O和并行计算。
 /// 它专为I/O密集型且包含大量CPU密集型加密工作的应用而设计。
 /// 需要 `parallel` 和 `async-engine` 两个特性。
-#[cfg(all(feature = "parallel", feature = "async-engine"))]
+#[cfg(all(feature = "parallel", feature = "async"))]
 #[async_trait::async_trait]
 pub trait SymmetricAsyncParallelStreamingSystem: SymmetricParallelStreamingSystem
 where
