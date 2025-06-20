@@ -40,9 +40,9 @@ impl Seal {
     pub fn create<P: AsRef<Path>>(path: P, password: &SecretString) -> Result<Arc<Self>, Error> {
         let path = path.as_ref();
         if path.exists() {
-            return Err(Error::KeyStorage(format!(
-                "Seal file already exists at: {}",
-                path.display()
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Seal file already exists at: {}", path.display()),
             )));
         }
 
@@ -50,7 +50,7 @@ impl Seal {
         let mut seed_bytes = vec![0u8; MASTER_SEED_SIZE];
         OsRng
             .try_fill_bytes(&mut seed_bytes)
-            .map_err(|e| Error::Key(e.to_string()))?;
+            .map_err(|e| Error::Cryptography(e.to_string()))?;
         let master_seed = SecretBox::new(Box::from(MasterSeed(seed_bytes)));
 
         // 2. 创建一个默认的 VaultPayload。
@@ -76,9 +76,7 @@ impl Seal {
 
         // 1. 从文件读取并解密核心载荷。
         let payload_json = Self::read_and_decrypt_payload(path, password)?;
-        let payload: VaultPayload = serde_json::from_str(&payload_json).map_err(|e| {
-            Error::Serialization(format!("Failed to deserialize vault payload: {}", e))
-        })?;
+        let payload: VaultPayload = serde_json::from_str(&payload_json)?;
 
         // 2. 返回一个新的 Seal 实例，包裹在 Arc 中。
         Ok(Arc::new(Self {
@@ -106,8 +104,8 @@ impl Seal {
 
         // 原子写入：先写入临时文件，成功后再重命名。
         let temp_path = path.with_extension("tmp");
-        fs::write(&temp_path, container_json).map_err(|e| Error::Io(e))?;
-        fs::rename(&temp_path, path).map_err(|e| Error::Io(e))?;
+        fs::write(&temp_path, container_json)?;
+        fs::rename(&temp_path, path)?;
 
         Ok(())
     }
@@ -139,13 +137,11 @@ impl Seal {
 
     /// 从文件读取保险库，解密并返回其JSON字符串形式的内容。
     fn read_and_decrypt_payload(path: &Path, password: &SecretString) -> Result<String, Error> {
-        let container_json = fs::read_to_string(path)
-            .map_err(|e| Error::KeyStorage(format!("Failed to read seal file: {}", e)))?;
+        let container_json = fs::read_to_string(path)?;
         let container = EncryptedKeyContainer::from_json(&container_json)?;
 
         let decrypted_bytes = container.decrypt_key(password)?;
-        String::from_utf8(decrypted_bytes)
-            .map_err(|e| Error::Format(format!("Vault payload is not valid UTF-8: {}", e)))
+        String::from_utf8(decrypted_bytes).map_err(Into::into)
     }
 
     /// 创建一个统一的、有状态的加密引擎实例。
@@ -158,7 +154,7 @@ impl Seal {
         password: &SecretString,
     ) -> Result<SealEngine, Error> {
         let mut key_manager = KeyManager::new(Arc::clone(self), "seal-engine", mode);
-        key_manager.initialize()?;
+        key_manager.initialize();
 
         // 如果没有主密钥，则根据当前配置自动轮换
         if key_manager.get_primary_key_metadata().is_none() {
@@ -167,14 +163,14 @@ impl Seal {
 
         // 2. 初始化对应模式的 KeyManager
         let mut key_manager = KeyManager::new(self.clone(), "seal-engine", mode);
-        key_manager.initialize()?;
+        key_manager.initialize();
 
         // 3. 如果是 Hybrid 模式，但没有主密钥，需要先创建一个
         if mode == SealMode::Hybrid && key_manager.get_primary_key_metadata().is_none() {
             // 在 engine() 调用中不应自动轮换，这应该是一个明确的用户操作。
             // 我们返回一个错误，提示用户需要先轮换/设置密钥。
             // Throwing an error here to guide the user.
-            return Err(Error::Configuration(
+            return Err(Error::KeyManagement(
                 "Hybrid mode requires an initial asymmetric key. Please call `rotate_asymmetric_key` first.".to_string(),
             ));
         }
@@ -193,7 +189,7 @@ impl Seal {
         let hk = Hkdf::<Sha256>::new(None, &master_seed.expose_secret().0);
         let mut okm = vec![0u8; output_len];
         hk.expand(context, &mut okm)
-            .map_err(|e| Error::Key(format!("Failed to derive key using HKDF: {}", e)))?;
+            .map_err(|e| Error::Cryptography(format!("Failed to derive key using HKDF: {}", e)))?;
         Ok(okm)
     }
 
@@ -271,7 +267,7 @@ impl Seal {
         // 2. 创建一个 KeyManager 来执行轮换
         //    我们总是为非对称密钥使用 Hybrid 模式
         let mut key_manager = KeyManager::new(Arc::clone(self), "seal-engine", SealMode::Hybrid);
-        key_manager.initialize()?;
+        key_manager.initialize();
 
         // 3. 强制开始轮换，这将根据新的配置生成密钥
         key_manager.start_rotation(password)?;

@@ -1,12 +1,15 @@
 //! 统一的密钥轮换管理器
+use crate::Error;
+use crate::asymmetric::errors::AsymmetricError;
 use crate::common::config::ConfigFile;
-use crate::common::errors::Error;
 use crate::common::header::SealMode;
 use crate::common::traits::{
     Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage,
 };
 use crate::rotation::RotationPolicy;
 use crate::seal::Seal;
+use crate::symmetric::errors::SymmetricError;
+use crate::symmetric::traits::SymmetricCryptographicSystem;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
@@ -46,7 +49,7 @@ impl KeyManager {
     }
 
     /// 初始化管理器，从 Seal 保险库加载特定模式的密钥元数据。
-    pub fn initialize(&mut self) -> Result<(), Error> {
+    pub fn initialize(&mut self) {
         let payload = self.seal.payload();
         let mut relevant_keys = BTreeMap::new();
 
@@ -65,7 +68,6 @@ impl KeyManager {
         }
 
         self.secondary_keys_metadata = relevant_keys.into_values().collect();
-        Ok(())
     }
 
     /// 返回 `seal` 实例的配置。
@@ -162,36 +164,40 @@ impl KeyManager {
 
         let crypto_config = self.seal.config().crypto;
 
-        let (public_key_b64, private_key_b64, algorithm) =
-            match crypto_config.primary_asymmetric_algorithm {
-                AsymmetricAlgorithm::Rsa2048 => {
-                    use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
-                    let (pk, sk) = RsaCryptoSystem::generate_keypair(&crypto_config)?;
-                    (
-                        RsaCryptoSystem::export_public_key(&pk)?,
-                        RsaCryptoSystem::export_private_key(&sk)?,
-                        Algorithm::Asymmetric(AsymmetricAlgorithm::Rsa2048),
-                    )
-                }
-                AsymmetricAlgorithm::Kyber768 => {
-                    use crate::asymmetric::systems::post_quantum::kyber::KyberCryptoSystem;
-                    let (pk, sk) = KyberCryptoSystem::generate_keypair(&crypto_config)?;
-                    (
-                        KyberCryptoSystem::export_public_key(&pk)?,
-                        KyberCryptoSystem::export_private_key(&sk)?,
-                        Algorithm::Asymmetric(AsymmetricAlgorithm::Kyber768),
-                    )
-                }
-                AsymmetricAlgorithm::RsaKyber768 => {
-                    use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-                    let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&crypto_config)?;
-                    (
-                        RsaKyberCryptoSystem::export_public_key(&pk)?,
-                        RsaKyberCryptoSystem::export_private_key(&sk)?,
-                        Algorithm::Asymmetric(AsymmetricAlgorithm::RsaKyber768),
-                    )
-                }
-            };
+        let (public_key_b64, private_key_b64, algorithm) = match crypto_config
+            .primary_asymmetric_algorithm
+        {
+            AsymmetricAlgorithm::Rsa2048 => {
+                use crate::asymmetric::systems::traditional::rsa::RsaCryptoSystem;
+                let (pk, sk) = RsaCryptoSystem::generate_keypair(&crypto_config)
+                    .map_err(AsymmetricError::from)?;
+                (
+                    RsaCryptoSystem::export_public_key(&pk).map_err(AsymmetricError::from)?,
+                    RsaCryptoSystem::export_private_key(&sk).map_err(AsymmetricError::from)?,
+                    Algorithm::Asymmetric(AsymmetricAlgorithm::Rsa2048),
+                )
+            }
+            AsymmetricAlgorithm::Kyber768 => {
+                use crate::asymmetric::systems::post_quantum::kyber::KyberCryptoSystem;
+                let (pk, sk) = KyberCryptoSystem::generate_keypair(&crypto_config)
+                    .map_err(AsymmetricError::from)?;
+                (
+                    KyberCryptoSystem::export_public_key(&pk).map_err(AsymmetricError::from)?,
+                    KyberCryptoSystem::export_private_key(&sk).map_err(AsymmetricError::from)?,
+                    Algorithm::Asymmetric(AsymmetricAlgorithm::Kyber768),
+                )
+            }
+            AsymmetricAlgorithm::RsaKyber768 => {
+                use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
+                let (pk, sk) = RsaKyberCryptoSystem::generate_keypair(&crypto_config)
+                    .map_err(AsymmetricError::from)?;
+                (
+                    RsaKyberCryptoSystem::export_public_key(&pk).map_err(AsymmetricError::from)?,
+                    RsaKyberCryptoSystem::export_private_key(&sk).map_err(AsymmetricError::from)?,
+                    Algorithm::Asymmetric(AsymmetricAlgorithm::RsaKyber768),
+                )
+            }
+        };
 
         // 加密私钥以便安全存储
         let encrypted_private_key = {
@@ -264,15 +270,15 @@ impl KeyManager {
     // --- Public methods for key retrieval ---
 
     /// 根据ID派生对称密钥。仅在对称模式下有效。
-    pub fn derive_symmetric_key<T: crate::symmetric::traits::SymmetricCryptographicSystem>(
+    pub fn derive_symmetric_key<T: SymmetricCryptographicSystem>(
         &self,
         key_id: &str,
     ) -> Result<Option<T::Key>, Error>
     where
-        Error: From<T::Error>,
+        SymmetricError: From<<T as SymmetricCryptographicSystem>::Error>,
     {
         if self.mode != SealMode::Symmetric {
-            return Err(Error::Operation(
+            return Err(Error::KeyManagement(
                 "Cannot derive symmetric key in hybrid mode.".to_string(),
             ));
         }
@@ -284,7 +290,7 @@ impl KeyManager {
                 T::KEY_SIZE,
             )?;
             let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
-            Ok(Some(T::import_key(&key_b64).map_err(Error::from)?))
+            Ok(Some(T::import_key(&key_b64).map_err(SymmetricError::from)?))
         } else {
             Ok(None)
         }
@@ -296,23 +302,24 @@ impl KeyManager {
         key_id: &str,
     ) -> Result<Option<(T::PublicKey, T::PrivateKey)>, Error>
     where
-        Error: From<T::Error>,
+        AsymmetricError:
+            From<<T as crate::asymmetric::traits::AsymmetricCryptographicSystem>::Error>,
     {
         if self.mode != SealMode::Hybrid {
-            return Err(Error::Operation(
+            return Err(Error::KeyManagement(
                 "Cannot get asymmetric keypair in symmetric mode.".to_string(),
             ));
         }
 
         if let Some(metadata) = self.find_key_metadata_by_id(key_id) {
             let public_key_b64 = metadata.public_key.as_ref().ok_or_else(|| {
-                Error::Key("Public key not found in metadata for hybrid mode.".to_string())
+                Error::KeyNotFound("Public key not found in metadata for hybrid mode.".to_string())
             })?;
-            let public_key = T::import_public_key(public_key_b64).map_err(Error::from)?;
+            let public_key = T::import_public_key(public_key_b64).map_err(AsymmetricError::from)?;
 
             let encrypted_private_key_container =
                 metadata.encrypted_private_key.as_ref().ok_or_else(|| {
-                    Error::Key(
+                    Error::KeyNotFound(
                         "Encrypted private key not found in metadata for hybrid mode.".to_string(),
                     )
                 })?;
@@ -333,8 +340,9 @@ impl KeyManager {
             ))?;
 
             let private_key_b64 = String::from_utf8(private_key_bytes.to_vec())
-                .map_err(|e| Error::Key(format!("Failed to decode private key: {}", e)))?;
-            let private_key = T::import_private_key(&private_key_b64).map_err(Error::from)?;
+                .map_err(|e| Error::Format(format!("Failed to decode private key: {}", e)))?;
+            let private_key =
+                T::import_private_key(&private_key_b64).map_err(AsymmetricError::from)?;
 
             Ok(Some((public_key, private_key)))
         } else {

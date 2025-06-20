@@ -1,23 +1,49 @@
 #![cfg(feature = "secure-storage")]
 
+use crate::common::config::CryptoConfig;
+use crate::common::traits::SecureKeyStorage;
+use aes_gcm::aes::cipher::crypto_common;
+use aes_gcm::{
+    AeadCore, Aes256Gcm, Nonce,
+    aead::{Aead, Error as AeadError, KeyInit},
+};
 use argon2::{
     Argon2, ParamsBuilder,
-    password_hash::{PasswordHasher, SaltString},
+    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::common::config::CryptoConfig;
-use crate::common::errors::Error;
-use crate::common::traits::SecureKeyStorage;
-use aes_gcm::{
-    Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit},
-};
-use argon2::password_hash::rand_core::{OsRng, RngCore};
+/// `EncryptedKeyContainer` 的专用错误类型
+#[derive(Error, Debug)]
+pub enum ContainerError {
+    #[error("Argon2 parameter error: {0}")]
+    Argon2Params(argon2::Error),
+
+    #[error("Password hashing failed: {0}")]
+    PasswordHashing(argon2::password_hash::Error),
+
+    #[error("Failed to get hash from password hash")]
+    HashUnavailable,
+
+    #[error("AES-GCM encryption/decryption failed")]
+    Aead(#[from] AeadError),
+
+    #[error("AES-GCM created failed: {0}")]
+    InvalidLen(#[from] crypto_common::InvalidLength),
+
+    #[error("Invalid salt format: {0}")]
+    InvalidSalt(argon2::password_hash::Error),
+
+    #[error("Base64 decoding failed: {0}")]
+    Base64(#[from] base64::DecodeError),
+
+    #[error("JSON serialization/deserialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
 
 /// 加密的密钥容器，实现了SecureKeyStorage特征
 /// 提供密码保护的密钥存储功能
@@ -62,7 +88,7 @@ impl EncryptedKeyContainer {
         key_data: K,
         algorithm_id: &str,
         config: &CryptoConfig,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ContainerError> {
         Self::encrypt_key(password, key_data, algorithm_id, config)
     }
 
@@ -72,12 +98,12 @@ impl EncryptedKeyContainer {
         key_data: K,
         algorithm_id: &str,
         config: &CryptoConfig,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ContainerError> {
         Self::encrypt_key_with_config(password, key_data, algorithm_id, config)
     }
 
     /// 从密钥容器中提取密钥
-    pub fn get_key(&self, password: &SecretString) -> Result<Vec<u8>, Error> {
+    pub fn get_key(&self, password: &SecretString) -> Result<Vec<u8>, ContainerError> {
         let secure_bytes = self.decrypt_key(password)?;
         Ok(secure_bytes.to_vec())
     }
@@ -88,7 +114,7 @@ impl EncryptedKeyContainer {
         key_data: K,
         algorithm_id: &str,
         config: &CryptoConfig,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ContainerError> {
         // 生成随机盐值用于密钥派生
         let salt = SaltString::generate(&mut OsRng);
 
@@ -102,38 +128,29 @@ impl EncryptedKeyContainer {
 
         let params = params_builder
             .build()
-            .map_err(|e| Error::KeyStorage(format!("Argon2参数无效: {}", e)))?;
-
+            .map_err(|e| ContainerError::Argon2Params(e))?;
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
         // 使用Argon2派生加密密钥
         let password_bytes = password.expose_secret().as_bytes();
         let password_hash = argon2
             .hash_password(password_bytes, &salt)
-            .map_err(|e| Error::KeyStorage(format!("密码哈希失败: {}", e)))?;
+            .map_err(|e| ContainerError::PasswordHashing(e))?;
 
         // 安全地获取哈希值
-        let hash = password_hash
-            .hash
-            .ok_or_else(|| Error::KeyStorage("无法生成密码哈希".to_string()))?;
+        let hash = password_hash.hash.ok_or(ContainerError::HashUnavailable)?;
         let derived_key = hash.as_bytes();
 
         // 创建AES-GCM加密器
-        let cipher = Aes256Gcm::new_from_slice(derived_key)
-            .map_err(|e| Error::KeyStorage(format!("创建加密器失败: {}", e)))?;
+        let cipher = Aes256Gcm::new_from_slice(derived_key)?;
 
         // 生成随机nonce并加密数据
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher
-            .encrypt(nonce, key_data.as_ref())
-            .map_err(|e| Error::KeyStorage(format!("加密密钥失败: {}", e)))?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ciphertext = cipher.encrypt(&nonce, key_data.as_ref())?;
 
         Ok(Self {
             encrypted_data: BASE64.encode(&ciphertext),
-            nonce: BASE64.encode(&nonce_bytes),
+            nonce: BASE64.encode(nonce.as_slice()),
             salt: salt.as_str().to_string(),
             algorithm_id: algorithm_id.to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -144,7 +161,7 @@ impl EncryptedKeyContainer {
 }
 
 impl SecureKeyStorage for EncryptedKeyContainer {
-    type Error = Error;
+    type Error = ContainerError;
 
     fn encrypt_key<K: AsRef<[u8]>>(
         password: &SecretString,
@@ -159,8 +176,7 @@ impl SecureKeyStorage for EncryptedKeyContainer {
     fn decrypt_key(&self, password: &SecretString) -> Result<Vec<u8>, Self::Error> {
         // 重建盐值和派生密钥
         let salt_str = &self.salt;
-        let salt = SaltString::from_b64(salt_str)
-            .map_err(|e| Error::KeyStorage(format!("无效的盐值: {}", e)))?;
+        let salt = SaltString::from_b64(salt_str).map_err(|e| ContainerError::InvalidSalt(e))?;
 
         // 使用存储的参数重新创建Argon2实例
         let mut params_builder = ParamsBuilder::new();
@@ -172,24 +188,20 @@ impl SecureKeyStorage for EncryptedKeyContainer {
 
         let params = params_builder
             .build()
-            .map_err(|e| Error::KeyStorage(format!("Argon2参数无效: {}", e)))?;
-
+            .map_err(|e| ContainerError::Argon2Params(e))?;
         let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
         let password_bytes = password.expose_secret().as_bytes();
         let password_hash = argon2
             .hash_password(password_bytes, &salt)
-            .map_err(|e| Error::KeyStorage(format!("密码哈希失败: {}", e)))?;
+            .map_err(|e| ContainerError::PasswordHashing(e))?;
 
         // 安全地获取哈希值
-        let hash = password_hash
-            .hash
-            .ok_or_else(|| Error::KeyStorage("无法生成密码哈希".to_string()))?;
+        let hash = password_hash.hash.ok_or(ContainerError::HashUnavailable)?;
         let derived_key = hash.as_bytes();
 
         // 创建AES-GCM解密器
-        let cipher = Aes256Gcm::new_from_slice(derived_key)
-            .map_err(|e| Error::KeyStorage(format!("创建解密器失败: {}", e)))?;
+        let cipher = Aes256Gcm::new_from_slice(derived_key)?;
 
         // 解码nonce和密文
         let nonce_bytes = BASE64.decode(&self.nonce)?;
@@ -197,11 +209,9 @@ impl SecureKeyStorage for EncryptedKeyContainer {
 
         // 解密密钥数据
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let decrypted = cipher
+        cipher
             .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|e| Error::KeyStorage(format!("解密密钥失败，密码可能不正确: {}", e)))?;
-
-        Ok(decrypted)
+            .map_err(Into::into)
     }
 
     fn algorithm_id(&self) -> &str {
@@ -213,12 +223,11 @@ impl SecureKeyStorage for EncryptedKeyContainer {
     }
 
     fn to_json(&self) -> Result<String, Self::Error> {
-        serde_json::to_string(self)
-            .map_err(|e| Error::Serialization(format!("序列化容器失败: {}", e)))
+        serde_json::to_string(self).map_err(Into::into)
     }
 
     fn from_json(json: &str) -> Result<Self, Self::Error> {
-        serde_json::from_str(json).map_err(|e| Error::Serialization(format!("解析容器失败: {}", e)))
+        serde_json::from_str(json).map_err(Into::into)
     }
 }
 
@@ -292,7 +301,7 @@ mod tests {
 
         // 使用错误密码尝试解密
         let result = container.decrypt_key(&wrong_password);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(ContainerError::Aead(_))));
     }
 
     #[test]

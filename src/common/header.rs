@@ -1,8 +1,10 @@
 //! 定义 seal-kit 的统一头部格式，用于支持对称和混合加密模式。
 
 use crate::asymmetric::systems::traditional::rsa::RsaSignature;
+use crate::common::errors::BincodeError;
 use crate::common::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use bincode::config::Configuration;
+use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
@@ -29,12 +31,12 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn encode_to_vec(&self) -> Result<Vec<u8>, crate::Error> {
+    pub fn encode_to_vec(&self) -> Result<Vec<u8>, BincodeError> {
         static CONFIG: Configuration = bincode::config::standard();
         Ok(bincode::encode_to_vec(self, CONFIG)?)
     }
 
-    pub fn decode_from_vec(data: &[u8]) -> Result<(Self, usize), crate::Error> {
+    pub fn decode_from_vec(data: &[u8]) -> Result<(Self, usize), BincodeError> {
         static CONFIG: Configuration = bincode::config::standard();
         Ok(bincode::decode_from_slice(data, CONFIG)?)
     }

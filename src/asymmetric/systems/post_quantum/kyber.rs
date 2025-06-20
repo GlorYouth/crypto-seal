@@ -1,12 +1,46 @@
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
-use crate::common::errors::Error;
 use crate::common::utils::ZeroizingVec;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pqcrypto_kyber::{kyber512, kyber768, kyber1024};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+/// Kyber 系统专用的错误类型
+#[derive(Error, Debug)]
+pub enum KyberSystemError {
+    #[error("Unsupported Kyber security level: {0}")]
+    UnsupportedSecurityLevel(usize),
+
+    #[error("Invalid public key format or size")]
+    InvalidPublicKey,
+
+    #[error("Invalid private key format or size")]
+    InvalidPrivateKey,
+
+    #[error("Invalid ciphertext format or size")]
+    InvalidCiphertext,
+
+    #[error("Invalid key size for import: expected one of {expected:?}, got {actual}")]
+    InvalidKeySize { expected: Vec<usize>, actual: usize },
+
+    #[error("Mismatched plaintext length: expected {expected}, got {actual}")]
+    MismatchedPlaintextLength { expected: usize, actual: usize },
+
+    #[error("Private key does not match the security level of the ciphertext")]
+    KeyMismatch,
+
+    #[error("Decryption failed: ciphertext verification failed")]
+    DecryptionFailed,
+
+    #[error("This operation is not supported by Kyber: {0}")]
+    UnsupportedOperation(String),
+
+    #[error("Base64 decoding failed: {0}")]
+    Base64Decode(#[from] base64::DecodeError),
+}
 
 /// Kyber公钥包装器
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,7 +86,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
     type PublicKey = KyberPublicKeyWrapper;
     type PrivateKey = KyberPrivateKeyWrapper;
     type Signature = KyberSignature;
-    type Error = Error;
+    type Error = KyberSystemError;
 
     fn generate_keypair(
         config: &CryptoConfig,
@@ -70,7 +104,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                 let (pk, sk) = kyber1024::keypair();
                 (pk.as_bytes().to_vec(), sk.as_bytes().to_vec())
             }
-            k => return Err(Error::PostQuantum(format!("不支持的Kyber安全级别: {}", k))),
+            k => return Err(KyberSystemError::UnsupportedSecurityLevel(k)),
         };
 
         Ok((
@@ -88,41 +122,41 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         let (variant_id, kyber_ciphertext_bytes, shared_secret_bytes) = match pk_bytes.len() {
             KYBER512_PUBLICKEYBYTES => {
                 if plaintext.len() != KYBER512_SHAREDKEYBYTES {
-                    return Err(Error::PostQuantum(format!(
-                        "Kyber512期望的明文长度为{}字节",
-                        KYBER512_SHAREDKEYBYTES
-                    )));
+                    return Err(KyberSystemError::MismatchedPlaintextLength {
+                        expected: KYBER512_SHAREDKEYBYTES,
+                        actual: plaintext.len(),
+                    });
                 }
                 let pk = kyber512::PublicKey::from_bytes(pk_bytes)
-                    .map_err(|_| Error::PostQuantum("无效的Kyber512公钥格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidPublicKey)?;
                 let (ss, ct) = kyber512::encapsulate(&pk);
                 (1u8, ct.as_bytes().to_vec(), ss.as_bytes().to_vec())
             }
             KYBER768_PUBLICKEYBYTES => {
                 if plaintext.len() != KYBER768_SHAREDKEYBYTES {
-                    return Err(Error::PostQuantum(format!(
-                        "Kyber768期望的明文长度为{}字节",
-                        KYBER768_SHAREDKEYBYTES
-                    )));
+                    return Err(KyberSystemError::MismatchedPlaintextLength {
+                        expected: KYBER768_SHAREDKEYBYTES,
+                        actual: plaintext.len(),
+                    });
                 }
                 let pk = kyber768::PublicKey::from_bytes(pk_bytes)
-                    .map_err(|_| Error::PostQuantum("无效的Kyber768公钥格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidPublicKey)?;
                 let (ss, ct) = kyber768::encapsulate(&pk);
                 (2u8, ct.as_bytes().to_vec(), ss.as_bytes().to_vec())
             }
             KYBER1024_PUBLICKEYBYTES => {
                 if plaintext.len() != KYBER1024_SHAREDKEYBYTES {
-                    return Err(Error::PostQuantum(format!(
-                        "Kyber1024期望的明文长度为{}字节",
-                        KYBER1024_SHAREDKEYBYTES
-                    )));
+                    return Err(KyberSystemError::MismatchedPlaintextLength {
+                        expected: KYBER1024_SHAREDKEYBYTES,
+                        actual: plaintext.len(),
+                    });
                 }
                 let pk = kyber1024::PublicKey::from_bytes(pk_bytes)
-                    .map_err(|_| Error::PostQuantum("无效的Kyber1024公钥格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidPublicKey)?;
                 let (ss, ct) = kyber1024::encapsulate(&pk);
                 (3u8, ct.as_bytes().to_vec(), ss.as_bytes().to_vec())
             }
-            len => return Err(Error::PostQuantum(format!("无效的Kyber公钥长度: {}", len))),
+            _ => return Err(KyberSystemError::InvalidPublicKey),
         };
 
         // 使用共享密钥的哈希对DEK进行XOR加密
@@ -131,7 +165,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         let key_hash = hasher.finalize();
 
         let mut encrypted_dek = plaintext.to_vec();
-        for (i, byte) in key_hash.iter().enumerate() {
+        for (i, byte) in key_hash.iter().take(encrypted_dek.len()).enumerate() {
             encrypted_dek[i] ^= byte;
         }
 
@@ -149,8 +183,9 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         ciphertext: &[u8],
         _additional_data: Option<&[u8]>, // AAD由SealEngine中的对称密码处理
     ) -> Result<Vec<u8>, Self::Error> {
-        if ciphertext.is_empty() {
-            return Err(Error::Format("密文为空".to_string()));
+        if ciphertext.len() < 2 {
+            // Must have at least variant ID and some data
+            return Err(KyberSystemError::InvalidCiphertext);
         }
 
         // 提取变体ID
@@ -161,16 +196,16 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             1 => {
                 // Kyber512
                 if private_key.0.len() != KYBER512_SECRETKEYBYTES {
-                    return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
+                    return Err(KyberSystemError::KeyMismatch);
                 }
                 if rest.len() < KYBER512_CIPHERTEXTBYTES + KYBER512_SHAREDKEYBYTES {
-                    return Err(Error::Format("Kyber512密文格式无效".to_string()));
+                    return Err(KyberSystemError::InvalidCiphertext);
                 }
                 let ct_bytes = &rest[..KYBER512_CIPHERTEXTBYTES];
                 let sk = kyber512::SecretKey::from_bytes(private_key.0.as_ref())
-                    .map_err(|_| Error::PostQuantum("无效的Kyber512私钥格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidPrivateKey)?;
                 let ct = kyber512::Ciphertext::from_bytes(ct_bytes)
-                    .map_err(|_| Error::PostQuantum("无效的Kyber512密文格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidCiphertext)?;
                 let ss = kyber512::decapsulate(&ct, &sk);
                 (
                     KYBER512_CIPHERTEXTBYTES,
@@ -181,16 +216,16 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             2 => {
                 // Kyber768
                 if private_key.0.len() != KYBER768_SECRETKEYBYTES {
-                    return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
+                    return Err(KyberSystemError::KeyMismatch);
                 }
                 if rest.len() < KYBER768_CIPHERTEXTBYTES + KYBER768_SHAREDKEYBYTES {
-                    return Err(Error::Format("Kyber768密文格式无效".to_string()));
+                    return Err(KyberSystemError::InvalidCiphertext);
                 }
                 let ct_bytes = &rest[..KYBER768_CIPHERTEXTBYTES];
                 let sk = kyber768::SecretKey::from_bytes(private_key.0.as_ref())
-                    .map_err(|_| Error::PostQuantum("无效的Kyber768私钥格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidPrivateKey)?;
                 let ct = kyber768::Ciphertext::from_bytes(ct_bytes)
-                    .map_err(|_| Error::PostQuantum("无效的Kyber768密文格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidCiphertext)?;
                 let ss = kyber768::decapsulate(&ct, &sk);
                 (
                     KYBER768_CIPHERTEXTBYTES,
@@ -201,16 +236,16 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
             3 => {
                 // Kyber1024
                 if private_key.0.len() != KYBER1024_SECRETKEYBYTES {
-                    return Err(Error::Key("私钥与密文的Kyber级别不匹配".to_string()));
+                    return Err(KyberSystemError::KeyMismatch);
                 }
                 if rest.len() < KYBER1024_CIPHERTEXTBYTES + KYBER1024_SHAREDKEYBYTES {
-                    return Err(Error::Format("Kyber1024密文格式无效".to_string()));
+                    return Err(KyberSystemError::InvalidCiphertext);
                 }
                 let ct_bytes = &rest[..KYBER1024_CIPHERTEXTBYTES];
                 let sk = kyber1024::SecretKey::from_bytes(private_key.0.as_ref())
-                    .map_err(|_| Error::PostQuantum("无效的Kyber1024私钥格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidPrivateKey)?;
                 let ct = kyber1024::Ciphertext::from_bytes(ct_bytes)
-                    .map_err(|_| Error::PostQuantum("无效的Kyber1024密文格式".to_string()))?;
+                    .map_err(|_| KyberSystemError::InvalidCiphertext)?;
                 let ss = kyber1024::decapsulate(&ct, &sk);
                 (
                     KYBER1024_CIPHERTEXTBYTES,
@@ -218,24 +253,24 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
                     KYBER1024_SHAREDKEYBYTES,
                 )
             }
-            _ => return Err(Error::PostQuantum("未知的Kyber变体ID".to_string())),
+            _ => return Err(KyberSystemError::InvalidCiphertext),
         };
 
         // 验证共享密钥
         let expected_ss_start = kyber_ct_len + shared_key_len;
         if rest.len() < expected_ss_start {
-            return Err(Error::Format("密文长度不足，无法提取共享密钥".to_string()));
+            return Err(KyberSystemError::InvalidCiphertext);
         }
         let original_ss_bytes = &rest[expected_ss_start..];
 
         if original_ss_bytes != decapsulated_ss_bytes.as_slice() {
-            return Err(Error::DecryptionFailed("密文验证失败".to_string()));
+            return Err(KyberSystemError::DecryptionFailed);
         }
 
         // 提取XOR加密后的DEK
         let encrypted_dek_part = &rest[kyber_ct_len..expected_ss_start];
         if encrypted_dek_part.len() != shared_key_len {
-            return Err(Error::Format("密文的DEK部分长度无效".to_string()));
+            return Err(KyberSystemError::InvalidCiphertext);
         }
         let mut dek = encrypted_dek_part.to_vec();
 
@@ -244,7 +279,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         hasher.update(&decapsulated_ss_bytes);
         let key_hash = hasher.finalize();
 
-        for (i, byte) in key_hash.iter().enumerate() {
+        for (i, byte) in key_hash.iter().take(dek.len()).enumerate() {
             dek[i] ^= byte;
         }
 
@@ -255,7 +290,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         _private_key: &Self::PrivateKey,
         _message: &[u8],
     ) -> Result<Self::Signature, Self::Error> {
-        Err(Error::Operation(
+        Err(KyberSystemError::UnsupportedOperation(
             "Kyber is a Key Encapsulation Mechanism and does not support signing.".to_string(),
         ))
     }
@@ -265,7 +300,7 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
         _message: &[u8],
         _signature: &Self::Signature,
     ) -> Result<(), Self::Error> {
-        Err(Error::Operation(
+        Err(KyberSystemError::UnsupportedOperation(
             "Kyber is a Key Encapsulation Mechanism and does not support verification.".to_string(),
         ))
     }
@@ -280,15 +315,17 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
 
     fn import_public_key(key_data: &str) -> Result<Self::PublicKey, Self::Error> {
         let decoded = STANDARD.decode(key_data)?;
+        let valid_lens = vec![
+            KYBER512_PUBLICKEYBYTES,
+            KYBER768_PUBLICKEYBYTES,
+            KYBER1024_PUBLICKEYBYTES,
+        ];
 
-        match decoded.len() {
-            KYBER512_PUBLICKEYBYTES | KYBER768_PUBLICKEYBYTES | KYBER1024_PUBLICKEYBYTES => {}
-            len => {
-                return Err(Error::Key(format!(
-                    "无效的Kyber公钥大小: {}字节, 预期值为 {}, {} 或 {}",
-                    len, KYBER512_PUBLICKEYBYTES, KYBER768_PUBLICKEYBYTES, KYBER1024_PUBLICKEYBYTES
-                )));
-            }
+        if !valid_lens.contains(&decoded.len()) {
+            return Err(KyberSystemError::InvalidKeySize {
+                expected: valid_lens,
+                actual: decoded.len(),
+            });
         }
 
         Ok(KyberPublicKeyWrapper(decoded))
@@ -296,15 +333,17 @@ impl AsymmetricCryptographicSystem for KyberCryptoSystem {
 
     fn import_private_key(key_data: &str) -> Result<Self::PrivateKey, Self::Error> {
         let decoded = STANDARD.decode(key_data)?;
+        let valid_lens = vec![
+            KYBER512_SECRETKEYBYTES,
+            KYBER768_SECRETKEYBYTES,
+            KYBER1024_SECRETKEYBYTES,
+        ];
 
-        match decoded.len() {
-            KYBER512_SECRETKEYBYTES | KYBER768_SECRETKEYBYTES | KYBER1024_SECRETKEYBYTES => {}
-            len => {
-                return Err(Error::Key(format!(
-                    "无效的Kyber私钥大小: {}字节, 预期值为 {}, {} 或 {}",
-                    len, KYBER512_SECRETKEYBYTES, KYBER768_SECRETKEYBYTES, KYBER1024_SECRETKEYBYTES
-                )));
-            }
+        if !valid_lens.contains(&decoded.len()) {
+            return Err(KyberSystemError::InvalidKeySize {
+                expected: valid_lens,
+                actual: decoded.len(),
+            });
         }
 
         Ok(KyberPrivateKeyWrapper(ZeroizingVec(decoded)))
@@ -354,7 +393,7 @@ mod tests {
         }
 
         let result = KyberCryptoSystem::decrypt(&private_key, &ciphertext, None);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(KyberSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -366,7 +405,7 @@ mod tests {
         let ciphertext = KyberCryptoSystem::encrypt(&public_key, &dek, None).unwrap();
         let result = KyberCryptoSystem::decrypt(&wrong_private_key, &ciphertext, None);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(KyberSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -383,15 +422,48 @@ mod tests {
 
     #[test]
     fn test_kyber_signing_is_not_supported() {
-        let (_public_key, private_key) = setup_keys(768);
+        let (public_key, private_key) = setup_keys(768);
         let message = b"test message";
 
         let sign_result = KyberCryptoSystem::sign(&private_key, message);
-        assert!(matches!(sign_result, Err(Error::Operation(_))));
+        assert!(matches!(
+            sign_result,
+            Err(KyberSystemError::UnsupportedOperation(_))
+        ));
 
         // 即使签名从未被创建，也测试验证函数
         let dummy_signature = KyberSignature(vec![]);
-        let verify_result = KyberCryptoSystem::verify(&_public_key, message, &dummy_signature);
-        assert!(matches!(verify_result, Err(Error::Operation(_))));
+        let verify_result = KyberCryptoSystem::verify(&public_key, message, &dummy_signature);
+        assert!(matches!(
+            verify_result,
+            Err(KyberSystemError::UnsupportedOperation(_))
+        ));
+    }
+
+    #[test]
+    fn test_import_invalid_key_size() {
+        let bad_key_data = STANDARD.encode([0u8; 100]);
+        let pub_result = KyberCryptoSystem::import_public_key(&bad_key_data);
+        assert!(matches!(
+            pub_result,
+            Err(KyberSystemError::InvalidKeySize { .. })
+        ));
+
+        let priv_result = KyberCryptoSystem::import_private_key(&bad_key_data);
+        assert!(matches!(
+            priv_result,
+            Err(KyberSystemError::InvalidKeySize { .. })
+        ));
+    }
+
+    #[test]
+    fn test_mismatched_plaintext_length() {
+        let (public_key, _) = setup_keys(512);
+        let dek = vec![42u8; 16]; // Incorrect length
+        let result = KyberCryptoSystem::encrypt(&public_key, &dek, None);
+        assert!(matches!(
+            result,
+            Err(KyberSystemError::MismatchedPlaintextLength { .. })
+        ));
     }
 }

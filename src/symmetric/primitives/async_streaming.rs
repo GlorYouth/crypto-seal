@@ -1,8 +1,8 @@
 #![cfg(feature = "async-engine")]
 
 use crate::common::config::StreamingConfig;
-use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
+use crate::symmetric::errors::SymmetricError;
 use crate::symmetric::traits::{SymmetricAsyncStreamingSystem, SymmetricCryptographicSystem};
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -13,7 +13,7 @@ where
     C: SymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     reader: R,
     writer: W,
@@ -29,7 +29,7 @@ where
     C: SymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     pub fn new(
         reader: R,
@@ -49,7 +49,7 @@ where
         }
     }
 
-    pub async fn process(mut self) -> Result<(StreamingResult, W), Error> {
+    pub async fn process(mut self) -> Result<(StreamingResult, W), SymmetricError> {
         let mut buffer = vec![0u8; self.config.buffer_size];
         let mut total_written = 0;
         let mut bytes_processed = 0;
@@ -74,7 +74,7 @@ where
             self.writer
                 .write_all(ciphertext_bytes)
                 .await
-                .map_err(Error::Io)?;
+                .map_err(SymmetricError::Io)?;
 
             total_written += read_bytes as u64;
             self.chunk_index += 1;
@@ -83,7 +83,7 @@ where
                 cb(bytes_processed, self.config.total_bytes);
             }
         }
-        self.writer.flush().await.map_err(Error::Io)?;
+        self.writer.flush().await.map_err(SymmetricError::Io)?;
         Ok((
             StreamingResult {
                 bytes_processed: total_written,
@@ -100,7 +100,7 @@ where
     C: SymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     reader: R,
     writer: W,
@@ -116,7 +116,7 @@ where
     C: SymmetricCryptographicSystem,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
-    Error: From<C::Error>,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     pub fn new(
         reader: R,
@@ -136,7 +136,7 @@ where
         }
     }
 
-    pub async fn process(mut self) -> Result<(StreamingResult, W), Error> {
+    pub async fn process(mut self) -> Result<(StreamingResult, W), SymmetricError> {
         let mut total_written = 0;
         let mut bytes_processed = 0;
         let mut len_buf = [0u8; 4];
@@ -147,7 +147,7 @@ where
             self.reader
                 .read_exact(&mut ciphertext_buffer)
                 .await
-                .map_err(Error::Io)?;
+                .map_err(SymmetricError::Io)?;
             bytes_processed += (4 + block_size) as u64;
 
             // 构造与加密时完全相同的 AAD
@@ -161,14 +161,17 @@ where
             let plaintext = C::decrypt(self.key, &block_with_len, Some(&aad))?;
             self.chunk_index += 1;
 
-            self.writer.write_all(&plaintext).await.map_err(Error::Io)?;
+            self.writer
+                .write_all(&plaintext)
+                .await
+                .map_err(SymmetricError::Io)?;
             total_written += plaintext.len() as u64;
 
             if let Some(cb) = &self.config.progress_callback {
                 cb(bytes_processed, self.config.total_bytes);
             }
         }
-        self.writer.flush().await.map_err(Error::Io)?;
+        self.writer.flush().await.map_err(SymmetricError::Io)?;
         Ok((
             StreamingResult {
                 bytes_processed: total_written,
@@ -186,7 +189,7 @@ where
     T: SymmetricCryptographicSystem + Send + Sync,
     T::Key: Send + Sync,
     T::Error: Send,
-    Error: From<T::Error>,
+    SymmetricError: From<<T as SymmetricCryptographicSystem>::Error>,
 {
     async fn encrypt_stream_async<R, W>(
         key: &Self::Key,
@@ -194,7 +197,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
+    ) -> Result<(StreamingResult, W), SymmetricError>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
@@ -216,7 +219,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
+    ) -> Result<(StreamingResult, W), SymmetricError>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,

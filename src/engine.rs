@@ -2,8 +2,11 @@ mod private;
 
 use crate::common::header::Header;
 use crate::rotation::manager::KeyManager;
+use crate::symmetric::errors::SymmetricError;
 use crate::{Error, Seal};
 use secrecy::SecretString;
+#[cfg(feature = "dek-caching")]
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 /// `SealEngine` 是执行实际加密和解密操作的统一接口。
@@ -195,7 +198,8 @@ impl SealEngine {
         let dek_key = AesGcmKey(dek);
         let parallelism_config = &self.key_manager.config().parallelism;
         let ciphertext_payload =
-            AesGcmSystem::par_encrypt(&dek_key, plaintext, aad, parallelism_config)?;
+            AesGcmSystem::par_encrypt(&dek_key, plaintext, aad, parallelism_config)
+                .map_err(SymmetricError::from)?;
 
         // 5. 组合 Header 和加密后的载荷
         let mut final_output =
@@ -331,7 +335,8 @@ impl SealEngine {
         let dek_key = AesGcmKey(dek);
         let parallelism_config = &self.key_manager.config().parallelism;
         let decrypted_payload =
-            AesGcmSystem::par_decrypt(&dek_key, &payload, aad, parallelism_config)?;
+            AesGcmSystem::par_decrypt(&dek_key, &payload, aad, parallelism_config)
+                .map_err(SymmetricError::from)?;
 
         Ok(decrypted_payload)
     }

@@ -1,6 +1,8 @@
+use crate::asymmetric::errors::AsymmetricError;
 use crate::common::header::{Header, HeaderPayload, SealMode};
 use crate::common::traits::{Algorithm, AsymmetricAlgorithm, SymmetricAlgorithm};
 use crate::engine::SealEngine;
+use crate::symmetric::errors::SymmetricError;
 use crate::symmetric::traits::SymmetricCryptographicSystem;
 use crate::{AsymmetricCryptographicSystem, Error};
 
@@ -43,7 +45,7 @@ impl SealEngine {
                         let key = key_manager
                             .derive_symmetric_key::<AesGcmSystem>(key_id)?
                             .ok_or_else(|| {
-                                Error::Key(format!(
+                                Error::KeyNotFound(format!(
                                     "Failed to derive symmetric key for id: {}",
                                     key_id
                                 ))
@@ -66,9 +68,13 @@ impl SealEngine {
                         let (_, kek_priv) = key_manager
                             .get_asymmetric_keypair::<RsaCryptoSystem>(kek_id)?
                             .ok_or_else(|| {
-                                Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
+                                Error::KeyNotFound(format!(
+                                    "Failed to get KEK keypair for id: {}",
+                                    kek_id
+                                ))
                             })?;
-                        let dek = RsaCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
+                        let dek = RsaCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)
+                            .map_err(AsymmetricError::from)?;
                         Ok(dek)
                     }
                     AsymmetricAlgorithm::Kyber768 => {
@@ -76,9 +82,13 @@ impl SealEngine {
                         let (_, kek_priv) = key_manager
                             .get_asymmetric_keypair::<KyberCryptoSystem>(kek_id)?
                             .ok_or_else(|| {
-                                Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
+                                Error::KeyNotFound(format!(
+                                    "Failed to get KEK keypair for id: {}",
+                                    kek_id
+                                ))
                             })?;
-                        let dek = KyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
+                        let dek = KyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)
+                            .map_err(AsymmetricError::from)?;
                         Ok(dek)
                     }
                     AsymmetricAlgorithm::RsaKyber768 => {
@@ -86,22 +96,31 @@ impl SealEngine {
                         use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 
                         let sig_to_verify = signature.as_ref().ok_or_else(|| {
-                            Error::Signature("Signature missing for RsaKyber768.".to_string())
+                            Error::Asymmetric(AsymmetricError::Signature(
+                                "Signature missing for RsaKyber768.".to_string(),
+                            ))
                         })?;
 
                         let (kek_pub, kek_priv) = key_manager
                             .get_asymmetric_keypair::<RsaKyberCryptoSystem>(kek_id)?
                             .ok_or_else(|| {
-                                Error::Key(format!("Failed to get KEK keypair for id: {}", kek_id))
+                                Error::KeyNotFound(format!(
+                                    "Failed to get KEK keypair for id: {}",
+                                    kek_id
+                                ))
                             })?;
 
                         // 在解密前必须验证签名
                         RsaKyberCryptoSystem::verify(&kek_pub, encrypted_dek, sig_to_verify)
                             .map_err(|e| {
-                                Error::Verification(format!("Signature verification failed: {}", e))
+                                Error::Asymmetric(AsymmetricError::Verification(format!(
+                                    "Signature verification failed: {}",
+                                    e
+                                )))
                             })?;
 
-                        let dek = RsaKyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)?;
+                        let dek = RsaKyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)
+                            .map_err(AsymmetricError::from)?;
                         Ok(dek)
                     }
                 }
@@ -128,7 +147,7 @@ impl SealEngine {
                             .key_manager
                             .derive_symmetric_key::<AesGcmSystem>(&primary_meta.id)?
                             .ok_or_else(|| {
-                                Error::Key("Failed to derive symmetric key.".to_string())
+                                Error::KeyNotFound("Failed to derive symmetric key.".to_string())
                             })?;
 
                         let payload = HeaderPayload::Symmetric {
@@ -154,13 +173,14 @@ impl SealEngine {
                                 .key_manager
                                 .get_asymmetric_keypair::<RsaCryptoSystem>(&primary_meta.id)?
                                 .ok_or_else(|| {
-                                    Error::Key("Failed to get KEK keypair.".to_string())
+                                    Error::KeyNotFound("Failed to get KEK keypair.".to_string())
                                 })?;
 
-                            let dek =
-                                AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
+                            let dek = AesGcmSystem::generate_key(&self.key_manager.config().crypto)
+                                .map_err(SymmetricError::from)?;
 
-                            let encrypted_dek = RsaCryptoSystem::encrypt(&kek_pub, &dek.0, None)?;
+                            let encrypted_dek = RsaCryptoSystem::encrypt(&kek_pub, &dek.0, None)
+                                .map_err(AsymmetricError::from)?;
 
                             let payload = HeaderPayload::Hybrid {
                                 kek_id: primary_meta.id.clone(),
@@ -178,13 +198,14 @@ impl SealEngine {
                                 .key_manager
                                 .get_asymmetric_keypair::<KyberCryptoSystem>(&primary_meta.id)?
                                 .ok_or_else(|| {
-                                    Error::Key("Failed to get KEK keypair.".to_string())
+                                    Error::KeyNotFound("Failed to get KEK keypair.".to_string())
                                 })?;
 
-                            let dek =
-                                AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
+                            let dek = AesGcmSystem::generate_key(&self.key_manager.config().crypto)
+                                .map_err(SymmetricError::from)?;
 
-                            let encrypted_dek = KyberCryptoSystem::encrypt(&kek_pub, &dek.0, None)?;
+                            let encrypted_dek = KyberCryptoSystem::encrypt(&kek_pub, &dek.0, None)
+                                .map_err(AsymmetricError::from)?;
 
                             let payload = HeaderPayload::Hybrid {
                                 kek_id: primary_meta.id.clone(),
@@ -196,23 +217,26 @@ impl SealEngine {
                             Ok((payload, dek.0))
                         }
                         AsymmetricAlgorithm::RsaKyber768 => {
+                            use crate::AsymmetricCryptographicSystem;
                             use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 
                             let (kek_pub, kek_priv) = self
                                 .key_manager
                                 .get_asymmetric_keypair::<RsaKyberCryptoSystem>(&primary_meta.id)?
                                 .ok_or_else(|| {
-                                    Error::Key("Failed to get KEK keypair.".to_string())
+                                    Error::KeyNotFound("Failed to get KEK keypair.".to_string())
                                 })?;
 
-                            let dek =
-                                AesGcmSystem::generate_key(&self.key_manager.config().crypto)?;
+                            let dek = AesGcmSystem::generate_key(&self.key_manager.config().crypto)
+                                .map_err(SymmetricError::from)?;
 
                             let encrypted_dek =
-                                RsaKyberCryptoSystem::encrypt(&kek_pub, &dek.0, None)?;
+                                RsaKyberCryptoSystem::encrypt(&kek_pub, &dek.0, None)
+                                    .map_err(AsymmetricError::from)?;
 
                             // 使用 trait 方法进行签名
-                            let signature = RsaKyberCryptoSystem::sign(&kek_priv, &encrypted_dek)?;
+                            let signature = RsaKyberCryptoSystem::sign(&kek_priv, &encrypted_dek)
+                                .map_err(AsymmetricError::from)?;
 
                             let payload = HeaderPayload::Hybrid {
                                 kek_id: primary_meta.id.clone(),

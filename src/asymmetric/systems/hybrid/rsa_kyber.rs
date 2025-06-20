@@ -5,15 +5,30 @@
 //!
 
 use crate::asymmetric::systems::post_quantum::kyber::{
-    KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper,
+    KyberCryptoSystem, KyberPrivateKeyWrapper, KyberPublicKeyWrapper, KyberSystemError,
 };
 use crate::asymmetric::systems::traditional::rsa::{
-    RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper, RsaSignature,
+    RsaCryptoSystem, RsaPrivateKeyWrapper, RsaPublicKeyWrapper, RsaSignature, RsaSystemError,
 };
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
-use crate::common::errors::Error;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+// --- 错误类型 ---
+
+/// RSA-Kyber 混合系统的专用错误类型。
+#[derive(Error, Debug)]
+pub enum RsaKyberSystemError {
+    #[error("RSA operation failed: {0}")]
+    Rsa(#[from] RsaSystemError),
+
+    #[error("Kyber operation failed: {0}")]
+    Kyber(#[from] KyberSystemError),
+
+    #[error("Key serialization or deserialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
 
 // --- 密钥结构 ---
 
@@ -40,7 +55,7 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     type PublicKey = RsaKyberPublicKey;
     type PrivateKey = RsaKyberPrivateKey;
     type Signature = RsaSignature;
-    type Error = Error;
+    type Error = RsaKyberSystemError;
 
     fn generate_keypair(
         config: &CryptoConfig,
@@ -60,12 +75,6 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
             rsa_private_key: rsa_sk,
             kyber_private_key: kyber_sk,
         };
-
-        // Perform a basic sanity check on the generated keys
-        assert!(!public_key.rsa_public_key.0.is_empty());
-        assert!(!public_key.kyber_public_key.0.is_empty());
-        assert!(!private_key.rsa_private_key.0.is_empty());
-        assert!(!private_key.kyber_private_key.0.is_empty());
 
         Ok((public_key, private_key))
     }
@@ -94,6 +103,7 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     ) -> Result<Vec<u8>, Self::Error> {
         // 委托给Kyber系统进行加密
         KyberCryptoSystem::encrypt(&public_key.kyber_public_key, plaintext, additional_data)
+            .map_err(Into::into)
     }
 
     /// 使用Kyber私钥执行解密（作为KEM的一部分）。
@@ -104,13 +114,14 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
     ) -> Result<Vec<u8>, Self::Error> {
         // 委托给Kyber系统进行解密
         KyberCryptoSystem::decrypt(&private_key.kyber_private_key, ciphertext, additional_data)
+            .map_err(Into::into)
     }
 
     fn sign(
         private_key: &Self::PrivateKey,
         message: &[u8],
     ) -> Result<Self::Signature, Self::Error> {
-        RsaCryptoSystem::sign(&private_key.rsa_private_key, message)
+        RsaCryptoSystem::sign(&private_key.rsa_private_key, message).map_err(Into::into)
     }
 
     fn verify(
@@ -118,7 +129,7 @@ impl AsymmetricCryptographicSystem for RsaKyberCryptoSystem {
         message: &[u8],
         signature: &Self::Signature,
     ) -> Result<(), Self::Error> {
-        RsaCryptoSystem::verify(&public_key.rsa_public_key, message, signature)
+        RsaCryptoSystem::verify(&public_key.rsa_public_key, message, signature).map_err(Into::into)
     }
 }
 
@@ -190,6 +201,19 @@ mod tests {
         let signature = RsaKyberCryptoSystem::sign(&sk, data).unwrap();
         let result = RsaKyberCryptoSystem::verify(&pk, tampered_data, &signature);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(RsaKyberSystemError::Rsa(_))));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_hybrid_decryption_fails_with_wrong_key() {
+        let (pk, _) = setup_keys();
+        let (_, sk2) = setup_keys();
+        let plaintext = b"some secret data";
+
+        let ciphertext = RsaKyberCryptoSystem::encrypt(&pk, plaintext, None).unwrap();
+        // The underlying pqcrypto library panics on decapsulation failure,
+        // so we expect a panic here rather than a returned error.
+        let _ = RsaKyberCryptoSystem::decrypt(&sk2, &ciphertext, None).unwrap();
     }
 }

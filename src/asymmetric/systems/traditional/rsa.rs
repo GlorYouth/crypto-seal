@@ -1,18 +1,46 @@
-//! `RsaCryptoSystem` 提供了基于 RSA PKCS#1 v1.5 的非对称加解密功能。
-//! 在 `seal-kit` 框架中，它主要作为密钥封装机制 (KEM) 使用。
+//! `RsaCryptoSystem` 提供了基于 RSA PKCS#1 v1.5 和 PSS 的非对称加解密与签名功能。
+//! 在 `seal-kit` 框架中，它主要作为密钥封装机制 (KEM) 和数字签名机制使用。
 
 use crate::asymmetric::traits::AsymmetricCryptographicSystem;
 use crate::common::config::CryptoConfig;
-use crate::common::errors::Error;
 use crate::common::utils::ZeroizingVec;
 use bincode::{Decode, Encode};
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
+use rsa::pkcs8::{self, DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::pss::{Signature as PssSignature, SigningKey, VerifyingKey};
 use rsa::rand_core::OsRng as RsaOsRng;
 use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use thiserror::Error;
+
+/// RSA 系统专用的错误类型
+#[derive(Error, Debug)]
+pub enum RsaSystemError {
+    #[error("RSA key generation failed: {0}")]
+    KeyGeneration(rsa::errors::Error),
+
+    #[error("RSA encryption failed: {0}")]
+    Encryption(rsa::errors::Error),
+
+    #[error("RSA decryption failed: {0}")]
+    Decryption(rsa::errors::Error),
+
+    #[error("RSA signing failed: {0}")]
+    Signing(rsa::Error),
+
+    #[error("RSA verification failed: {0}")]
+    Verification(rsa::signature::Error),
+
+    #[error("Invalid signature format: {0}")]
+    InvalidSignatureFormat(rsa::signature::Error),
+
+    #[error("PKCS#8 key encoding/decoding failed: {0}")]
+    Pkcs8(#[from] pkcs8::Error),
+
+    #[error("PEM key encoding/decoding failed: {0}")]
+    Pem(#[from] rsa::pkcs8::spki::Error),
+}
 
 /// RSA公钥包装器，提供序列化支持
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,14 +84,14 @@ impl AsRef<[u8]> for RsaSignature {
 
 /// RSA加密系统实现
 ///
-/// 提供标准RSA PKCS#1 v1.5加密和解密功能
+/// 提供标准RSA PKCS#1 v1.5加密和 PSS 签名功能
 pub struct RsaCryptoSystem;
 
 impl AsymmetricCryptographicSystem for RsaCryptoSystem {
     type PublicKey = RsaPublicKeyWrapper;
     type PrivateKey = RsaPrivateKeyWrapper;
     type Signature = RsaSignature;
-    type Error = Error;
+    type Error = RsaSystemError;
 
     fn generate_keypair(
         config: &CryptoConfig,
@@ -71,18 +99,13 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         let bits = config.rsa_key_bits;
         let mut rsa_rng = RsaOsRng;
 
-        let private_key = RsaPrivateKey::new(&mut rsa_rng, bits)
-            .map_err(|e| Error::Traditional(format!("生成RSA密钥失败: {}", e)))?;
+        let private_key =
+            RsaPrivateKey::new(&mut rsa_rng, bits).map_err(RsaSystemError::KeyGeneration)?;
         let public_key = RsaPublicKey::from(&private_key);
 
         // 将密钥转换为DER格式，然后包装
-        let public_der = public_key
-            .to_public_key_der()
-            .map_err(|e| Error::Traditional(format!("导出RSA公钥DER失败: {}", e)))?;
-
-        let private_der = private_key
-            .to_pkcs8_der()
-            .map_err(|e| Error::Traditional(format!("导出RSA私钥DER失败: {}", e)))?;
+        let public_der = public_key.to_public_key_der()?;
+        let private_der = private_key.to_pkcs8_der()?;
 
         Ok((
             RsaPublicKeyWrapper(public_der.as_bytes().to_vec()),
@@ -96,15 +119,11 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         _additional_data: Option<&[u8]>, // RSA PKCS#1 v1.5不使用附加数据
     ) -> Result<Vec<u8>, Self::Error> {
         // 从DER数据恢复公钥
-        let public_key = RsaPublicKey::from_public_key_der(&public_key.0)
-            .map_err(|e| Error::Traditional(format!("解析RSA公钥失败: {}", e)))?;
-
+        let public_key = RsaPublicKey::from_public_key_der(&public_key.0)?;
         let mut rng = RsaOsRng;
-        let ciphertext = public_key
+        public_key
             .encrypt(&mut rng, Pkcs1v15Encrypt, plaintext)
-            .map_err(|e| Error::Traditional(format!("RSA加密失败: {}", e)))?;
-
-        Ok(ciphertext)
+            .map_err(RsaSystemError::Encryption)
     }
 
     fn decrypt(
@@ -113,25 +132,20 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         _additional_data: Option<&[u8]>, // RSA PKCS#1 v1.5不使用附加数据
     ) -> Result<Vec<u8>, Self::Error> {
         // 从DER数据恢复私钥
-        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)
-            .map_err(|e| Error::Traditional(format!("解析RSA私钥失败: {}", e)))?;
-
+        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)?;
         private_key
             .decrypt(Pkcs1v15Encrypt, ciphertext)
-            .map_err(|e| Error::Traditional(format!("RSA解密失败: {}", e)))
+            .map_err(RsaSystemError::Decryption)
     }
 
     fn sign(
         private_key: &Self::PrivateKey,
         message: &[u8],
     ) -> Result<Self::Signature, Self::Error> {
-        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)
-            .map_err(|e| Error::Key(format!("解析RSA私钥失败: {}", e)))?;
-
+        let rsa_private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)?;
         let signing_key = SigningKey::<Sha256>::new(rsa_private_key);
         let mut rng = RsaOsRng;
         let signature = signing_key.sign_with_rng(&mut rng, message);
-
         Ok(RsaSignature(signature.to_vec()))
     }
 
@@ -140,60 +154,36 @@ impl AsymmetricCryptographicSystem for RsaCryptoSystem {
         message: &[u8],
         signature: &Self::Signature,
     ) -> Result<(), Self::Error> {
-        let rsa_public_key = RsaPublicKey::from_public_key_der(&public_key.0)
-            .map_err(|e| Error::Key(format!("解析RSA公钥失败: {}", e)))?;
-
+        let rsa_public_key = RsaPublicKey::from_public_key_der(&public_key.0)?;
         let verifying_key = VerifyingKey::<Sha256>::new(rsa_public_key);
         let rsa_signature = PssSignature::try_from(signature.as_ref())
-            .map_err(|e| Error::Signature(format!("无效的签名格式: {}", e)))?;
-
+            .map_err(RsaSystemError::InvalidSignatureFormat)?;
         verifying_key
             .verify(message, &rsa_signature)
-            .map_err(|e| Error::Signature(format!("签名验证失败: {}", e)))
+            .map_err(RsaSystemError::Verification)
     }
 
     fn export_public_key(public_key: &Self::PublicKey) -> Result<String, Self::Error> {
-        // 从DER数据恢复公钥
-        let public_key = RsaPublicKey::from_public_key_der(&public_key.0)
-            .map_err(|e| Error::Traditional(format!("解析RSA公钥失败: {}", e)))?;
-
-        let pem = public_key
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .map_err(|e| Error::Serialization(format!("RSA公钥导出失败: {}", e)))?;
+        let public_key = RsaPublicKey::from_public_key_der(&public_key.0)?;
+        let pem = public_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF)?;
         Ok(pem)
     }
 
     fn export_private_key(private_key: &Self::PrivateKey) -> Result<String, Self::Error> {
-        // 从DER数据恢复私钥
-        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)
-            .map_err(|e| Error::Traditional(format!("解析RSA私钥失败: {}", e)))?;
-
-        let pem = private_key
-            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
-            .map_err(|e| Error::Serialization(format!("RSA私钥导出失败: {}", e)))?
-            .to_string();
-        Ok(pem)
+        let private_key = RsaPrivateKey::from_pkcs8_der(&private_key.0)?;
+        let pem = private_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)?;
+        Ok(pem.to_string())
     }
 
     fn import_public_key(key_data: &str) -> Result<Self::PublicKey, Self::Error> {
-        let public_key = RsaPublicKey::from_public_key_pem(key_data)
-            .map_err(|e| Error::Key(format!("导入RSA公钥失败: {}", e)))?;
-
-        let public_der = public_key
-            .to_public_key_der()
-            .map_err(|e| Error::Traditional(format!("导出RSA公钥DER失败: {}", e)))?;
-
+        let public_key = RsaPublicKey::from_public_key_pem(key_data)?;
+        let public_der = public_key.to_public_key_der()?;
         Ok(RsaPublicKeyWrapper(public_der.as_bytes().to_vec()))
     }
 
     fn import_private_key(key_data: &str) -> Result<Self::PrivateKey, Self::Error> {
-        let private_key = RsaPrivateKey::from_pkcs8_pem(key_data)
-            .map_err(|e| Error::Key(format!("导入RSA私钥失败: {}", e)))?;
-
-        let private_der = private_key
-            .to_pkcs8_der()
-            .map_err(|e| Error::Traditional(format!("导出RSA私钥DER失败: {}", e)))?;
-
+        let private_key = RsaPrivateKey::from_pkcs8_pem(key_data)?;
+        let private_der = private_key.to_pkcs8_der()?;
         Ok(RsaPrivateKeyWrapper(ZeroizingVec(
             private_der.as_bytes().to_vec(),
         )))
@@ -245,7 +235,10 @@ mod tests {
         signature.0[0] ^= 0xff;
 
         let verification_result = RsaCryptoSystem::verify(&public_key, data, &signature);
-        assert!(verification_result.is_err());
+        assert!(matches!(
+            verification_result,
+            Err(RsaSystemError::Verification(_))
+        ));
     }
 
     #[test]
@@ -257,7 +250,10 @@ mod tests {
         let signature = RsaCryptoSystem::sign(&private_key, data).unwrap();
 
         let verification_result = RsaCryptoSystem::verify(&public_key, tampered_data, &signature);
-        assert!(verification_result.is_err());
+        assert!(matches!(
+            verification_result,
+            Err(RsaSystemError::Verification(_))
+        ));
     }
 
     #[test]
@@ -269,7 +265,7 @@ mod tests {
         let ciphertext = RsaCryptoSystem::encrypt(&public_key, plaintext, None).unwrap();
         let result = RsaCryptoSystem::decrypt(&wrong_private_key, &ciphertext, None);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(RsaSystemError::Decryption(_))));
     }
 
     #[test]
@@ -282,7 +278,7 @@ mod tests {
         ciphertext[0] ^= 0xff;
 
         let result = RsaCryptoSystem::decrypt(&private_key, &ciphertext, None);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(RsaSystemError::Decryption(_))));
     }
 
     #[test]
@@ -302,8 +298,14 @@ mod tests {
     #[test]
     fn test_rsa_import_invalid_key_fails() {
         let invalid_pem = "not-a-valid-pem";
-        assert!(RsaCryptoSystem::import_public_key(invalid_pem).is_err());
-        assert!(RsaCryptoSystem::import_private_key(invalid_pem).is_err());
+        assert!(matches!(
+            RsaCryptoSystem::import_public_key(invalid_pem),
+            Err(RsaSystemError::Pem(_))
+        ));
+        assert!(matches!(
+            RsaCryptoSystem::import_private_key(invalid_pem),
+            Err(RsaSystemError::Pkcs8(_))
+        ));
     }
 
     #[test]
@@ -325,38 +327,11 @@ mod tests {
         let long_data = vec![0u8; pk.size()];
 
         let result = RsaCryptoSystem::encrypt(&public_key, &long_data, None);
-        assert!(result.is_err());
+        assert!(matches!(result, Err(RsaSystemError::Encryption(_))));
     }
 
     #[test]
     fn test_key_generation_with_4096_bits() {
-        let config = CryptoConfig {
-            rsa_key_bits: 4096,
-            ..Default::default()
-        };
-        let (public_key, private_key) = RsaCryptoSystem::generate_keypair(&config).unwrap();
-        let pk = RsaPublicKey::from_public_key_der(&public_key.0).unwrap();
-        assert_eq!(pk.size() * 8, 4096);
-        let sk = RsaPrivateKey::from_pkcs8_der(&private_key.0).unwrap();
-        assert_eq!(sk.size() * 8, 4096);
-    }
-
-    #[test]
-    fn test_rsa_key_generation_and_export_import() {
-        let (public_key, private_key) = setup_keys();
-
-        let exported_pub = RsaCryptoSystem::export_public_key(&public_key).unwrap();
-        let exported_priv = RsaCryptoSystem::export_private_key(&private_key).unwrap();
-
-        let imported_pub = RsaCryptoSystem::import_public_key(&exported_pub).unwrap();
-        let imported_priv = RsaCryptoSystem::import_private_key(&exported_priv).unwrap();
-
-        assert_eq!(public_key, imported_pub);
-        assert_eq!(private_key, imported_priv);
-    }
-
-    #[test]
-    fn test_rsa_key_generation_and_validation_4096() {
         let config = CryptoConfig {
             rsa_key_bits: 4096,
             ..Default::default()

@@ -1,15 +1,13 @@
 //! 对称加密的同步流式处理实现
 use crate::common::config::StreamingConfig;
-use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
+use crate::symmetric::errors::SymmetricError;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricSyncStreamingSystem};
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+
 /// 对称流式加密器
-pub struct SymmetricStreamingEncryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
-where
-    Error: From<C::Error>,
-{
+pub struct SymmetricStreamingEncryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write> {
     reader: R,
     writer: W,
     key: &'a C::Key,
@@ -23,7 +21,7 @@ where
 impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
     SymmetricStreamingEncryptor<'a, C, R, W>
 where
-    Error: From<C::Error>,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     /// 创建新的对称流式加密器
     pub fn new(
@@ -46,7 +44,7 @@ where
     }
 
     /// 执行流式加密
-    pub fn process(mut self) -> Result<StreamingResult, Error> {
+    pub fn process(mut self) -> Result<StreamingResult, SymmetricError> {
         let mut buffer = vec![0u8; self.config.buffer_size];
         let mut total_written = 0;
         let mut mem_buffer = if self.config.keep_in_memory {
@@ -95,10 +93,7 @@ where
 }
 
 /// 对称流式解密器
-pub struct SymmetricStreamingDecryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
-where
-    Error: From<C::Error>,
-{
+pub struct SymmetricStreamingDecryptor<'a, C: SymmetricCryptographicSystem, R: Read, W: Write> {
     reader: R,
     writer: W,
     key: &'a C::Key,
@@ -112,7 +107,7 @@ where
 impl<'a, C: SymmetricCryptographicSystem, R: Read, W: Write>
     SymmetricStreamingDecryptor<'a, C, R, W>
 where
-    Error: From<C::Error>,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     /// 创建新的对称流式解密器
     pub fn new(
@@ -135,7 +130,7 @@ where
     }
 
     /// 执行流式解密
-    pub fn process(mut self) -> Result<StreamingResult, Error> {
+    pub fn process(mut self) -> Result<StreamingResult, SymmetricError> {
         let mut total_written = 0;
         let mut mem_buffer = if self.config.keep_in_memory {
             Some(Vec::new())
@@ -189,7 +184,7 @@ where
 impl<T> SymmetricSyncStreamingSystem for T
 where
     T: SymmetricCryptographicSystem,
-    Error: From<T::Error>,
+    SymmetricError: From<<T as SymmetricCryptographicSystem>::Error>,
 {
     fn encrypt_stream<R: Read, W: Write>(
         key: &Self::Key,
@@ -197,7 +192,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error> {
+    ) -> Result<StreamingResult, SymmetricError> {
         SymmetricStreamingEncryptor::<Self, R, W>::new(reader, writer, key, config, additional_data)
             .process()
     }
@@ -208,7 +203,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error> {
+    ) -> Result<StreamingResult, SymmetricError> {
         SymmetricStreamingDecryptor::<Self, R, W>::new(reader, writer, key, config, additional_data)
             .process()
     }

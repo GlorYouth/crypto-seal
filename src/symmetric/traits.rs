@@ -1,10 +1,10 @@
 use crate::common::config::ParallelismConfig;
 use crate::common::config::{CryptoConfig, StreamingConfig};
-use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
 use std::fmt::Debug;
 use std::io::{Read, Write};
 
+use crate::symmetric::errors::SymmetricError;
 #[cfg(feature = "async-engine")]
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -20,7 +20,7 @@ pub trait SymmetricCryptographicSystem: Sized {
     type Key: Clone + Debug;
 
     /// 该系统的错误类型。
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: Into<SymmetricError> + Send + Sync + 'static;
 
     /// 生成一个新的密钥。
     fn generate_key(config: &CryptoConfig) -> Result<Self::Key, Self::Error>;
@@ -47,10 +47,7 @@ pub trait SymmetricCryptographicSystem: Sized {
 }
 
 /// 同步对称流式加密系统扩展
-pub trait SymmetricSyncStreamingSystem: SymmetricCryptographicSystem
-where
-    Error: From<Self::Error>,
-{
+pub trait SymmetricSyncStreamingSystem: SymmetricCryptographicSystem {
     /// 同步流式加密
     fn encrypt_stream<R: Read, W: Write>(
         key: &Self::Key,
@@ -58,7 +55,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>;
+    ) -> Result<StreamingResult, SymmetricError>;
 
     /// 同步流式解密
     fn decrypt_stream<R: Read, W: Write>(
@@ -67,7 +64,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>;
+    ) -> Result<StreamingResult, SymmetricError>;
 }
 
 /// 异步对称流式加密系统扩展
@@ -76,7 +73,6 @@ where
 pub trait SymmetricAsyncStreamingSystem: SymmetricCryptographicSystem + Send + Sync
 where
     Self::Error: Send,
-    Error: From<Self::Error>,
 {
     /// 异步流式加密
     async fn encrypt_stream_async<R, W>(
@@ -85,7 +81,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
+    ) -> Result<(StreamingResult, W), SymmetricError>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send;
@@ -97,7 +93,7 @@ where
         writer: W,
         config: &StreamingConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
+    ) -> Result<(StreamingResult, W), SymmetricError>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send;
@@ -106,16 +102,13 @@ where
 /// `SymmetricParallelSystem` 提供了使用数据并行性（例如通过 Rayon）进行对称加解密的接口。
 /// 它适用于可以被分解成独立块进行并行处理的加密算法。
 #[cfg(feature = "parallel")]
-pub trait SymmetricParallelSystem: SymmetricCryptographicSystem
-where
-    Error: From<Self::Error>,
-{
+pub trait SymmetricParallelSystem: SymmetricCryptographicSystem {
     /// [并行] 加密一段明文。
     fn par_encrypt(
         key: &Self::Key,
         plaintext: &[u8],
         additional_data: Option<&[u8]>,
-        parallelism_config: &crate::common::config::ParallelismConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<Vec<u8>, Self::Error>;
 
     /// [并行] 解密一段密文。
@@ -123,17 +116,14 @@ where
         key: &Self::Key,
         ciphertext: &[u8],
         additional_data: Option<&[u8]>,
-        parallelism_config: &crate::common::config::ParallelismConfig,
+        parallelism_config: &ParallelismConfig,
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
 /// `SymmetricParallelStreamingSystem` 结合了并行和流式处理，用于高效处理大型数据流。
 /// 数据流被分割成块，这些块被并行地进行加密或解密。
 #[cfg(feature = "parallel")]
-pub trait SymmetricParallelStreamingSystem: SymmetricCryptographicSystem
-where
-    Error: From<Self::Error>,
-{
+pub trait SymmetricParallelStreamingSystem: SymmetricCryptographicSystem {
     /// 并行流式加密
     fn par_encrypt_stream<R: Read + Send, W: Write + Send>(
         key: &Self::Key,
@@ -142,7 +132,7 @@ where
         stream_config: &StreamingConfig,
         parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>;
+    ) -> Result<StreamingResult, SymmetricError>;
 
     /// 并行流式解密
     fn par_decrypt_stream<R: Read + Send, W: Write + Send>(
@@ -152,7 +142,7 @@ where
         stream_config: &StreamingConfig,
         parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error>;
+    ) -> Result<StreamingResult, SymmetricError>;
 }
 
 #[cfg(all(feature = "parallel", feature = "async-engine"))]
@@ -160,7 +150,6 @@ where
 /// 异步对称并行流式加密系统扩展
 pub trait SymmetricAsyncParallelStreamingSystem: SymmetricParallelStreamingSystem
 where
-    Error: From<Self::Error>,
     Self::Key: Clone + Send + Sync,
 {
     /// 异步并行流式加密
@@ -171,7 +160,7 @@ where
         stream_config: &StreamingConfig,
         parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
+    ) -> Result<(StreamingResult, W), SymmetricError>
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static;
@@ -184,7 +173,7 @@ where
         stream_config: &StreamingConfig,
         parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<(StreamingResult, W), Error>
+    ) -> Result<(StreamingResult, W), SymmetricError>
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static;

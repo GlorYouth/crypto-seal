@@ -10,8 +10,8 @@
 //! 这种设计允许I/O操作和CPU密集型的加密操作同时进行，最大化吞吐量。
 
 use crate::common::config::{ParallelismConfig, StreamingConfig};
-use crate::common::errors::Error;
 use crate::common::streaming::StreamingResult;
+use crate::symmetric::errors::SymmetricError;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelStreamingSystem};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -21,8 +21,8 @@ use std::thread;
 
 // 定义工作项和结果项的类型别名
 type WorkItem = (u64, Vec<u8>); // (块索引, 数据)
-type EncryptResultItem = (u64, usize, Result<Vec<u8>, Error>); // (块索引, 原始大小, 加密结果)
-type DecryptResultItem = (u64, Result<Vec<u8>, Error>); // (块索引, 解密结果)
+type EncryptResultItem = (u64, usize, Result<Vec<u8>, SymmetricError>); // (块索引, 原始大小, 加密结果)
+type DecryptResultItem = (u64, Result<Vec<u8>, SymmetricError>); // (块索引, 解密结果)
 
 /// 并行流式加密器
 struct ParallelStreamingEncryptor<'a, C, R, W>
@@ -45,9 +45,9 @@ where
     C: SymmetricCryptographicSystem + Send + Sync,
     C::Key: Clone + Send + Sync,
     C::Error: Send,
-    Error: From<C::Error> + Send,
     R: Read + Send + 'a,
     W: Write + Send + 'a,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
 {
     fn new(
         reader: R,
@@ -68,7 +68,7 @@ where
         }
     }
 
-    fn process(self) -> Result<StreamingResult, Error> {
+    fn process(self) -> Result<StreamingResult, SymmetricError> {
         let Self {
             mut reader,
             mut writer,
@@ -87,7 +87,7 @@ where
 
         thread::scope(|s| {
             // --- 1. 写入线程 ---
-            let writer_handle = s.spawn(move || -> Result<StreamingResult, Error> {
+            let writer_handle = s.spawn(move || -> Result<StreamingResult, SymmetricError> {
                 let mut reorder_buffer = HashMap::new();
                 let mut next_chunk_to_write: u64 = 0;
                 let mut total_bytes_processed: u64 = 0;
@@ -110,7 +110,7 @@ where
             });
 
             // --- 2. 读取线程 ---
-            let reader_handle = s.spawn(move || -> Result<(), Error> {
+            let reader_handle = s.spawn(move || -> Result<(), SymmetricError> {
                 let mut chunk_index: u64 = 0;
                 loop {
                     let mut buffer = vec![0u8; streaming_config.buffer_size];
@@ -121,7 +121,7 @@ where
                     buffer.truncate(read_bytes);
 
                     if work_tx.send((chunk_index, buffer)).is_err() {
-                        return Err(Error::Operation(
+                        return Err(SymmetricError::ParallelOperation(
                             "Parallel stream failed: work channel closed prematurely".to_string(),
                         ));
                     }
@@ -143,7 +143,11 @@ where
 
                     let original_size = plaintext.len();
                     if result_tx
-                        .send((index, original_size, mapped_result.map_err(Error::from)))
+                        .send((
+                            index,
+                            original_size,
+                            mapped_result.map_err(SymmetricError::from),
+                        ))
                         .is_err()
                     {
                         // 写入线程已终止
@@ -177,7 +181,7 @@ where
     C: SymmetricCryptographicSystem + Send + Sync,
     C::Key: Clone + Send + Sync,
     C::Error: Send,
-    Error: From<C::Error> + Send,
+    SymmetricError: From<<C as SymmetricCryptographicSystem>::Error>,
     R: Read + Send + 'a,
     W: Write + Send + 'a,
 {
@@ -198,7 +202,7 @@ where
         }
     }
 
-    fn process(self) -> Result<StreamingResult, Error> {
+    fn process(self) -> Result<StreamingResult, SymmetricError> {
         let Self {
             mut reader,
             mut writer,
@@ -216,7 +220,7 @@ where
 
         thread::scope(|s| {
             // --- 1. 写入线程 ---
-            let writer_handle = s.spawn(move || -> Result<StreamingResult, Error> {
+            let writer_handle = s.spawn(move || -> Result<StreamingResult, SymmetricError> {
                 let mut reorder_buffer = HashMap::new();
                 let mut next_chunk_to_write: u64 = 0;
                 let mut total_bytes_processed: u64 = 0;
@@ -239,7 +243,7 @@ where
             });
 
             // --- 2. 读取线程 ---
-            let reader_handle = s.spawn(move || -> Result<(), Error> {
+            let reader_handle = s.spawn(move || -> Result<(), SymmetricError> {
                 let mut chunk_index: u64 = 0;
                 let mut len_buf = [0u8; 4];
                 while reader.read_exact(&mut len_buf).is_ok() {
@@ -251,7 +255,7 @@ where
                     block_with_len.extend_from_slice(&ciphertext_buffer);
 
                     if work_tx.send((chunk_index, block_with_len)).is_err() {
-                        return Err(Error::Operation(
+                        return Err(SymmetricError::ParallelOperation(
                             "Parallel stream failed: work channel closed prematurely".to_string(),
                         ));
                     }
@@ -270,7 +274,7 @@ where
 
                     let result = C::decrypt(key, &ciphertext, Some(&aad));
                     if result_tx
-                        .send((index, result.map_err(Error::from)))
+                        .send((index, result.map_err(SymmetricError::from)))
                         .is_err()
                     {
                         // 写入线程已终止
@@ -289,8 +293,7 @@ impl<T> SymmetricParallelStreamingSystem for T
 where
     T: SymmetricCryptographicSystem + Send + Sync,
     T::Key: Clone + Send + Sync,
-    T::Error: Send,
-    Error: From<T::Error> + Send,
+    SymmetricError: From<<T as SymmetricCryptographicSystem>::Error>,
 {
     fn par_encrypt_stream<R: Read + Send, W: Write + Send>(
         key: &Self::Key,
@@ -299,7 +302,7 @@ where
         stream_config: &StreamingConfig,
         parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error> {
+    ) -> Result<StreamingResult, SymmetricError> {
         ParallelStreamingEncryptor::<Self, R, W>::new(
             reader,
             writer,
@@ -318,7 +321,7 @@ where
         _stream_config: &StreamingConfig,
         parallel_config: &ParallelismConfig,
         additional_data: Option<&[u8]>,
-    ) -> Result<StreamingResult, Error> {
+    ) -> Result<StreamingResult, SymmetricError> {
         ParallelStreamingDecryptor::<Self, R, W>::new(
             reader,
             writer,
@@ -345,7 +348,7 @@ mod async_impl {
         T: SymmetricCryptographicSystem + Send + Sync,
         T::Key: Clone + Send + Sync + 'static,
         T::Error: Send + Sync,
-        Error: From<T::Error> + Send,
+        SymmetricError: From<<T as SymmetricCryptographicSystem>::Error>,
     {
         async fn par_encrypt_stream_async<R, W>(
             key: &Self::Key,
@@ -354,7 +357,7 @@ mod async_impl {
             stream_config: &StreamingConfig,
             parallel_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
-        ) -> Result<(StreamingResult, W), Error>
+        ) -> Result<(StreamingResult, W), SymmetricError>
         where
             R: AsyncRead + Unpin + Send + 'static,
             W: AsyncWrite + Unpin + Send + 'static,
@@ -374,7 +377,7 @@ mod async_impl {
                     let read_bytes = match reader.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => n,
-                        Err(e) => return Err(Error::Io(e)),
+                        Err(e) => return Err(SymmetricError::Io(e)),
                     };
                     buffer.truncate(read_bytes);
 
@@ -400,8 +403,9 @@ mod async_impl {
                         aad.extend_from_slice(&index.to_le_bytes());
 
                         let result = T::encrypt(&key_clone, &plaintext, Some(&aad));
-                        let mapped_result =
-                            result.map(|d| d.as_ref().to_vec()).map_err(Error::from);
+                        let mapped_result = result
+                            .map(|d| d.as_ref().to_vec())
+                            .map_err(SymmetricError::from);
 
                         let original_size = plaintext.len();
                         let _ = result_tx.blocking_send((index, original_size, mapped_result));
@@ -417,24 +421,28 @@ mod async_impl {
             });
 
             // --- 3. 写入线程 ---
-            let writer_handle: JoinHandle<Result<(u64, W), Error>> = tokio::spawn(async move {
-                let mut reorder_buffer = HashMap::new();
-                let mut next_chunk_to_write: u64 = 0;
-                let mut total_bytes_processed: u64 = 0;
+            let writer_handle: JoinHandle<Result<(u64, W), SymmetricError>> =
+                tokio::spawn(async move {
+                    let mut reorder_buffer = HashMap::new();
+                    let mut next_chunk_to_write: u64 = 0;
+                    let mut total_bytes_processed: u64 = 0;
 
-                while let Some((index, original_size, result)) = result_rx.recv().await {
-                    let ciphertext = result?;
-                    reorder_buffer.insert(index, (original_size, ciphertext));
+                    while let Some((index, original_size, result)) = result_rx.recv().await {
+                        let ciphertext = result?;
+                        reorder_buffer.insert(index, (original_size, ciphertext));
 
-                    while let Some((size, data)) = reorder_buffer.remove(&next_chunk_to_write) {
-                        writer.write_all(&data).await.map_err(|e| Error::Io(e))?;
-                        total_bytes_processed += size as u64;
-                        next_chunk_to_write += 1;
+                        while let Some((size, data)) = reorder_buffer.remove(&next_chunk_to_write) {
+                            writer
+                                .write_all(&data)
+                                .await
+                                .map_err(|e| SymmetricError::Io(e))?;
+                            total_bytes_processed += size as u64;
+                            next_chunk_to_write += 1;
+                        }
                     }
-                }
-                writer.flush().await.map_err(Error::Io)?;
-                Ok((total_bytes_processed, writer))
-            });
+                    writer.flush().await.map_err(SymmetricError::Io)?;
+                    Ok((total_bytes_processed, writer))
+                });
 
             reader_handle.await??;
             let (total_bytes, writer) = writer_handle.await??;
@@ -455,12 +463,12 @@ mod async_impl {
             _stream_config: &StreamingConfig,
             parallel_config: &ParallelismConfig,
             additional_data: Option<&[u8]>,
-        ) -> Result<(StreamingResult, W), Error>
+        ) -> Result<(StreamingResult, W), SymmetricError>
         where
             R: AsyncRead + Unpin + Send + 'static,
             W: AsyncWrite + Unpin + Send + 'static,
         {
-            type DecryptWorkItem = (u64, Result<Vec<u8>, Error>);
+            type DecryptWorkItem = (u64, Result<Vec<u8>, SymmetricError>);
 
             let (work_tx, mut work_rx) =
                 mpsc::channel::<DecryptWorkItem>(parallel_config.parallelism);
@@ -487,7 +495,7 @@ mod async_impl {
                             block_with_len.extend_from_slice(&ciphertext_buffer);
                             Ok(block_with_len)
                         }
-                        Err(e) => Err(Error::Io(e)),
+                        Err(e) => Err(SymmetricError::Io(e)),
                     };
 
                     if work_tx.send((chunk_index, work_item)).await.is_err() {
@@ -510,7 +518,8 @@ mod async_impl {
                             Ok(ciphertext) => {
                                 let mut aad = additional_data_clone.clone().unwrap_or_default();
                                 aad.extend_from_slice(&index.to_le_bytes());
-                                T::decrypt(&key_clone, &ciphertext, Some(&aad)).map_err(Error::from)
+                                T::decrypt(&key_clone, &ciphertext, Some(&aad))
+                                    .map_err(SymmetricError::from)
                             }
                             Err(e) => Err(e),
                         };
@@ -528,24 +537,25 @@ mod async_impl {
             });
 
             // --- 3. 写入线程 ---
-            let writer_handle: JoinHandle<Result<(u64, W), Error>> = tokio::spawn(async move {
-                let mut reorder_buffer = HashMap::new();
-                let mut next_chunk_to_write: u64 = 0;
-                let mut total_bytes_processed: u64 = 0;
+            let writer_handle: JoinHandle<Result<(u64, W), SymmetricError>> =
+                tokio::spawn(async move {
+                    let mut reorder_buffer = HashMap::new();
+                    let mut next_chunk_to_write: u64 = 0;
+                    let mut total_bytes_processed: u64 = 0;
 
-                while let Some((index, result)) = result_rx.recv().await {
-                    let plaintext = result?;
-                    reorder_buffer.insert(index, plaintext);
+                    while let Some((index, result)) = result_rx.recv().await {
+                        let plaintext = result?;
+                        reorder_buffer.insert(index, plaintext);
 
-                    while let Some(data) = reorder_buffer.remove(&next_chunk_to_write) {
-                        total_bytes_processed += data.len() as u64;
-                        writer.write_all(&data).await.map_err(Error::Io)?;
-                        next_chunk_to_write += 1;
+                        while let Some(data) = reorder_buffer.remove(&next_chunk_to_write) {
+                            total_bytes_processed += data.len() as u64;
+                            writer.write_all(&data).await.map_err(SymmetricError::Io)?;
+                            next_chunk_to_write += 1;
+                        }
                     }
-                }
-                writer.flush().await.map_err(Error::Io)?;
-                Ok((total_bytes_processed, writer))
-            });
+                    writer.flush().await.map_err(SymmetricError::Io)?;
+                    Ok((total_bytes_processed, writer))
+                });
 
             reader_handle.await??;
             let (total_bytes, writer) = writer_handle.await??;

@@ -1,20 +1,48 @@
 //! AES-GCM 对称加密实现
 use crate::common::config::{CryptoConfig, ParallelismConfig};
-use crate::common::errors::Error;
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelSystem};
-use aes_gcm::aead::{AeadInPlace, KeyInit, OsRng};
+use aes_gcm::aead::{AeadInPlace, Error as AeadError, KeyInit};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce, Tag};
 use base64::{Engine, engine::general_purpose};
 use rayon::prelude::*;
-use rsa::rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::io::{Cursor, Read};
+
+use thiserror::Error;
 
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 12;
 const TAG_SIZE: usize = 16; // AES-GCM's tag is 16 bytes
 const PARALLEL_CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB
+
+/// AES-GCM 系统的独立错误类型
+#[derive(Error, Debug)]
+pub enum AesGcmSystemError {
+    #[error("Key generation failed: {0}")]
+    KeyGeneration(#[from] rand_core::OsError),
+
+    #[error("Invalid key size: expected {expected}, got {actual}")]
+    InvalidKeySize { expected: usize, actual: usize },
+
+    #[error("Encryption failed: {0}")]
+    EncryptionFailed(#[from] AeadError),
+
+    #[error("Decryption failed")]
+    DecryptionFailed,
+
+    #[error("Ciphertext is malformed or truncated: {0}")]
+    MalformedCiphertext(String),
+
+    #[error("Base64 decoding failed: {0}")]
+    Base64Decode(#[from] base64::DecodeError),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Parallel execution setup failed: {0}")]
+    ParallelSetup(String),
+}
 
 /// AES-GCM 对称加密系统
 #[derive(Debug)]
@@ -26,15 +54,14 @@ pub struct AesGcmKey(pub Vec<u8>);
 
 impl SymmetricCryptographicSystem for AesGcmSystem {
     const KEY_SIZE: usize = KEY_SIZE;
-    type Key = AesGcmKey;
-    type Error = Error;
     type CiphertextOutput = Vec<u8>;
+    type Key = AesGcmKey;
+    type Error = AesGcmSystemError;
 
     fn generate_key(_config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
         let mut key_bytes = vec![0u8; Self::KEY_SIZE];
-        OsRng
-            .try_fill_bytes(&mut key_bytes)
-            .map_err(|e| Error::Key(e.to_string()))?;
+        use rand_core::{OsRng, TryRngCore};
+        OsRng.try_fill_bytes(&mut key_bytes)?;
         Ok(AesGcmKey(key_bytes))
     }
 
@@ -45,12 +72,15 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     ) -> Result<Vec<u8>, Self::Error> {
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key.0);
         let cipher = Aes256Gcm::new(key);
+        use aes_gcm::aead::OsRng;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
         let mut buffer = plaintext.to_vec();
-        let tag = cipher
-            .encrypt_in_place_detached(&nonce, additional_data.unwrap_or(&[]), &mut buffer)
-            .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
+        let tag = cipher.encrypt_in_place_detached(
+            &nonce,
+            additional_data.unwrap_or(&[]),
+            &mut buffer,
+        )?;
 
         let mut raw_ciphertext = Vec::with_capacity(NONCE_SIZE + TAG_SIZE + buffer.len());
         raw_ciphertext.extend_from_slice(nonce.as_slice());
@@ -72,7 +102,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     ) -> Result<Vec<u8>, Self::Error> {
         // 统一密文格式：[4字节长度][加密块]
         if ciphertext.len() < 4 {
-            return Err(Error::DecryptionFailed(
+            return Err(AesGcmSystemError::MalformedCiphertext(
                 "Ciphertext is too short to contain length prefix".to_string(),
             ));
         }
@@ -80,13 +110,13 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let len = u32::from_le_bytes(len_slice.try_into().unwrap()) as usize;
 
         if raw_ciphertext.len() != len {
-            return Err(Error::DecryptionFailed(
+            return Err(AesGcmSystemError::MalformedCiphertext(
                 "Ciphertext length does not match length prefix".to_string(),
             ));
         }
 
         if raw_ciphertext.len() < NONCE_SIZE + TAG_SIZE {
-            return Err(Error::DecryptionFailed(
+            return Err(AesGcmSystemError::MalformedCiphertext(
                 "Ciphertext is too short".to_string(),
             ));
         }
@@ -101,7 +131,7 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let mut buffer = ct_slice.to_vec();
         cipher
             .decrypt_in_place_detached(nonce, additional_data.unwrap_or(&[]), &mut buffer, tag)
-            .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
+            .map_err(|_| AesGcmSystemError::DecryptionFailed)?;
 
         Ok(buffer)
     }
@@ -111,11 +141,12 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     }
 
     fn import_key(encoded_key: &str) -> Result<Self::Key, Self::Error> {
-        let key_bytes = general_purpose::STANDARD
-            .decode(encoded_key)
-            .map_err(|e| Error::Key(format!("Base64 decoding failed: {}", e)))?;
+        let key_bytes = general_purpose::STANDARD.decode(encoded_key)?;
         if key_bytes.len() != KEY_SIZE {
-            return Err(Error::Key("Invalid key size after decoding".to_string()));
+            return Err(AesGcmSystemError::InvalidKeySize {
+                expected: KEY_SIZE,
+                actual: key_bytes.len(),
+            });
         }
         Ok(AesGcmKey(key_bytes))
     }
@@ -136,7 +167,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(parallelism_config.parallelism)
             .build()
-            .map_err(|e| Error::Key(e.to_string()))?;
+            .map_err(|e| AesGcmSystemError::ParallelSetup(e.to_string()))?;
 
         let additional_data = additional_data.map(|d| d.to_vec());
 
@@ -180,7 +211,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
         while reader.read_exact(&mut len_buf).is_ok() {
             let len = u32::from_le_bytes(len_buf) as usize;
             if (reader.position() as usize + len) > ciphertext.len() {
-                return Err(Error::Key(
+                return Err(AesGcmSystemError::MalformedCiphertext(
                     "Ciphertext is truncated or malformed.".to_string(),
                 ));
             }
@@ -196,7 +227,7 @@ impl SymmetricParallelSystem for AesGcmSystem {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(parallelism_config.parallelism)
             .build()
-            .map_err(|e| Error::Key(e.to_string()))?;
+            .map_err(|e| AesGcmSystemError::ParallelSetup(e.to_string()))?;
 
         let additional_data = additional_data.map(|d| d.to_vec());
 
@@ -271,7 +302,7 @@ mod tests {
         let ciphertext = AesGcmSystem::encrypt(&key1, plaintext, None).unwrap();
         let result = AesGcmSystem::decrypt(&key2, &ciphertext, None);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -291,7 +322,7 @@ mod tests {
         // 解密应该失败
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
 
-        assert!(result.is_err(), "对被篡改的密文进行解密应该失败");
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -305,7 +336,7 @@ mod tests {
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
         let result = AesGcmSystem::decrypt(&key, &ciphertext, Some(tampered_aad));
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -329,12 +360,15 @@ mod tests {
     fn test_import_invalid_key() {
         let invalid_encoded_key = "not-a-base64-key";
         let result = AesGcmSystem::import_key(invalid_encoded_key);
-        assert!(matches!(result, Err(Error::Key(_))));
+        assert!(matches!(result, Err(AesGcmSystemError::Base64Decode(_))));
 
         let short_key_bytes = vec![0u8; 16];
         let short_encoded_key = general_purpose::STANDARD.encode(&short_key_bytes);
         let result_short = AesGcmSystem::import_key(&short_encoded_key);
-        assert!(matches!(result_short, Err(Error::Key(_))));
+        assert!(matches!(
+            result_short,
+            Err(AesGcmSystemError::InvalidKeySize { .. })
+        ));
     }
 
     #[test]
@@ -352,14 +386,14 @@ mod tests {
 
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
         assert!(
-            matches!(result, Err(Error::DecryptionFailed(e)) if e.contains("length does not match length prefix"))
+            matches!(result, Err(AesGcmSystemError::MalformedCiphertext(e)) if e.contains("length does not match length prefix"))
         );
 
         // 测试过短的密文 (无法包含长度前缀)
         let short_ciphertext = vec![0, 1, 2];
         let result_short = AesGcmSystem::decrypt(&key, &short_ciphertext, None);
         assert!(
-            matches!(result_short, Err(Error::DecryptionFailed(e)) if e.contains("too short to contain length prefix"))
+            matches!(result_short, Err(AesGcmSystemError::MalformedCiphertext(e)) if e.contains("too short to contain length prefix"))
         );
 
         // 测试过短的密文 (包含长度前缀但数据不足)
@@ -369,7 +403,7 @@ mod tests {
         final_ciphertext.append(&mut another_short_ciphertext);
         let result_another_short = AesGcmSystem::decrypt(&key, &final_ciphertext, None);
         assert!(
-            matches!(result_another_short, Err(Error::DecryptionFailed(e)) if e.contains("too short"))
+            matches!(result_another_short, Err(AesGcmSystemError::MalformedCiphertext(e)) if e.contains("too short"))
         );
     }
 
@@ -395,7 +429,7 @@ mod tests {
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, Some(aad)).unwrap();
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -431,15 +465,13 @@ mod tests {
         let mut ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
 
         // Tamper the tag (located after the nonce)
-        if ciphertext.len() >= NONCE_SIZE + TAG_SIZE {
-            ciphertext[NONCE_SIZE] ^= 0xff;
+        // The length prefix is 4 bytes long. The nonce is 12 bytes.
+        if ciphertext.len() >= 4 + NONCE_SIZE + TAG_SIZE {
+            ciphertext[4 + NONCE_SIZE] ^= 0xff;
         }
 
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
-        assert!(
-            result.is_err(),
-            "Decryption should fail with a tampered tag"
-        );
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -449,16 +481,13 @@ mod tests {
         let plaintext = b"some data";
         let mut ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
 
-        // Tamper the nonce
-        if !ciphertext.is_empty() {
-            ciphertext[0] ^= 0xff;
+        // Tamper the nonce (after the 4-byte length prefix)
+        if ciphertext.len() > 4 {
+            ciphertext[4] ^= 0xff;
         }
 
         let result = AesGcmSystem::decrypt(&key, &ciphertext, None);
-        assert!(
-            result.is_err(),
-            "Decryption should fail with a tampered nonce"
-        );
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[test]
@@ -470,10 +499,7 @@ mod tests {
 
         let ciphertext = AesGcmSystem::encrypt(&key, plaintext, None).unwrap();
         let result = AesGcmSystem::decrypt(&key, &ciphertext, Some(aad));
-        assert!(
-            result.is_err(),
-            "Decryption should fail when AAD is unexpectedly provided"
-        );
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 
     #[cfg(feature = "parallel")]
@@ -561,6 +587,6 @@ mod tests {
 
         let result =
             AesGcmSystem::par_decrypt(&key, &ciphertext, Some(wrong_aad), &parallelism_config);
-        assert!(matches!(result, Err(Error::DecryptionFailed(_))));
+        assert!(matches!(result, Err(AesGcmSystemError::DecryptionFailed)));
     }
 }
