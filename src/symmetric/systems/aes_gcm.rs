@@ -61,7 +61,9 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
     fn generate_key(_config: &CryptoConfig) -> Result<Self::Key, Self::Error> {
         let mut key_bytes = vec![0u8; Self::KEY_SIZE];
         use rand_core::{OsRng, TryRngCore};
-        OsRng.try_fill_bytes(&mut key_bytes).map_err(|e| AesGcmSystemError::KeyGeneration(Box::new(e)))?;
+        OsRng
+            .try_fill_bytes(&mut key_bytes)
+            .map_err(|e| AesGcmSystemError::KeyGeneration(Box::new(e)))?;
         Ok(AesGcmKey(key_bytes))
     }
 
@@ -76,11 +78,9 @@ impl SymmetricCryptographicSystem for AesGcmSystem {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
         let mut buffer = plaintext.to_vec();
-        let tag = cipher.encrypt_in_place_detached(
-            &nonce,
-            additional_data.unwrap_or(&[]),
-            &mut buffer,
-        ).map_err(|e| AesGcmSystemError::EncryptionFailed(Box::new(e)))?;
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce, additional_data.unwrap_or(&[]), &mut buffer)
+            .map_err(|e| AesGcmSystemError::EncryptionFailed(Box::new(e)))?;
 
         let mut raw_ciphertext = Vec::with_capacity(NONCE_SIZE + TAG_SIZE + buffer.len());
         raw_ciphertext.extend_from_slice(nonce.as_slice());
@@ -216,7 +216,9 @@ impl SymmetricParallelSystem for AesGcmSystem {
                 ));
             }
             let mut chunk_buf = vec![0u8; len];
-            reader.read_exact(&mut chunk_buf).map_err(|e| AesGcmSystemError::Io(Box::new(e)))?;
+            reader
+                .read_exact(&mut chunk_buf)
+                .map_err(|e| AesGcmSystemError::Io(Box::new(e)))?;
 
             // 将 [长度][数据] 作为一个整体传递给解密器
             let mut final_chunk = len_buf.to_vec();

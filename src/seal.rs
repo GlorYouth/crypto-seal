@@ -8,7 +8,9 @@ use tokio::fs as tokio_fs;
 
 use crate::common::ConfigFile;
 use crate::common::config::ConfigManager;
+use crate::common::errors::CryptographyError;
 use crate::common::errors::Error;
+use crate::common::errors::KeyManagementError;
 use crate::common::header::SealMode;
 use crate::common::traits::{AsymmetricAlgorithm, SecureKeyStorage};
 use crate::engine::SealEngine;
@@ -50,7 +52,7 @@ impl Seal {
         let mut seed_bytes = vec![0u8; MASTER_SEED_SIZE];
         OsRng
             .try_fill_bytes(&mut seed_bytes)
-            .map_err(|e| Error::Cryptography(e.to_string()))?;
+            .map_err(|e| Error::Cryptography(CryptographyError::RandomnessError(e.to_string())))?;
         let master_seed = SecretBox::new(Box::from(MasterSeed(seed_bytes)));
 
         // 2. 创建一个默认的 VaultPayload。
@@ -171,9 +173,7 @@ impl Seal {
             // 在 engine() 调用中不应自动轮换，这应该是一个明确的用户操作。
             // 我们返回一个错误，提示用户需要先轮换/设置密钥。
             // Throwing an error here to guide the user.
-            return Err(Error::KeyManagement(
-                "Hybrid mode requires an initial asymmetric key. Please call `rotate_asymmetric_key` first.".to_string(),
-            ));
+            return Err(Error::KeyManagement(KeyManagementError::NoPrimaryKey));
         }
 
         // 4. 创建并返回引擎
@@ -189,8 +189,9 @@ impl Seal {
     ) -> Result<Vec<u8>, Error> {
         let hk = Hkdf::<Sha256>::new(None, &master_seed.expose_secret().0);
         let mut okm = vec![0u8; output_len];
-        hk.expand(context, &mut okm)
-            .map_err(|e| Error::Cryptography(format!("Failed to derive key using HKDF: {}", e)))?;
+        hk.expand(context, &mut okm).map_err(|e| {
+            Error::Cryptography(CryptographyError::KeyDerivationError(e.to_string()))
+        })?;
         Ok(okm)
     }
 

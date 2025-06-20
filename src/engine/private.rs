@@ -1,4 +1,5 @@
 use crate::asymmetric::errors::AsymmetricError;
+use crate::common::errors::KeyManagementError;
 use crate::common::header::{Header, HeaderPayload, SealMode};
 use crate::common::traits::{Algorithm, AsymmetricAlgorithm, SymmetricAlgorithm};
 use crate::engine::SealEngine;
@@ -31,9 +32,13 @@ impl SealEngine {
 
         // 检查模式是否匹配。
         if key_manager.mode() != header.mode {
-            return Err(Error::KeyManagement(
-                "Engine mode does not match header mode.".to_string(),
-            ));
+            return Err(Error::KeyManagement(KeyManagementError::ModeMismatch(
+                format!(
+                    "Engine mode ({:?}) does not match header mode ({:?}).",
+                    key_manager.mode(),
+                    header.mode
+                ),
+            )));
         }
 
         match &header.payload {
@@ -95,11 +100,9 @@ impl SealEngine {
                         use crate::AsymmetricCryptographicSystem;
                         use crate::asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
 
-                        let sig_to_verify = signature.as_ref().ok_or_else(|| {
-                            Error::Asymmetric(AsymmetricError::Signature(
-                                "Signature missing for RsaKyber768.".to_string(),
-                            ))
-                        })?;
+                        let sig_to_verify = signature
+                            .as_ref()
+                            .ok_or(Error::Asymmetric(AsymmetricError::SignatureMissing))?;
 
                         let (kek_pub, kek_priv) = key_manager
                             .get_asymmetric_keypair::<RsaKyberCryptoSystem>(kek_id)?
@@ -112,12 +115,7 @@ impl SealEngine {
 
                         // 在解密前必须验证签名
                         RsaKyberCryptoSystem::verify(&kek_pub, encrypted_dek, sig_to_verify)
-                            .map_err(|e| {
-                                Error::Asymmetric(AsymmetricError::Verification(format!(
-                                    "Signature verification failed: {}",
-                                    e
-                                )))
-                            })?;
+                            .map_err(AsymmetricError::from)?;
 
                         let dek = RsaKyberCryptoSystem::decrypt(&kek_priv, encrypted_dek, None)
                             .map_err(AsymmetricError::from)?;
@@ -133,7 +131,7 @@ impl SealEngine {
         let primary_meta = self
             .key_manager
             .get_primary_key_metadata()
-            .ok_or_else(|| Error::KeyManagement("No primary key available.".to_string()))?
+            .ok_or(Error::KeyManagement(KeyManagementError::NoPrimaryKey))?
             .clone(); // Clone to avoid borrow checker issues
 
         let (header_payload, dek) = match self.key_manager.mode() {
@@ -156,9 +154,7 @@ impl SealEngine {
                         };
                         Ok((payload, key.0))
                     }
-                    _ => Err(Error::KeyManagement(
-                        "Mismatched key type in metadata for symmetric mode.".to_string(),
-                    )),
+                    _ => Err(Error::KeyManagement(KeyManagementError::KeyTypeMismatch)),
                 }?
             }
             SealMode::Hybrid => {
@@ -248,9 +244,7 @@ impl SealEngine {
                             Ok((payload, dek.0))
                         }
                     },
-                    _ => Err(Error::KeyManagement(
-                        "Mismatched key type in metadata for hybrid mode.".to_string(),
-                    )),
+                    _ => Err(Error::KeyManagement(KeyManagementError::KeyTypeMismatch)),
                 }?
             }
         };

@@ -12,8 +12,6 @@ pub enum AsymmetricError {
     Kyber(#[from] KyberSystemError),
     #[error("Hybrid RSA/Kyber error: {0}")]
     RsaKyber(#[from] RsaKyberSystemError),
-    #[error("Signature error: {0}")]
-    Signature(String),
-    #[error("Verification failed: {0}")]
-    Verification(String),
+    #[error("Signature is missing where required")]
+    SignatureMissing,
 }
