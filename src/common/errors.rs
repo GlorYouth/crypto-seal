@@ -42,13 +42,13 @@ pub enum Error {
     Storage(#[from] ContainerError),
 
     #[error("Cryptography error: {0}")]
-    Cryptography(String),
+    Cryptography(#[from] CryptographyError),
 
     #[error("Password hashing failed")]
     PasswordHash(#[from] argon2::password_hash::Error),
 
     #[error("Key management error: {0}")]
-    KeyManagement(String),
+    KeyManagement(#[from] KeyManagementError),
 
     #[error("Key not found with id: {0}")]
     KeyNotFound(String),
@@ -61,6 +61,24 @@ pub enum Error {
 
     #[error("Symmetric cryptographic error")]
     Symmetric(#[from] SymmetricError),
+}
+
+#[derive(Error, Debug)]
+pub enum KeyManagementError {
+    #[error("The operation is not supported in the current mode: {0}")]
+    ModeMismatch(String),
+    #[error("No primary key is available to perform the operation.")]
+    NoPrimaryKey,
+    #[error("The key type found in metadata does not match the expected type for this operation.")]
+    KeyTypeMismatch,
+}
+
+#[derive(Error, Debug)]
+pub enum CryptographyError {
+    #[error("Randomness generation failed: {0}")]
+    RandomnessError(String),
+    #[error("Key derivation failed: {0}")]
+    KeyDerivationError(String),
 }
 
 // thiserror 自动处理 Display, StdError 和所有 #[from] 的实现

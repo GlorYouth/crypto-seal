@@ -2,6 +2,7 @@
 use crate::Error;
 use crate::asymmetric::errors::AsymmetricError;
 use crate::common::config::ConfigFile;
+use crate::common::errors::KeyManagementError;
 use crate::common::header::SealMode;
 use crate::common::traits::{
     Algorithm, AsymmetricAlgorithm, KeyMetadata, KeyStatus, SecureKeyStorage,
@@ -13,6 +14,7 @@ use crate::symmetric::traits::SymmetricCryptographicSystem;
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use secrecy::{ExposeSecret, SecretBox, SecretString};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -278,9 +280,9 @@ impl KeyManager {
         SymmetricError: From<<T as SymmetricCryptographicSystem>::Error>,
     {
         if self.mode != SealMode::Symmetric {
-            return Err(Error::KeyManagement(
+            return Err(Error::KeyManagement(KeyManagementError::ModeMismatch(
                 "Cannot derive symmetric key in hybrid mode.".to_string(),
-            ));
+            )));
         }
 
         if let Some(metadata) = self.find_key_metadata_by_id(key_id) {
@@ -306,9 +308,9 @@ impl KeyManager {
             From<<T as crate::asymmetric::traits::AsymmetricCryptographicSystem>::Error>,
     {
         if self.mode != SealMode::Hybrid {
-            return Err(Error::KeyManagement(
+            return Err(Error::KeyManagement(KeyManagementError::ModeMismatch(
                 "Cannot get asymmetric keypair in symmetric mode.".to_string(),
-            ));
+            )));
         }
 
         if let Some(metadata) = self.find_key_metadata_by_id(key_id) {

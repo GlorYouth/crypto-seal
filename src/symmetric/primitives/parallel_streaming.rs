@@ -11,7 +11,7 @@
 
 use crate::common::config::{ParallelismConfig, StreamingConfig};
 use crate::common::streaming::StreamingResult;
-use crate::symmetric::errors::SymmetricError;
+use crate::symmetric::errors::{ParallelOperationError, SymmetricError};
 use crate::symmetric::traits::{SymmetricCryptographicSystem, SymmetricParallelStreamingSystem};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -122,7 +122,7 @@ where
 
                     if work_tx.send((chunk_index, buffer)).is_err() {
                         return Err(SymmetricError::ParallelOperation(
-                            "Parallel stream failed: work channel closed prematurely".to_string(),
+                            ParallelOperationError::ChannelClosed,
                         ));
                     }
                     chunk_index += 1;
@@ -256,7 +256,7 @@ where
 
                     if work_tx.send((chunk_index, block_with_len)).is_err() {
                         return Err(SymmetricError::ParallelOperation(
-                            "Parallel stream failed: work channel closed prematurely".to_string(),
+                            ParallelOperationError::ChannelClosed,
                         ));
                     }
                     chunk_index += 1;

@@ -10,8 +10,14 @@ pub enum SymmetricError {
     Io(#[from] std::io::Error),
 
     #[error("Parallel Operation error: {0}")]
-    ParallelOperation(String),
+    ParallelOperation(ParallelOperationError),
 
     #[error("Async Join error: {0}")]
     AsyncTask(#[from] tokio::task::JoinError),
+}
+
+#[derive(Error, Debug)]
+pub enum ParallelOperationError {
+    #[error("Parallel stream failed: work channel closed prematurely")]
+    ChannelClosed,
 }
