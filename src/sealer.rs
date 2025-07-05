@@ -19,12 +19,24 @@ pub struct SealRotator {
 
 impl SealRotator {
     /// Creates a new `SealRotator`.
+    ///
+    /// # Arguments
+    ///
+    /// * `manager`: The `RotatingKeyManager` to use for key rotation.
+    ///
+    /// # Returns
+    ///
+    /// A `SealRotator` instance.
     pub fn new(manager: Arc<RotatingKeyManager>) -> Self {
         Self { manager }
     }
 
     /// Prepares an encryption operation by providing a `Sealer` instance.
     /// The `Sealer` is configured with the current primary key.
+    ///
+    /// # Returns
+    ///
+    /// A `Sealer` instance.
     pub fn sealer(&self) -> Result<Sealer, Error> {
         let (metadata, key) = self.manager.get_encryption_key()?;
         Ok(Sealer {
@@ -34,6 +46,10 @@ impl SealRotator {
     }
 
     /// Prepares a decryption operation by providing an `Unsealer` instance.
+    ///
+    /// # Returns
+    ///
+    /// An `Unsealer` instance.
     pub fn unsealer(&self) -> Unsealer {
         Unsealer {
             inner: SymmetricSeal::new()
@@ -56,6 +72,8 @@ impl Sealer {
     /// * `aad`: The associated data to be authenticated.
     ///
     /// # Returns
+    ///
+    /// A `Sealer` with the associated data (AAD) set.
     pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
         Sealer {
             inner: self.inner.with_aad(aad),
@@ -64,6 +82,12 @@ impl Sealer {
 
     /// Encrypts a block of data using the configured primary key.
     /// `seal-flow` will automatically prepend the key_id to the ciphertext.
+    ///
+    /// # Arguments
+    ///
+    /// * `plaintext`: The plaintext data to be encrypted.
+    ///
+    /// # Returns
     pub fn seal(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         self.inner.to_vec::<Aes256Gcm>(plaintext)
             .map_err(Error::from)
@@ -71,6 +95,12 @@ impl Sealer {
 
     /// Encrypts a block of data in parallel using the configured primary key.
     /// `seal-flow` will automatically prepend the key_id to the ciphertext.
+    ///
+    /// # Arguments
+    ///
+    /// * `plaintext`: The plaintext data to be encrypted.
+    ///
+    /// # Returns
     pub fn seal_parallel(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         self.inner.to_vec_parallel::<Aes256Gcm>(plaintext)
             .map_err(Error::from)
@@ -78,6 +108,12 @@ impl Sealer {
 
     /// Returns a `Write` stream that will encrypt data written to it.
     /// `seal-flow` will automatically write the key_id to the stream first.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer`: The writer to which the encrypted data will be written.
+    ///
+    /// # Returns
     pub fn seal_stream<W: Write>(self, writer: W) -> Result<impl Write, Error> {
         self.inner.into_writer::<Aes256Gcm, _>(writer)
             .map_err(Error::from)
@@ -85,6 +121,14 @@ impl Sealer {
 
     /// Encrypts data from a reader and writes to a writer using parallel processing.
     /// `seal-flow` will automatically write the key_id to the stream first.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader`: The reader from which the data will be read.
+    /// * `writer`: The writer to which the encrypted data will be written.
+    ///
+    /// # Returns
+    ///
     pub fn seal_pipe_parallel<R, W>(self, reader: R, writer: W) -> Result<(), Error>
     where
         R: Read + Send,
@@ -97,6 +141,14 @@ impl Sealer {
 
     /// Returns an `AsyncWrite` stream that will encrypt data written to it.
     /// `seal-flow` will automatically write the key_id to the stream first.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer`: The writer to which the encrypted data will be written.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` that contains the encrypted data.
     #[cfg(feature = "async")]
     pub async fn seal_stream_async<W: AsyncWrite + Unpin + Send>(
         self,
