@@ -9,7 +9,9 @@ readme = "README.md"
 keywords = ["cryptography", "post-quantum", "seal-flow", "hybrid-encryption"]
 categories = ["cryptography"]
 
+
 [dependencies]
+
 # 核心依赖
 seal-flow = { path = "../seal-flow" }
 
@@ -33,7 +35,10 @@ thiserror = "2.0.12"
 bincode = { version = "2.0.1", features = ["serde"] }
 
 [features]
+default = ["async"]
+
 secure-storage = []
+async = []
 
 [dev-dependencies]
 criterion = "0.5"
