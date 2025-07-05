@@ -4,7 +4,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::error::Error;
-use crate::prelude::*;
 use crate::rotation::RotatingKeyManager;
 use seal_flow::algorithms::symmetric::Aes256Gcm;
 use seal_flow::seal::SymmetricSeal;
@@ -88,12 +87,24 @@ pub struct PendingInMemoryDecryptorWrapper<'a> {
 }
 
 impl<'a> PendingInMemoryDecryptorWrapper<'a> {
+    /// Sets the associated data (AAD) for the decryption operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `aad`: The associated data to be authenticated.
+    ///
+    /// # Returns
     pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
         PendingInMemoryDecryptorWrapper {
             inner: self.inner.with_aad(aad),
         }
     }
 
+    /// Finalizes the decryption operation and returns the decrypted data.
+    ///
+    /// # Returns
+    ///
+    /// The decrypted data.
     pub fn finalize(self) -> Result<Vec<u8>, Error> {
         self.inner.resolve_and_decrypt().map_err(Error::from)
     }
@@ -108,6 +119,13 @@ pub struct PendingStreamingDecryptorWrapper<'a, R: Read + 'a> {
 
 impl<'a, R: Read + 'a> PendingStreamingDecryptorWrapper<'a, R> {
 
+    /// Sets the associated data (AAD) for the decryption operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `aad`: The associated data to be authenticated.
+    ///
+    /// # Returns
     pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
         PendingStreamingDecryptorWrapper {
             inner: self.inner.with_aad(aad),
@@ -115,6 +133,11 @@ impl<'a, R: Read + 'a> PendingStreamingDecryptorWrapper<'a, R> {
         }
     }
 
+    /// Finalizes the decryption operation and returns a `Read` stream.
+    ///
+    /// # Returns
+    ///
+    /// A `Box<dyn Read + 'a>` that can be used to read the decrypted data.
     pub fn finalize(self) -> Result<Box<dyn Read + 'a>, Error> {
         self.inner.resolve_and_decrypt().map_err(Error::from)
     }
