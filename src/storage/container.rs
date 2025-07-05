@@ -1,226 +1,162 @@
-#![cfg(feature = "secure-storage")]
+//! An encrypted container for password-protected key storage.
 
+use seal_flow::secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
-use secrecy::{ExposeSecret, SecretString};
 use chrono::Utc;
-use argon2::{
-    password_hash::{
-        PasswordHasher, SaltString
+use base64::{Engine as _, engine::general_purpose};
+
+use seal_flow::{
+    seal::SymmetricSeal,
+    algorithms::{
+        kdf::passwd::Argon2,
+        symmetric::Aes256Gcm,
     },
-    Argon2, ParamsBuilder
+    prelude::*,
 };
+use crate::error::Error;
 
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce
-};
-use argon2::password_hash::rand_core::{OsRng, RngCore};
-use crate::common::traits::SecureKeyStorage;
-use crate::common::errors::Error;
-use crate::common::utils::{from_base64, to_base64, CryptoConfig};
-
-/// 加密的密钥容器，实现了SecureKeyStorage特征
-/// 提供密码保护的密钥存储功能
+/// An encrypted container for storing a key, protected by a user-provided password.
+/// It uses Argon2 for key derivation from the password, and AES-256-GCM to encrypt the key data.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct EncryptedKeyContainer {
-    /// 加密的密钥数据
+    /// Base64-encoded encrypted data block, produced by `SymmetricSeal`.
     encrypted_data: String,
     
-    /// 用于AES-GCM的随机nonce
-    nonce: String,
-    
-    /// Argon2密钥派生盐值
+    /// Base64-encoded salt used for Argon2 key derivation.
     salt: String,
     
-    /// 算法标识符
+    /// Algorithm identifier of the key being stored (for metadata purposes).
     algorithm_id: String,
     
-    /// 创建时间 (ISO 8601格式)
+    /// Creation timestamp in ISO 8601 format.
     created_at: String,
     
-    /// Argon2内存成本参数（KB）
+    /// Argon2 memory cost parameter (in KiB).
     #[serde(default = "default_memory_cost")]
     memory_cost: u32,
     
-    /// Argon2时间成本参数（迭代次数）
+    /// Argon2 time cost parameter (number of iterations).
     #[serde(default = "default_time_cost")]
     time_cost: u32,
+    
+    /// Argon2 parallelism cost parameter.
+    #[serde(default = "default_parallelism_cost")]
+    parallelism_cost: u32,
 }
 
-fn default_memory_cost() -> u32 {
-    19456 // 19MB
-}
-
-fn default_time_cost() -> u32 {
-    2
-}
+fn default_memory_cost() -> u32 { 19456 } // 19 MiB
+fn default_time_cost() -> u32 { 2 }
+fn default_parallelism_cost() -> u32 { 1 }
 
 impl EncryptedKeyContainer {
-    /// 生成新的密钥容器
+    /// Creates a new encrypted key container with default Argon2 parameters.
     pub fn new<K: AsRef<[u8]>>(
-        password: &SecretString, 
-        key_data: K,
-        algorithm_id: &str
-    ) -> Result<Self, Error> {
-        Self::encrypt_key(password, key_data, algorithm_id)
-    }
-    
-    /// 使用自定义配置生成新的密钥容器
-    pub fn new_with_config<K: AsRef<[u8]>>(
-        password: &SecretString, 
+        password: &SecretBox<[u8]>,
         key_data: K,
         algorithm_id: &str,
-        config: &CryptoConfig
     ) -> Result<Self, Error> {
-        Self::encrypt_key_with_config(password, key_data, algorithm_id, config)
-    }
-    
-    /// 从密钥容器中提取密钥
-    pub fn get_key(&self, password: &SecretString) -> Result<Vec<u8>, Error> {
-        let secure_bytes = self.decrypt_key(password)?;
-        Ok(secure_bytes.to_vec())
-    }
-    
-    /// 使用自定义参数加密密钥
-    pub fn encrypt_key_with_config<K: AsRef<[u8]>>(
-        password: &SecretString,
-        key_data: K,
-        algorithm_id: &str,
-        config: &CryptoConfig
-    ) -> Result<Self, Error> {
-        // 生成随机盐值用于密钥派生
-        let salt = SaltString::generate(&mut OsRng);
-        
-        // 使用配置的参数创建Argon2实例
-        let mut params_builder = ParamsBuilder::new();
-        params_builder
-            .m_cost(config.argon2_memory_cost)
-            .t_cost(config.argon2_time_cost)
-            .p_cost(1) // 并行度参数
-            .output_len(32); // 输出长度为32字节（256位）
-            
-        let params = params_builder
-            .build()
-            .map_err(|e| Error::KeyStorage(format!("Argon2参数无效: {}", e)))?;
-            
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-        
-        // 使用Argon2派生加密密钥
-        let password_bytes = password.expose_secret().as_bytes();
-        let password_hash = argon2
-            .hash_password(password_bytes, &salt)
-            .map_err(|e| Error::KeyStorage(format!("密码哈希失败: {}", e)))?;
-        
-        // 安全地获取哈希值
-        let hash = password_hash.hash
-            .ok_or_else(|| Error::KeyStorage("无法生成密码哈希".to_string()))?;
-        let derived_key = hash.as_bytes();
-        
-        // 创建AES-GCM加密器
-        let cipher = Aes256Gcm::new_from_slice(derived_key)
-            .map_err(|e| Error::KeyStorage(format!("创建加密器失败: {}", e)))?;
-        
-        // 生成随机nonce并加密数据
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher
-            .encrypt(nonce, key_data.as_ref())
-            .map_err(|e| Error::KeyStorage(format!("加密密钥失败: {}", e)))?;
-        
-        Ok(Self {
-            encrypted_data: to_base64(&ciphertext),
-            nonce: to_base64(&nonce_bytes),
-            salt: salt.as_str().to_string(),
-            algorithm_id: algorithm_id.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            memory_cost: config.argon2_memory_cost,
-            time_cost: config.argon2_time_cost,
-        })
-    }
-}
-
-impl SecureKeyStorage for EncryptedKeyContainer {
-    type Error = Error;
-    
-    fn encrypt_key<K: AsRef<[u8]>>(
-        password: &SecretString, 
-        key_data: K,
-        algorithm_id: &str
-    ) -> Result<Self, Self::Error> {
-        // 使用默认配置
-        Self::encrypt_key_with_config(
+        Self::encrypt_key(
             password,
-            key_data, 
+            key_data,
             algorithm_id,
-            &CryptoConfig::default()
+            default_memory_cost(),
+            default_time_cost(),
+            default_parallelism_cost(),
         )
     }
     
-    fn decrypt_key(&self, password: &SecretString) -> Result<Vec<u8>, Self::Error> {
-        // 重建盐值和派生密钥
-        let salt_str = &self.salt;
-        let salt = SaltString::from_b64(salt_str)
-            .map_err(|e| Error::KeyStorage(format!("无效的盐值: {}", e)))?;
-        
-        // 使用存储的参数重新创建Argon2实例
-        let mut params_builder = ParamsBuilder::new();
-        params_builder
-            .m_cost(self.memory_cost)
-            .t_cost(self.time_cost)
-            .p_cost(1) // 并行度参数
-            .output_len(32); // 输出长度为32字节（256位）
-            
-        let params = params_builder
-            .build()
-            .map_err(|e| Error::KeyStorage(format!("Argon2参数无效: {}", e)))?;
-            
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-        
-        let password_bytes = password.expose_secret().as_bytes();
-        let password_hash = argon2
-            .hash_password(password_bytes, &salt)
-            .map_err(|e| Error::KeyStorage(format!("密码哈希失败: {}", e)))?;
-        
-        // 安全地获取哈希值
-        let hash = password_hash.hash
-            .ok_or_else(|| Error::KeyStorage("无法生成密码哈希".to_string()))?;
-        let derived_key = hash.as_bytes();
-        
-        // 创建AES-GCM解密器
-        let cipher = Aes256Gcm::new_from_slice(derived_key)
-            .map_err(|e| Error::KeyStorage(format!("创建解密器失败: {}", e)))?;
-        
-        // 解码nonce和密文
-        let nonce_bytes = from_base64(&self.nonce)?;
-        let ciphertext = from_base64(&self.encrypted_data)?;
-        
-        // 解密密钥数据
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let decrypted = cipher
-            .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|e| Error::KeyStorage(format!("解密密钥失败，密码可能不正确: {}", e)))?;
-        
-        Ok(decrypted)
+    /// Creates a new encrypted key container with custom Argon2 parameters.
+    pub fn new_with_params<K: AsRef<[u8]>>(
+        password: &SecretBox<[u8]>,
+        key_data: K,
+        algorithm_id: &str,
+        memory_cost: u32,
+        time_cost: u32,
+        parallelism_cost: u32,
+    ) -> Result<Self, Error> {
+        Self::encrypt_key(password, key_data, algorithm_id, memory_cost, time_cost, parallelism_cost)
     }
     
-    fn algorithm_id(&self) -> &str {
-        &self.algorithm_id
+    /// Decrypts and returns the raw key bytes from the container.
+    pub fn get_key(&self, password: &SecretBox<[u8]>) -> Result<Vec<u8>, Error> {
+        self.decrypt_key(password)
     }
-    
-    fn created_at(&self) -> &str {
-        &self.created_at
-    }
-    
-    fn to_json(&self) -> Result<String, Self::Error> {
+
+    /// Serializes the container to a JSON string.
+    pub fn to_json(&self) -> Result<String, Error> {
         serde_json::to_string(self)
-            .map_err(|e| Error::Serialization(format!("序列化容器失败: {}", e)))
+            .map_err(|e| Error::SerializeError(e))
+    }
+
+    /// Deserializes a container from a JSON string.
+    pub fn from_json(json: &str) -> Result<Self, Error> {
+        serde_json::from_str(json)
+            .map_err(|e| Error::DeserializeError(e))
     }
     
-    fn from_json(json: &str) -> Result<Self, Self::Error> {
-        serde_json::from_str(json)
-            .map_err(|e| Error::Serialization(format!("解析容器失败: {}", e)))
+    /// The core encryption logic.
+    fn encrypt_key<K: AsRef<[u8]>>(
+        password: &SecretBox<[u8]>,
+        key_data: K,
+        algorithm_id: &str,
+        memory_cost: u32,
+        time_cost: u32,
+        parallelism_cost: u32,
+    ) -> Result<Self, Error> {
+        // 1. Setup KDF for password derivation.
+        let argon2 = Argon2::new(memory_cost, time_cost, parallelism_cost);
+        let salt = argon2.generate_salt()?;
+        let output_len = <Aes256Gcm as SymmetricCipher>::KEY_SIZE;
+
+        // 2. Derive a temporary "wrapping key" from the password.
+        let wrapping_key = SymmetricKey::derive_from_password(
+            password,
+            &argon2,
+            &salt,
+            output_len,
+        )?;
+
+        // 3. Use SymmetricSeal to encrypt the actual key_data with the wrapping key.
+        let ciphertext = SymmetricSeal::new()
+            .encrypt(wrapping_key, "password-derived-key".to_string())
+            .to_vec::<Aes256Gcm>(key_data.as_ref())?;
+        
+        Ok(Self {
+            encrypted_data: general_purpose::STANDARD.encode(&ciphertext),
+            salt: general_purpose::STANDARD.encode(salt),
+            algorithm_id: algorithm_id.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            memory_cost,
+            time_cost,
+            parallelism_cost,
+        })
+    }
+
+    /// The core decryption logic.
+    fn decrypt_key(&self, password: &SecretBox<[u8]>) -> Result<Vec<u8>, Error> {
+        // 1. Decode the salt from Base64.
+        let salt_bytes = general_purpose::STANDARD.decode(&self.salt)?;
+
+        // 2. Re-derive the same "wrapping key" using the stored parameters.
+        let argon2 = Argon2::new(self.memory_cost, self.time_cost, self.parallelism_cost);
+        let output_len = <Aes256Gcm as SymmetricCipher>::KEY_SIZE;
+        
+        let wrapping_key = SymmetricKey::derive_from_password(
+            password,
+            &argon2,
+            &salt_bytes,
+            output_len,
+        )?;
+
+        // 3. Decode the ciphertext and use SymmetricSeal to decrypt it.
+        let ciphertext = general_purpose::STANDARD.decode(&self.encrypted_data)?;
+        
+        let decrypted_bytes = SymmetricSeal::new()
+            .decrypt()
+            .slice(&ciphertext)?
+            .with_key(wrapping_key)?;
+
+        Ok(decrypted_bytes)
     }
 }
 
@@ -229,80 +165,65 @@ mod tests {
     use super::*;
     
     #[test]
-    fn encrypted_container_roundtrip() {
-        let password = SecretString::new(Box::from("test-password"));
+    fn encrypted_container_roundtrip() -> Result<(), Error> {
+        let password = SecretBox::new(Box::from(b"test-password".as_slice()));
         let key_data = b"this-is-a-secret-key";
         let algorithm_id = "test-algorithm";
         
-        // 加密密钥
-        let container = EncryptedKeyContainer::encrypt_key(&password, key_data, algorithm_id).unwrap();
-        
-        // 解密密钥
-        let decrypted = container.decrypt_key(&password).unwrap();
+        let container = EncryptedKeyContainer::new(&password, key_data, algorithm_id)?;
+        let decrypted = container.get_key(&password)?;
         assert_eq!(&decrypted, key_data);
         
-        // 验证其他字段
-        assert_eq!(container.algorithm_id(), algorithm_id);
-        assert!(!container.created_at().is_empty());
+        assert_eq!(container.algorithm_id, algorithm_id);
+        assert!(!container.created_at.is_empty());
+        Ok(())
     }
     
     #[test]
-    fn json_serialization_roundtrip() {
-        let password = SecretString::new(Box::from("test-password"));
-        let key_data = b"this-is-a-secret-key";
-        let algorithm_id = "test-algorithm";
+    fn json_serialization_roundtrip() -> Result<(), Error> {
+        let password = SecretBox::new(Box::from(b"test-password".as_slice()));
+        let key_data = b"another-secret";
         
-        // 创建并序列化容器
-        let container = EncryptedKeyContainer::encrypt_key(&password, key_data, algorithm_id).unwrap();
-        let json = container.to_json().unwrap();
+        let container = EncryptedKeyContainer::new(&password, key_data, "test-algo-2")?;
+        let json = container.to_json()?;
+        let container2 = EncryptedKeyContainer::from_json(&json)?;
         
-        // 反序列化和解密
-        let restored = EncryptedKeyContainer::from_json(&json).unwrap();
-        let decrypted = restored.decrypt_key(&password).unwrap();
-        
-        assert_eq!(decrypted, key_data);
-        assert_eq!(restored.algorithm_id(), container.algorithm_id());
-        assert_eq!(restored.created_at(), container.created_at());
+        assert_eq!(container.encrypted_data, container2.encrypted_data);
+        assert_eq!(container.salt, container2.salt);
+        assert_eq!(container.algorithm_id, container2.algorithm_id);
+
+        let decrypted = container2.get_key(&password)?;
+        assert_eq!(&decrypted, key_data);
+        Ok(())
     }
     
     #[test]
-    fn wrong_password_fails() {
-        let password = SecretString::new(Box::from("correct-password"));
-        let wrong_password = SecretString::new(Box::from("wrong-password"));
-        let key_data = b"this-is-a-secret-key";
+    fn wrong_password_fails() -> Result<(), Error> {
+        let password = SecretBox::new(Box::from(b"correct-password".as_slice()));
+        let wrong_password = SecretBox::new(Box::from(b"wrong-password".as_slice()));
         
-        // 加密密钥
-        let container = EncryptedKeyContainer::encrypt_key(&password, key_data, "test").unwrap();
+        let container = EncryptedKeyContainer::new(&password, b"some key data", "id")?;
+        let result = container.get_key(&wrong_password);
         
-        // 使用错误密码尝试解密
-        let result = container.decrypt_key(&wrong_password);
         assert!(result.is_err());
+        Ok(())
     }
     
     #[test]
-    fn custom_config_works() {
-        let password = SecretString::new(Box::from("secure-password"));
-        let key_data = b"this-is-a-secret-key";
-        let algorithm_id = "test-algorithm";
+    fn custom_config_works() -> Result<(), Error> {
+        let password = SecretBox::new(Box::from(b"a-password".as_slice()));
+        let key_data = b"key with custom config";
         
-        // 创建自定义配置
-        let config = CryptoConfig {
-            argon2_memory_cost: 32768, // 32MB
-            argon2_time_cost: 3,       // 3次迭代
-            ..CryptoConfig::default()
-        };
+        let container = EncryptedKeyContainer::new_with_params(
+            &password, key_data, "custom-id", 4096, 3, 2
+        )?;
         
-        // 使用自定义配置加密
-        let container = EncryptedKeyContainer::new_with_config(
-            &password, key_data, algorithm_id, &config
-        ).unwrap();
+        assert_eq!(container.memory_cost, 4096);
+        assert_eq!(container.time_cost, 3);
+        assert_eq!(container.parallelism_cost, 2);
         
-        // 验证配置参数已应用
-        assert_eq!(container.memory_cost, config.argon2_memory_cost);
-        assert_eq!(container.time_cost, config.argon2_time_cost);
-        
-        // 解密并验证
-        let decrypted = container.decrypt_key(&password).unwrap();
+        let decrypted = container.get_key(&password)?;
         assert_eq!(&decrypted, key_data);
+        Ok(())
     }
 } 

@@ -3,138 +3,39 @@ name = "seal-kit"
 version = "0.1.0"
 edition = "2024"
 authors = ["GlorYouth <admin@gloryouth.com>"]
-description = "一个提供统一的框架来处理传统加密（RSA）、后量子加密（Kyber）以及两者的混合模式的库"
+description = "一个基于 seal-flow 的、提供高级加密工作流的库"
 license = "MPL-2.0"
 readme = "README.md"
-keywords = ["cryptography", "post-quantum", "rsa", "kyber"]
+keywords = ["cryptography", "post-quantum", "seal-flow", "hybrid-encryption"]
 categories = ["cryptography"]
 
-[features]
-default = ["asymmetric", "symmetric", "secure-storage", "async-engine", "parallel"]
-
-# 非对称加密
-asymmetric = ["traditional", "post-quantum"]
-traditional = ["rsa"]
-post-quantum = ["pqcrypto-kyber", "pqcrypto-traits", "aes-gcm-feature"]
-
-# 对称加密
-symmetric = ["aes-gcm-feature", "chacha"]
-aes-gcm-feature = ["aes-gcm", "rand_core"]
-chacha = ["chacha20poly1305"]
-
-# 其他功能
-secure-storage = ["argon2", "secrecy", "aes-gcm-feature", "rand_core"]
-async-engine = ["async"]
-parallel = ["rayon"]
-async = ["notify", "tokio", "async-trait"]
-
 [dependencies]
-# 核心与序列化
-serde = { version = "1.0.219", features = ["derive"] }
+# 核心依赖
+seal-flow = { path = "../seal-flow" }
+
+# 序列化与编码
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
-base64 = "0.22.1"
-arc-swap = "1"
-dashmap = "6.1.0"
+base64 = "0.22"
 
-
-# 非对称加密
-rsa = { version = "0.9.8", optional = true }
-pqcrypto-kyber = { version = "0.8.1", optional = true }
-pqcrypto-traits = { version = "0.3.5", optional = true }
-
-# 对称加密
-aes-gcm = { version = "0.10.3", optional = true }
-chacha20poly1305 = { version = "0.10", optional = true }
-
-# 密码学原语与安全
-sha2 = "0.10.9"
-rand_core = { version = "0.9.3", optional = true, features = ["os_rng"] }
-argon2 = { version = "0.5.3", optional = true }
-secrecy = { version = "0.10.3", optional = true }
-zeroize = { version = "1.8.1", features = ["derive"] }
-
-# 异步与并发
-tokio = { version = "1", features = ["full"], optional = true }
-async-trait = { version = "0.1", optional = true }
-rayon = { version = "1.10.0", optional = true }
+# 并发与安全原语
+arc-swap = "1.7"
+dashmap = "5.5"
+sha2 = "0.10"
+zeroize = { version = "1.7", features = ["derive"] }
 
 # 工具库
-chrono = "0.4"
-uuid = { version = "1.17.0", features = ["v4"] }
-tempfile = "3.20.0"
-notify = { version = "8.0.0", features = ["serde"], optional = true }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4"] }
+tempfile = "3.10"
+thiserror = "2.0.12"
+bincode = { version = "2.0.1", features = ["serde"] }
+
+[features]
+secure-storage = []
 
 [dev-dependencies]
-criterion = "0.6"
-tempfile = "3.8.0"
-
-[[bench]]
-name = "base"
-path = "benches/base.rs"
-harness = false
-
-[[bench]]
-name = "parallel"
-path = "benches/parallel.rs"
-required-features = ["parallel"]
-harness = false
-
-[[bench]]
-name = "async_engine"
-path = "benches/async_engine.rs"
-required-features = ["async-engine"]
-harness = false
-
-[[bench]]
-name = "async_batch"
-path = "benches/async_batch.rs"
-required-features = ["async-engine", "parallel"]
-harness = false
-
-# Examples with feature requirements
-[[example]]
-name = "streaming"
-path = "examples/streaming.rs"
-required-features = ["traditional"]
-
-[[example]]
-name = "basic_usage"
-path = "examples/basic_usage.rs"
-required-features = ["traditional", "post-quantum"]
-
-[[example]]
-name = "cryptosystem_api"
-path = "examples/cryptosystem_api.rs"
-required-features = ["traditional"]
-
-[[example]]
-name = "secure_storage"
-path = "examples/secure_storage.rs"
-required-features = ["secure-storage"]
-
-[[example]]
-name = "sync_engine"
-path = "examples/sync_engine.rs"
-required-features = ["post-quantum"]
-
-[[example]]
-name = "async_engine"
-path = "examples/async_engine.rs"
-required-features = ["async-engine", "traditional", "post-quantum"]
-
-[[example]]
-name = "symmetric_streaming"
-path = "examples/symmetric_streaming.rs"
-required-features = ["aes-gcm-feature"]
-
-# Integration tests
-[[test]]
-name = "integration_tests"
-path = "tests/integration_tests.rs"
-required-features = ["asymmetric"]
-
-[[test]]
-name = "key_rotation_integration"
-path = "tests/key_rotation_integration.rs"
-required-features = ["asymmetric"]
+criterion = "0.5"
+tempfile = "3.10"
+tokio = { version = "1", features = ["full"] }

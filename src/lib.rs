@@ -1,96 +1,73 @@
-//! q-seal-core - 传统与后量子加密库
-//! 
-//! 这个库提供了传统加密(RSA)和后量子加密(Kyber)的统一接口，
-//! 以及安全的密钥存储功能。
+//! # Seal-Kit: Modern and High-Level Cryptography
 //!
-//! 新版本添加了混合加密系统，同时使用RSA和Kyber提供双重安全保障。
+//! `seal-kit` is a cryptographic library that provides a high-level, fluent API 
+//! for symmetric and hybrid encryption workflows, built on top of `seal-flow`.
+//!
+//! It aims to simplify complex cryptographic operations, reduce boilerplate, and prevent
+//! common misuse by offering a secure, opinionated, and easy-to-use interface.
+//!
+//! ## Core Concepts
+//!
+//! - **`SymmetricSeal`**: A factory for performing symmetric encryption and decryption.
+//! - **`HybridSeal`**: A factory for performing hybrid encryption (combining asymmetric and symmetric crypto) and digital signatures.
+//! - **`KeyProvider`**: A trait for integrating with key management systems. `seal-kit` provides
+//!   implementations for common storage backends.
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
+//! use seal_kit::prelude::*;
+//! use seal_kit::SymmetricSeal;
+//! use seal_kit::algorithms::symmetric::Aes256Gcm;
+//!
+//! fn main() -> Result<()> {
+//!     let key = Aes256Gcm::generate_key()?;
+//!     let key_id = "my-key-v1".to_string();
+//!     let plaintext = b"Hello, Seal-Kit!";
+//!
+//!     // Encrypt
+//!     let ciphertext = SymmetricSeal::new()
+//!         .encrypt(SymmetricKey::new(key.clone()), key_id.clone())
+//!         .to_vec::<Aes256Gcm>(plaintext)?;
+//!
+//!     // Decrypt
+//!     let decrypted = SymmetricSeal::new()
+//!         .decrypt()
+//!         .slice(&ciphertext)?
+//!         .with_key(SymmetricKey::new(key))?;
+//!
+//!     assert_eq!(plaintext, &decrypted[..]);
+//!     println!("Symmetric roundtrip successful!");
+//!     Ok(())
+//! }
+//! ```
 
-pub mod storage;
-pub mod common;
-pub mod rotation;
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub mod asymmetric;
-#[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
-pub mod symmetric;
+// --- Core API Factories ---
+// Re-export the main entry points from `seal-flow`.
+pub use seal_flow::seal::{HybridSeal, SymmetricSeal};
 
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::traits::AsymmetricCryptographicSystem;
-#[cfg(feature = "secure-storage")]
-pub use common::traits::SecureKeyStorage;
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use common::traits::AuthenticatedCryptoSystem;
-pub use common::errors::Error;
-#[cfg(all(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem;
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::rotation::KeyRotationManager;
-pub use common::config::ConfigManager;
-#[cfg(any(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::engines::AsymmetricQSealEngine;
-#[cfg(all(feature = "async-engine", any(feature = "traditional", feature = "post-quantum")))]
-pub use asymmetric::engines::AsymmetricQSealEngineAsync;
-#[cfg(any(feature = "aes-gcm-feature", feature = "chacha"))]
-pub use symmetric::engines::SymmetricQSealEngine;
-
-// 条件编译特性
-/// 传统RSA加密系统别名
-#[cfg(feature = "traditional")]
-pub use asymmetric::systems::traditional::rsa::RsaCryptoSystem as TraditionalRsa;
-
-/// 后量子Kyber加密系统别名
-#[cfg(feature = "post-quantum")]
-pub use asymmetric::systems::post_quantum::kyber::KyberCryptoSystem as PostQuantumKyber;
-
-/// 混合RSA+Kyber加密系统别名
-#[cfg(all(feature = "traditional", feature = "post-quantum"))]
-pub use asymmetric::systems::hybrid::rsa_kyber::RsaKyberCryptoSystem as HybridRsaKyber;
-
-// 导出密钥存储
-#[cfg(feature = "secure-storage")]
-pub use storage::container::EncryptedKeyContainer;
-
-/// 库版本信息
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[cfg(all(test, feature = "traditional", feature = "post-quantum"))]
-mod tests {
-    use super::*;
-    use crate::common::utils::{constant_time_eq, CryptoConfig};
-
-    #[test]
-    #[cfg(all(feature = "traditional", feature = "post-quantum"))]
-    fn test_unified_encrypt_decrypt() {
-        // 使用统一特征进行跨不同加密系统的测试
-        let systems: [&str; 3] = ["traditional", "post-quantum", "hybrid"];
-        let test_message = b"Hello, unified crypto world!";
-        let config = CryptoConfig::default();
-        
-        for system in systems.iter() {
-            let result = match *system {
-                "traditional" => {
-                    let (pub_key, priv_key) = TraditionalRsa::generate_keypair(&config).unwrap();
-                    let encrypted = TraditionalRsa::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted = TraditionalRsa::decrypt(&priv_key, &encrypted.to_string(), None).unwrap();
-                    // 使用常量时间比较，提高安全性
-                    constant_time_eq(&decrypted, test_message)
-                },
-                "post-quantum" => {
-                    let (pub_key, priv_key) = PostQuantumKyber::generate_keypair(&config).unwrap();
-                    let encrypted = PostQuantumKyber::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted = PostQuantumKyber::decrypt(&priv_key, &encrypted.to_string(), None).unwrap();
-                    // 使用常量时间比较，提高安全性
-                    constant_time_eq(&decrypted, test_message)
-                },
-                "hybrid" => {
-                    let (pub_key, priv_key) = HybridRsaKyber::generate_keypair(&config).unwrap();
-                    let encrypted = HybridRsaKyber::encrypt(&pub_key, test_message, None).unwrap();
-                    let decrypted = HybridRsaKyber::decrypt(&priv_key, &encrypted.to_string(), None).unwrap();
-                    // 使用常量时间比较，提高安全性
-                    constant_time_eq(&decrypted, test_message)
-                },
-                _ => false
-            };
-            assert!(result, "Failed with system: {}", system);
-        }
-    }
+// --- Prelude ---
+// A collection of the most commonly used traits, structs, and enums.
+pub mod prelude {
+    pub use seal_flow::prelude::*;
 }
+
+// --- Algorithms ---
+// Re-export all available cryptographic algorithm definitions.
+pub mod algorithms {
+    pub use seal_flow::algorithms::*;
+}
+
+pub mod error;
+
+// --- Storage and Key Management ---
+// `seal-kit`'s value-add module for providing `KeyProvider` implementations.
+pub mod storage;
+
+pub mod rotation;
+
+pub mod sealer;
+
+
+/// The version of the `seal-kit` crate.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
