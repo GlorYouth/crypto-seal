@@ -1,5 +1,6 @@
 //! Provides a high-level, seamless API for encryption and decryption using key rotation.
 use std::io::{Read, Write};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::error::Error;
@@ -26,73 +27,124 @@ impl SealRotator {
     pub fn sealer(&self) -> Result<Sealer, Error> {
         let (metadata, key) = self.manager.get_encryption_key()?;
         Ok(Sealer {
-            key,
-            key_id: metadata.id,
+            inner: SymmetricSeal::new()
+            .encrypt(key, metadata.id),
         })
     }
 
     /// Prepares a decryption operation by providing an `Unsealer` instance.
     pub fn unsealer(&self) -> Unsealer {
         Unsealer {
-            manager: self.manager.clone(),
+            inner: SymmetricSeal::new()
+            .decrypt()
+            .with_key_provider(self.manager.clone()),
         }
     }
 }
 
 /// An operator for performing encryption, pre-configured with a specific (primary) key.
 pub struct Sealer {
-    key: SymmetricKey,
-    key_id: String,
+    inner: seal_flow::seal::symmetric::encryptor::SymmetricEncryptor,
 }
 
 impl Sealer {
+    /// Sets the associated data (AAD) for the encryption operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `aad`: The associated data to be authenticated.
+    ///
+    /// # Returns
+    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
+        Sealer {
+            inner: self.inner.with_aad(aad),
+        }
+    }
+
     /// Encrypts a block of data using the configured primary key.
     /// `seal-flow` will automatically prepend the key_id to the ciphertext.
-    pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        SymmetricSeal::new()
-            .encrypt(self.key.clone(), self.key_id.clone())
-            .to_vec::<Aes256Gcm>(plaintext)
+    pub fn seal(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        self.inner.to_vec::<Aes256Gcm>(plaintext)
             .map_err(Error::from)
     }
 
     /// Returns a `Write` stream that will encrypt data written to it.
     /// `seal-flow` will automatically write the key_id to the stream first.
-    pub fn seal_stream<W: Write>(&self, writer: W) -> Result<impl Write, Error> {
-        SymmetricSeal::new()
-            .encrypt(self.key.clone(), self.key_id.clone())
-            .into_writer::<Aes256Gcm, _>(writer)
+    pub fn seal_stream<W: Write>(self, writer: W) -> Result<impl Write, Error> {
+        self.inner.into_writer::<Aes256Gcm, _>(writer)
             .map_err(Error::from)
     }
 }
 
 /// An operator for performing decryption.
 pub struct Unsealer {
-    manager: Arc<RotatingKeyManager>,
+    inner: seal_flow::seal::symmetric::decryptor::SymmetricDecryptorBuilder,
+}
+
+use seal_flow::seal::symmetric::decryptor::PendingInMemoryDecryptor;
+
+pub struct PendingInMemoryDecryptorWrapper<'a> {
+    inner: PendingInMemoryDecryptor<'a>,
+}
+
+impl<'a> PendingInMemoryDecryptorWrapper<'a> {
+    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
+        PendingInMemoryDecryptorWrapper {
+            inner: self.inner.with_aad(aad),
+        }
+    }
+
+    pub fn finalize(self) -> Result<Vec<u8>, Error> {
+        self.inner.resolve_and_decrypt().map_err(Error::from)
+    }
+}
+
+use seal_flow::seal::symmetric::decryptor::PendingStreamingDecryptor;
+
+pub struct PendingStreamingDecryptorWrapper<'a, R: Read + 'a> {
+    inner: PendingStreamingDecryptor<R>,
+    _marker: PhantomData<&'a ()>,
+}
+
+impl<'a, R: Read + 'a> PendingStreamingDecryptorWrapper<'a, R> {
+
+    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
+        PendingStreamingDecryptorWrapper {
+            inner: self.inner.with_aad(aad),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn finalize(self) -> Result<Box<dyn Read + 'a>, Error> {
+        self.inner.resolve_and_decrypt().map_err(Error::from)
+    }
 }
 
 impl Unsealer {
     /// Decrypts a block of data.
     /// It uses the internal `RotatingKeyManager` as a `KeyProvider` to find
     /// the correct decryption key based on the `key_id` stored in the blob.
-    pub fn unseal(&self, blob: &[u8]) -> Result<Vec<u8>, Error> {
-        SymmetricSeal::new()
-            .decrypt()
-            .with_key_provider(self.manager.as_ref())
-            .slice(blob)
-            .map_err(Error::from)?
-            .resolve_and_decrypt()
-            .map_err(Error::from)
+    ///
+    /// # Arguments
+    ///
+    /// * `blob`: The encrypted data to be decrypted.
+    ///
+    /// # Returns
+    ///
+    /// A `PendingDecryptor` that can be used to decrypt the data.
+    
+    pub fn unseal(self, blob: &[u8]) -> Result<PendingInMemoryDecryptorWrapper, Error> {
+        Ok(PendingInMemoryDecryptorWrapper {
+            inner: self.inner.slice(blob)?,
+        })
     }
 
     /// Returns a `Read` stream that will decrypt data from an underlying reader.
     /// It uses the internal `RotatingKeyManager` as a `KeyProvider`.
-    pub fn unseal_stream<'a, R: Read + 'a>(&self, reader: R) -> Result<impl Read + 'a, Error> {
-        SymmetricSeal::new()
-            .decrypt()
-            .with_key_provider(self.manager.as_ref())
-            .reader(reader)
-            .map_err(Error::from)?
-            .resolve_and_decrypt()
-            .map_err(Error::from)
+    pub fn unseal_stream<'a, R: Read + 'a>(self, reader: R) -> Result<PendingStreamingDecryptorWrapper<'a, R>, Error> {
+        Ok(PendingStreamingDecryptorWrapper {
+            inner: self.inner.reader(reader)?,
+            _marker: PhantomData,
+        })
     }
 } 
