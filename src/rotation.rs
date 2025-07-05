@@ -4,13 +4,13 @@ use crate::error::Error;
 use crate::prelude::*;
 use crate::storage::provider::FileSystemKeyProvider;
 use chrono::{DateTime, Duration, Utc};
+use dashmap::DashMap;
 use seal_flow::algorithms::symmetric::Aes256Gcm;
 use seal_flow::prelude::{
     AsymmetricPrivateKey, KeyProvider, KeyProviderError, SignaturePublicKey, SymmetricCipher,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// The status of a cryptographic key within its lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,7 +75,7 @@ pub struct RotatingKeyManager {
     alias: String,
     policy: RotationPolicy,
     // Caches the metadata of all known key versions for the alias.
-    versions: Mutex<HashMap<String, KeyMetadata>>,
+    versions: DashMap<String, KeyMetadata>,
 }
 
 impl RotatingKeyManager {
@@ -96,7 +96,7 @@ impl RotatingKeyManager {
             provider,
             alias: alias.to_string(),
             policy,
-            versions: Mutex::new(HashMap::new()),
+            versions: DashMap::new(),
         };
         manager.load_all_versions()?;
         Ok(manager)
@@ -107,8 +107,7 @@ impl RotatingKeyManager {
     fn load_all_versions(&self) -> Result<(), Error> {
         let all_key_ids = self.provider.list_key_ids()?;
 
-        let mut versions = self.versions.lock().unwrap();
-        versions.clear();
+        self.versions.clear();
 
         for key_id in all_key_ids {
             // Key IDs are structured as "{alias}-v{version}".
@@ -118,7 +117,7 @@ impl RotatingKeyManager {
                     Ok(stored_key) => {
                         // As a safeguard, double-check the alias inside the metadata.
                         if stored_key.metadata.alias == self.alias {
-                            versions.insert(key_id, stored_key.metadata);
+                            self.versions.insert(key_id, stored_key.metadata);
                         }
                     }
                     Err(e) => {
@@ -137,21 +136,25 @@ impl RotatingKeyManager {
     /// If no primary key exists or the current one needs rotation, this method
     /// will trigger the rotation process.
     pub fn get_encryption_key(&self) -> Result<(KeyMetadata, SymmetricKey), Error> {
-        let mut versions = self.versions.lock().unwrap();
-        
-        let primary_meta = versions.values()
-            .find(|m| m.status == KeyStatus::Primary && m.alias == self.alias);
-
-        match primary_meta {
-            Some(meta) if !self.needs_rotation(meta) => {
-                let stored_key = self.load_stored_key(&meta.id)?;
-                Ok((stored_key.metadata, SymmetricKey::new(stored_key.key_material)))
-            }
-            _ => {
-                // Either no primary key or it's time to rotate.
-                self.rotate_key(&mut versions)
+        // First, perform a read-only check to find a valid primary key.
+        // This is an optimistic check to avoid the more expensive rotation logic if possible.
+        if let Some(primary_meta) = self
+            .versions
+            .iter()
+            .find(|m| m.status == KeyStatus::Primary && m.alias == self.alias)
+        {
+            if !self.needs_rotation(&primary_meta) {
+                let stored_key = self.load_stored_key(&primary_meta.id)?;
+                return Ok((
+                    stored_key.metadata,
+                    SymmetricKey::new(stored_key.key_material),
+                ));
             }
         }
+
+        // If the optimistic check fails (no primary, or it needs rotation),
+        // proceed to the full rotation logic. This part handles the write operations.
+        self.rotate_key()
     }
 
     /// Retrieves a specific key by its full ID for decryption.
@@ -173,30 +176,36 @@ impl RotatingKeyManager {
 
     /// The core key rotation logic.
     ///
-    /// This function performs the following steps:
+    /// This function performs the following steps atomically:
     /// 1. Demotes the current `Primary` key to `Secondary`.
     /// 2. Creates a new `Primary` key.
     /// 3. Saves both updated keys to the provider.
     /// 4. Updates the in-memory cache.
-    fn rotate_key(
-        &self,
-        versions: &mut HashMap<String, KeyMetadata>,
-    ) -> Result<(KeyMetadata, SymmetricKey), Error> {
+    fn rotate_key(&self) -> Result<(KeyMetadata, SymmetricKey), Error> {
         // 1. Find and demote the old primary key, if it exists.
-        if let Some(old_primary) = versions.values_mut().find(|m| m.status == KeyStatus::Primary) {
+        if let Some(mut old_primary) = self
+            .versions
+            .iter_mut()
+            .find(|m| m.status == KeyStatus::Primary)
+        {
             old_primary.status = KeyStatus::Secondary;
-            // We need to save this change back to the provider.
-            let stored_key = self.load_stored_key(&old_primary.id)?;
+            // The change to `old_primary` is now "latched" within the iter_mut.
+            // We now load the full key and re-save it with the updated status.
+            let mut stored_key = self.load_stored_key(old_primary.key())?;
+            stored_key.metadata.status = KeyStatus::Secondary;
             self.save_stored_key(&stored_key)?;
         }
 
         // 2. Create a new primary key.
-        let new_version = versions.values()
+        let new_version = self
+            .versions
+            .iter()
             .filter(|m| m.alias == self.alias)
             .map(|m| m.version)
             .max()
-            .unwrap_or(0) + 1;
-        
+            .unwrap_or(0)
+            + 1;
+
         let now = Utc::now();
         let new_metadata = KeyMetadata {
             id: format!("{}-v{}", self.alias, new_version),
@@ -209,7 +218,7 @@ impl RotatingKeyManager {
         };
 
         let new_key_material = SymmetricKey::generate(<Aes256Gcm as SymmetricCipher>::KEY_SIZE)?;
-        
+
         let new_stored_key = StoredKey {
             metadata: new_metadata.clone(),
             key_material: new_key_material.as_bytes().to_vec(),
@@ -218,9 +227,10 @@ impl RotatingKeyManager {
         // 3. Save the new key.
         self.save_stored_key(&new_stored_key)?;
 
-        // 4. Update in-memory cache.
-        versions.insert(new_metadata.id.clone(), new_metadata.clone());
-        
+        // 4. Update in-memory cache with the new primary key.
+        self.versions
+            .insert(new_metadata.id.clone(), new_metadata.clone());
+
         Ok((new_metadata, new_key_material))
     }
 
