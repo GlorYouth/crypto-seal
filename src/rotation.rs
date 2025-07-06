@@ -7,8 +7,11 @@ use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use seal_flow::algorithms::symmetric::Aes256Gcm;
 use seal_flow::prelude::{
-    AsymmetricPrivateKey, KeyProvider, KeyProviderError, SignaturePublicKey, SymmetricCipher,
+    AsymmetricPrivateKey, AsymmetricPublicKey, KeyProvider, KeyProviderError, SignaturePublicKey,
+    SymmetricCipher,
 };
+use seal_flow::algorithms::traits::AsymmetricAlgorithm;
+use seal_flow::keys::TypedAsymmetricKeyPair;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -157,6 +160,31 @@ impl RotatingKeyManager {
         self.rotate_key()
     }
 
+    /// Retrieves the current primary public key for encryption.
+    /// If no primary key exists or the current one needs rotation, this method
+    /// will trigger the rotation process for an asymmetric key.
+    pub fn get_encryption_public_key<K: AsymmetricAlgorithm>(
+        &self,
+    ) -> Result<(KeyMetadata, AsymmetricPublicKey), Error> {
+        // First, perform a read-only check to find a valid primary key.
+        if let Some(primary_meta) = self
+            .versions
+            .iter()
+            .find(|m| m.status == KeyStatus::Primary && m.alias == self.alias)
+        {
+            if !self.needs_rotation(&primary_meta) {
+                let stored_key = self.load_stored_key(&primary_meta.id)?;
+                let key_pair: TypedAsymmetricKeyPair = bincode::serde::decode_from_slice(&stored_key.key_material, bincode::config::standard())
+                    .map_err(|e| Error::FormatError(format!("Failed to deserialize TypedAsymmetricKeyPair: {}", e)))?
+                    .0;
+                return Ok((stored_key.metadata, key_pair.public_key()));
+            }
+        }
+
+        // If the optimistic check fails, proceed to the full rotation logic.
+        self.rotate_asymmetric_key::<K>()
+    }
+
     /// Retrieves a specific key by its full ID for decryption.
     pub fn get_decryption_key(&self, key_id: &str) -> Result<SymmetricKey, Error> {
         let stored_key = self.load_stored_key(key_id)?;
@@ -234,6 +262,64 @@ impl RotatingKeyManager {
         Ok((new_metadata, new_key_material))
     }
 
+    fn rotate_asymmetric_key<K: AsymmetricAlgorithm>(
+        &self,
+    ) -> Result<(KeyMetadata, AsymmetricPublicKey), Error> {
+        // 1. Find and demote the old primary key, if it exists.
+        if let Some(mut old_primary) = self
+            .versions
+            .iter_mut()
+            .find(|m| m.status == KeyStatus::Primary)
+        {
+            old_primary.status = KeyStatus::Secondary;
+            let mut stored_key = self.load_stored_key(old_primary.key())?;
+            stored_key.metadata.status = KeyStatus::Secondary;
+            self.save_stored_key(&stored_key)?;
+        }
+
+        // 2. Create a new primary key.
+        let new_version = self
+            .versions
+            .iter()
+            .filter(|m| m.alias == self.alias)
+            .map(|m| m.version)
+            .max()
+            .unwrap_or(0)
+            + 1;
+
+        let now = Utc::now();
+        let new_metadata = KeyMetadata {
+            id: format!("{}-v{}", self.alias, new_version),
+            alias: self.alias.clone(),
+            version: new_version,
+            created_at: now,
+            expires_at: now + Duration::days(self.policy.validity_period_days as i64),
+            status: KeyStatus::Primary,
+            algorithm: K::name(),
+        };
+
+        let key_pair = TypedAsymmetricKeyPair::generate(K::ALGORITHM)?;
+        let key_pair_bytes = bincode::serde::encode_to_vec(&key_pair, bincode::config::standard())
+            .map_err(|e| Error::FormatError(format!("Failed to serialize TypedAsymmetricKeyPair: {}", e)))?;
+
+        let new_stored_key = StoredKey {
+            metadata: new_metadata.clone(),
+            key_material: key_pair_bytes,
+        };
+
+        // 3. Save the new key.
+        self.save_stored_key(&new_stored_key)?;
+
+        // 4. Update in-memory cache.
+        self.versions
+            .insert(new_metadata.id.clone(), new_metadata.clone());
+
+        Ok((
+            new_metadata,
+            key_pair.public_key(),
+        ))
+    }
+
     /// Helper to load and deserialize a `StoredKey` from the provider.
     fn load_stored_key(&self, key_id: &str) -> Result<StoredKey, Error> {
         let key_bundle = self.provider.get_symmetric_key(key_id)
@@ -264,7 +350,18 @@ impl KeyProvider for RotatingKeyManager {
         &self,
         key_id: &str,
     ) -> Result<AsymmetricPrivateKey, KeyProviderError> {
-        Err(KeyProviderError::KeyNotFound(key_id.to_string()))
+        let stored_key = self
+            .load_stored_key(key_id)
+            .map_err(|e| KeyProviderError::Other(Box::new(e)))?;
+        if stored_key.metadata.status == KeyStatus::Expired {
+            return Err(KeyProviderError::Other(Box::new(Error::RotationError(
+                format!("Key {} has expired and cannot be used.", key_id),
+            ))));
+        }
+        let key_pair: TypedAsymmetricKeyPair = bincode::serde::decode_from_slice(&stored_key.key_material, bincode::config::standard())
+            .map_err(|e| KeyProviderError::FormatError(Box::new(e)))?
+            .0;
+        Ok(key_pair.private_key())
     }
 
     fn get_signature_public_key(

@@ -997,6 +997,7 @@ dependencies = [
  "num-iter",
  "num-traits",
  "rand 0.8.5",
+ "serde",
  "smallvec",
  "zeroize",
 ]
@@ -1425,6 +1426,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core 0.6.4",
+ "serde",
  "signature",
  "spki",
  "subtle",
@@ -1488,7 +1490,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "seal-crypto"
-version = "0.1.2-rc5"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1510,6 +1512,7 @@ dependencies = [
  "rand_core 0.9.3",
  "rsa",
  "secrecy",
+ "serde",
  "sha2",
  "sha3",
  "signature",
@@ -1529,6 +1532,7 @@ dependencies = [
  "rand 0.9.1",
  "rayon",
  "seal-crypto",
+ "serde",
  "thiserror",
  "tokio",
 ]
@@ -2104,6 +2108,7 @@ version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

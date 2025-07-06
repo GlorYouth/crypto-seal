@@ -13,7 +13,7 @@ categories = ["cryptography"]
 [dependencies]
 
 # 核心依赖
-seal-flow = { path = "../seal-flow" }
+seal-flow = { path = "../seal-flow", features = ["serde"] }
 
 # 序列化与编码
 serde = { version = "1.0", features = ["derive"] }

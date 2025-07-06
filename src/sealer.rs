@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::error::Error;
 use crate::rotation::RotatingKeyManager;
-use seal_flow::algorithms::traits::SymmetricAlgorithm;
+use seal_flow::algorithms::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use seal_flow::seal::{hybrid::HybridSeal, symmetric::SymmetricSeal};
 
 /// The main entry point for performing cryptographic operations with automatic key rotation.
@@ -60,5 +60,15 @@ impl SealRotator {
         }
     }
 
+    pub fn hybrid_sealer<
+        S: SymmetricAlgorithm,
+        K: AsymmetricAlgorithm,
+    >(&self) -> Result<HybridSealer<S>, Error> {
+        let (metadata, pk) = self.manager.get_encryption_public_key::<K>()?;
+        Ok(HybridSealer {
+            inner: HybridSeal::new().encrypt(pk, metadata.id),
+        })
+    }
+    
 }
 
