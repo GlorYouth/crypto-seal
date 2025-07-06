@@ -38,16 +38,20 @@ impl FileSystemKeyProvider {
         })
     }
 
+    /// Adds a key to the provider, encrypting it and saving it to a file.
+    pub fn add_key(&self, key_id: &str, key_bytes: &[u8], algorithm_id: &str) -> Result<(), Error> {
+        let container = EncryptedKeyContainer::new(&self.password, key_bytes, algorithm_id)?;
+        self.save_container(key_id, &container)
+    }
+
     /// Adds a new symmetric key to the provider, encrypting it and saving it to a file.
     pub fn add_symmetric_key(&self, key_id: &str, key: &SymmetricKey) -> Result<(), Error> {
-        let container = EncryptedKeyContainer::new(&self.password, key.as_bytes(), "symmetric")?;
-        self.save_container(key_id, &container)
+        self.add_key(key_id, key.as_bytes(), "symmetric")
     }
 
     /// Adds a new asymmetric private key to the provider, encrypting and saving it.
     pub fn add_asymmetric_private_key(&self, key_id: &str, key: &AsymmetricPrivateKey) -> Result<(), Error> {
-        let container = EncryptedKeyContainer::new(&self.password, key.as_bytes(), "asymmetric")?;
-        self.save_container(key_id, &container)
+        self.add_key(key_id, key.as_bytes(), "asymmetric")
     }
 
     /// Adds a signature public key to the in-memory cache.

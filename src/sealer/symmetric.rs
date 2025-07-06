@@ -3,9 +3,9 @@ use seal_flow::tokio::io::{AsyncRead, AsyncWrite};
 use seal_flow::seal::symmetric::decryptor::{PendingAsyncStreamingDecryptor, PendingInMemoryDecryptor, PendingInMemoryParallelDecryptor, PendingParallelStreamingDecryptor, PendingStreamingDecryptor};
 use std::marker::PhantomData;
 use std::io::{Read, Write};
-use seal_flow::algorithms::symmetric::Aes256Gcm;
 use seal_flow::algorithms::traits::SymmetricAlgorithm;
 use crate::error::Error;
+use seal_flow::prelude::*;
 
 /// An operator for performing encryption, pre-configured with a specific (primary) key.
 pub struct SymmetricSealer {
@@ -49,8 +49,8 @@ impl SymmetricSealer {
     /// * `plaintext`: The plaintext data to be encrypted.
     ///
     /// # Returns
-    pub fn seal_parallel(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
-        self.inner.to_vec_parallel::<Aes256Gcm>(plaintext)
+    pub fn seal_parallel<S: SymmetricAlgorithm>(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        self.inner.to_vec_parallel::<S>(plaintext)
             .map_err(Error::from)
     }
 
@@ -62,8 +62,8 @@ impl SymmetricSealer {
     /// * `writer`: The writer to which the encrypted data will be written.
     ///
     /// # Returns
-    pub fn seal_stream<W: Write>(self, writer: W) -> Result<impl Write, Error> {
-        self.inner.into_writer::<Aes256Gcm, _>(writer)
+    pub fn seal_stream<S: SymmetricAlgorithm, W: Write>(self, writer: W) -> Result<impl Write, Error> {
+        self.inner.into_writer::<S, _>(writer)
             .map_err(Error::from)
     }
 
@@ -77,13 +77,13 @@ impl SymmetricSealer {
     ///
     /// # Returns
     ///
-    pub fn seal_pipe_parallel<R, W>(self, reader: R, writer: W) -> Result<(), Error>
+    pub fn seal_pipe_parallel<S: SymmetricAlgorithm, R, W>(self, reader: R, writer: W) -> Result<(), Error>
     where
         R: Read + Send,
         W: Write,
     {
         self.inner
-            .pipe_parallel::<Aes256Gcm, R, W>(reader, writer)
+            .pipe_parallel::<S, R, W>(reader, writer)
             .map_err(Error::from)
     }
 
@@ -98,12 +98,12 @@ impl SymmetricSealer {
     ///
     /// A `Result` that contains the encrypted data.
     #[cfg(feature = "async")]
-    pub async fn seal_stream_async<W: AsyncWrite + Unpin + Send>(
+    pub async fn seal_stream_async<S: SymmetricAlgorithm, W: AsyncWrite + Unpin + Send>(
         self,
         writer: W,
     ) -> Result<impl AsyncWrite + Unpin + Send, Error> {
         self.inner
-            .into_async_writer::<Aes256Gcm, _>(writer)
+            .into_async_writer::<S, _>(writer)
             .await
             .map_err(Error::from)
     }

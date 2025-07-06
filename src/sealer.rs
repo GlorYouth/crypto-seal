@@ -1,11 +1,13 @@
 //! Provides a high-level, seamless API for encryption and decryption using key rotation.
 pub mod symmetric;
+pub mod hybrid;
 
 use std::sync::Arc;
 
 use crate::error::Error;
 use crate::rotation::RotatingKeyManager;
-use seal_flow::seal::SymmetricSeal;
+use seal_flow::algorithms::traits::SymmetricAlgorithm;
+use seal_flow::seal::{hybrid::HybridSeal, symmetric::SymmetricSeal};
 
 /// The main entry point for performing cryptographic operations with automatic key rotation.
 /// It acts as a factory for `Sealer` and `Unsealer` objects.
@@ -14,6 +16,7 @@ pub struct SealRotator {
     manager: Arc<RotatingKeyManager>,
 }
 
+use hybrid::{HybridSealer, HybridUnsealer};
 use symmetric::{SymmetricSealer, SymmetricUnsealer};
 
 impl SealRotator {
@@ -56,5 +59,6 @@ impl SealRotator {
             .with_key_provider(self.manager.clone()),
         }
     }
+
 }
 
