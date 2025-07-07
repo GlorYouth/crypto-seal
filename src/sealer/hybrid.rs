@@ -20,8 +20,9 @@ use std::{
 };
 
 /// An operator for performing hybrid encryption.
-pub struct HybridSealer<S: SymmetricAlgorithm> {
+pub struct HybridSealer<A: AsymmetricAlgorithm, S: SymmetricAlgorithm> {
     pub(crate) inner: HybridEncryptor<S>,
+    pub(crate) _marker: PhantomData<A>,
 }
 
 /// An operator for performing hybrid encryption using a PQC suite.
@@ -29,28 +30,23 @@ pub struct PqcHybridSealer {
     pub(crate) inner: PqcEncryptor,
 }
 
-impl<S: SymmetricAlgorithm> HybridSealer<S> {
-    /// Creates a new `HybridSealer`.
-    pub fn new(pk: AsymmetricPublicKey, kek_id: String) -> Self {
-        Self {
-            inner: HybridSeal::new().encrypt(pk, kek_id),
-        }
-    }
+impl<A: AsymmetricAlgorithm + Send + Sync, S: SymmetricAlgorithm> HybridSealer<A, S> {
 
     /// Sets the associated data (AAD) for the encryption operation.
     pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
         Self {
             inner: self.inner.with_aad(aad),
+            _marker: PhantomData,
         }
     }
 
     /// Encrypts a block of data.
-    pub fn seal<A: AsymmetricAlgorithm>(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn seal(self, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         self.inner.with_algorithm::<A>().to_vec(plaintext).map_err(Error::from)
     }
 
     /// Encrypts a block of data in parallel.
-    pub fn seal_parallel<A: AsymmetricAlgorithm>(
+    pub fn seal_parallel(
         self,
         plaintext: &[u8],
     ) -> Result<Vec<u8>, Error> {
@@ -61,7 +57,7 @@ impl<S: SymmetricAlgorithm> HybridSealer<S> {
     }
 
     /// Returns a `Write` stream that will encrypt data written to it.
-    pub fn seal_stream<A: AsymmetricAlgorithm, W: Write>(
+    pub fn seal_stream<W: Write>(
         self,
         writer: W,
     ) -> Result<impl Write, Error> {
@@ -72,7 +68,7 @@ impl<S: SymmetricAlgorithm> HybridSealer<S> {
     }
 
     /// Encrypts data from a reader and writes to a writer using parallel processing.
-    pub fn seal_pipe_parallel<A: AsymmetricAlgorithm, R, W>(
+    pub fn seal_pipe_parallel<R, W>(
         self,
         reader: R,
         writer: W,
@@ -89,7 +85,7 @@ impl<S: SymmetricAlgorithm> HybridSealer<S> {
 
     /// Returns an `AsyncWrite` stream that will encrypt data written to it.
     #[cfg(feature = "async")]
-    pub async fn seal_stream_async<A: AsymmetricAlgorithm + Send + Sync, W: AsyncWrite + Unpin + Send>(
+    pub async fn seal_stream_async<W: AsyncWrite + Unpin + Send>(
         self,
         writer: W,
     ) -> Result<impl AsyncWrite + Unpin + Send, Error> {

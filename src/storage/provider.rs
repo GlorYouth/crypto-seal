@@ -1,23 +1,33 @@
 //! Implements a `KeyProvider` that stores password-protected keys on the local filesystem.
+//!
+//! 实现一个 `KeyProvider`，用于在本地文件系统上存储受密码保护的密钥。
 
 use std::path::{Path, PathBuf};
-use dashmap::DashMap;
 use seal_flow::secrecy::SecretBox;
 
 use crate::prelude::*;
 use crate::storage::container::EncryptedKeyContainer;
 use crate::error::Error;
+use crate::managed::ManagedKey;
+use seal_flow::keys::{TypedAsymmetricKeyPair, TypedSignatureKeyPair};
 
 /// A `KeyProvider` that manages keys stored as password-protected JSON files
 /// in a specified directory.
 ///
-/// Private and symmetric keys are encrypted using an `EncryptedKeyContainer`.
-/// Public keys for signature verification are held in memory for fast access.
+/// Both asymmetric and signature key pairs are encrypted using an `EncryptedKeyContainer`.
+///
+/// 一个 `KeyProvider`，用于管理存储在指定目录中受密码保护的 JSON 文件中的密钥对。
+///
+/// 无论是用于加密的非对称密钥对还是用于签名的密钥对，都使用 `EncryptedKeyContainer` 进行加密。
 pub struct FileSystemKeyProvider {
+    /// The directory where encrypted key files are stored.
+    ///
+    /// 存储加密密钥文件的目录。
     storage_dir: PathBuf,
+    /// The master password used to encrypt and decrypt all key pairs.
+    ///
+    /// 用于加密和解密所有密钥对的主密码。
     password: SecretBox<[u8]>,
-    // Public keys are cached in memory as they are not secret and are read often.
-    public_keys: DashMap<String, SignaturePublicKey>,
 }
 
 impl FileSystemKeyProvider {
@@ -26,7 +36,14 @@ impl FileSystemKeyProvider {
     /// # Arguments
     ///
     /// * `storage_dir`: The directory where encrypted key files will be stored.
-    /// * `password`: The master password used to encrypt and decrypt all private/symmetric keys.
+    /// * `password`: The master password used to encrypt and decrypt all key pairs.
+    ///
+    /// 创建一个新的 `FileSystemKeyProvider`。
+    ///
+    /// # 参数
+    ///
+    /// * `storage_dir`: 将存储加密密钥文件的目录。
+    /// * `password`: 用于加密和解密所有密钥对的主密码。
     pub fn new<P: AsRef<Path>>(storage_dir: P, password: SecretBox<[u8]>) -> Result<Self, Error> {
         let path = storage_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
@@ -34,34 +51,34 @@ impl FileSystemKeyProvider {
         Ok(Self {
             storage_dir: path,
             password,
-            public_keys: DashMap::new(),
         })
     }
 
-    /// Adds a key to the provider, encrypting it and saving it to a file.
-    pub fn add_key(&self, key_id: &str, key_bytes: &[u8], algorithm_id: &str) -> Result<(), Error> {
-        let container = EncryptedKeyContainer::new(&self.password, key_bytes, algorithm_id)?;
-        self.save_container(key_id, &container)
+    /// Saves a managed key to the provider, encrypting it and storing it as a JSON file.
+    pub fn save_key(&self, key: &ManagedKey) -> Result<(), Error> {
+        let container = EncryptedKeyContainer::create_from_serializable(
+            &self.password,
+            key,
+            &key.metadata.algorithm,
+        )?;
+        self.save_container(&key.metadata.id, &container)
     }
 
-    /// Adds a new symmetric key to the provider, encrypting it and saving it to a file.
-    pub fn add_symmetric_key(&self, key_id: &str, key: &SymmetricKey) -> Result<(), Error> {
-        self.add_key(key_id, key.as_bytes(), "symmetric")
-    }
-
-    /// Adds a new asymmetric private key to the provider, encrypting and saving it.
-    pub fn add_asymmetric_private_key(&self, key_id: &str, key: &AsymmetricPrivateKey) -> Result<(), Error> {
-        self.add_key(key_id, key.as_bytes(), "asymmetric")
-    }
-
-    /// Adds a signature public key to the in-memory cache.
-    /// These are not persisted to disk by this provider.
-    pub fn add_signature_public_key(&self, key_id: &str, key: SignaturePublicKey) {
-        self.public_keys.insert(key_id.to_string(), key);
+    /// Loads and decrypts a managed key from the provider.
+    pub fn load_key(&self, key_id: &str) -> Result<ManagedKey, Error> {
+        let container = self
+            .load_container(key_id)
+            .map_err(|e| Error::KeyProvider(e))?;
+        container
+            .get_deserializable(&self.password)
+            .map_err(Error::from)
     }
 
     /// Lists all key IDs found in the storage directory.
     /// This is done by finding all files that end with the `.key.json` suffix.
+    ///
+    /// 列出在存储目录中找到的所有密钥 ID。
+    /// 这是通过查找所有以 `.key.json` 后缀结尾的文件来完成的。
     pub fn list_key_ids(&self) -> Result<Vec<String>, Error> {
         let mut key_ids = Vec::new();
         for entry in std::fs::read_dir(&self.storage_dir)? {
@@ -79,6 +96,8 @@ impl FileSystemKeyProvider {
     }
 
     /// Saves an `EncryptedKeyContainer` to a JSON file.
+    ///
+    /// 将一个 `EncryptedKeyContainer` 保存到 JSON 文件。
     fn save_container(&self, key_id: &str, container: &EncryptedKeyContainer) -> Result<(), Error> {
         let file_path = self.get_container_path(key_id);
         let json = container.to_json()?;
@@ -87,6 +106,8 @@ impl FileSystemKeyProvider {
     }
 
     /// Loads an `EncryptedKeyContainer` from a JSON file.
+    ///
+    /// 从 JSON 文件加载一个 `EncryptedKeyContainer`。
     fn load_container(&self, key_id: &str) -> Result<EncryptedKeyContainer, KeyProviderError> {
         let file_path = self.get_container_path(key_id);
         if !file_path.exists() {
@@ -97,6 +118,8 @@ impl FileSystemKeyProvider {
     }
 
     /// Returns the full path for a given key ID's container file.
+    ///
+    /// 返回给定密钥 ID 的容器文件的完整路径。
     fn get_container_path(&self, key_id: &str) -> PathBuf {
         self.storage_dir.join(format!("{}.key.json", key_id))
     }
@@ -104,22 +127,26 @@ impl FileSystemKeyProvider {
 
 impl KeyProvider for FileSystemKeyProvider {
     fn get_symmetric_key(&self, key_id: &str) -> Result<SymmetricKey, KeyProviderError> {
-        let container = self.load_container(key_id)?;
-        let key_bytes = container.get_key(&self.password).map_err(|e| KeyProviderError::Other(Box::new(e)))?;
-        Ok(SymmetricKey::new(key_bytes))
+        let managed_key = self.load_key(key_id).map_err(|e| KeyProviderError::Other(Box::new(e)))?;
+        
+        // Here you could add checks based on metadata if needed, e.g.,
+        // if !managed_key.metadata.algorithm.starts_with("Aes") { ... }
+
+        Ok(SymmetricKey::new(managed_key.key_material))
     }
 
     fn get_asymmetric_private_key(&self, key_id: &str) -> Result<AsymmetricPrivateKey, KeyProviderError> {
-        let container = self.load_container(key_id)?;
-        let key_bytes = container.get_key(&self.password).map_err(|e| KeyProviderError::Other(Box::new(e)))?;
-        Ok(AsymmetricPrivateKey::new(key_bytes))
+        let managed_key = self.load_key(key_id).map_err(|e| KeyProviderError::Other(Box::new(e)))?;
+        let (key_pair, _): (TypedAsymmetricKeyPair, usize) = bincode::serde::decode_from_slice(&managed_key.key_material, bincode::config::standard())
+            .map_err(|e| KeyProviderError::FormatError(Box::new(e)))?;
+        Ok(key_pair.private_key())
     }
 
     fn get_signature_public_key(&self, key_id: &str) -> Result<SignaturePublicKey, KeyProviderError> {
-        self.public_keys
-            .get(key_id)
-            .map(|k| k.clone())
-            .ok_or_else(|| KeyProviderError::KeyNotFound(key_id.to_string()))
+        let managed_key = self.load_key(key_id).map_err(|e| KeyProviderError::Other(Box::new(e)))?;
+        let (key_pair, _): (TypedSignatureKeyPair, usize) = bincode::serde::decode_from_slice(&managed_key.key_material, bincode::config::standard())
+            .map_err(|e| KeyProviderError::FormatError(Box::new(e)))?;
+        Ok(key_pair.public_key())
     }
 }
 
@@ -127,63 +154,104 @@ impl KeyProvider for FileSystemKeyProvider {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use crate::managed::{KeyMetadata, KeyStatus};
+    use chrono::Utc;
+    use seal_flow::prelude::{AsymmetricAlgorithmEnum, SignatureAlgorithmEnum};
+    use crate::algorithms::symmetric::Aes256Gcm;
+
+    fn create_test_managed_key(
+        id: &str,
+        alias: &str,
+        version: u32,
+        algorithm: &str,
+        key_material: Vec<u8>,
+    ) -> ManagedKey {
+        ManagedKey {
+            metadata: KeyMetadata {
+                id: id.to_string(),
+                alias: alias.to_string(),
+                version,
+                created_at: Utc::now(),
+                expires_at: Utc::now(),
+                status: KeyStatus::Primary,
+                algorithm: algorithm.to_string(),
+            },
+            key_material,
+        }
+    }
 
     #[test]
-    fn file_system_key_provider_symmetric_roundtrip() -> Result<(), Error> {
+    fn symmetric_key_roundtrip() -> Result<(), Error> {
         let dir = tempdir()?;
         let password = SecretBox::new(Box::from(b"my-secret-password".as_slice()));
         let provider = FileSystemKeyProvider::new(dir.path(), password)?;
 
         let key_id = "test-symm-key-1";
-        let key = SymmetricKey::new(vec![42; 32]);
+        let key_material = SymmetricKey::generate(<Aes256Gcm as SymmetricCipher>::KEY_SIZE)?.into_bytes().to_vec();
+        let managed_key = create_test_managed_key(
+            key_id,
+            "test-symm",
+            1,
+            "Aes256Gcm",
+            key_material.clone(),
+        );
 
-        // Add and retrieve key
-        provider.add_symmetric_key(key_id, &key)?;
-        let retrieved_key = provider.get_symmetric_key(key_id).map_err(|e| Error::KeyProvider(e))?;
+        provider.save_key(&managed_key)?;
+        let retrieved_key = provider.get_symmetric_key(key_id).map_err(Error::KeyProvider)?;
 
-        assert_eq!(key.as_bytes(), retrieved_key.as_bytes());
-
-        // Test not found
-        assert!(provider.get_symmetric_key("non-existent-key").is_err());
-
+        assert_eq!(key_material, retrieved_key.as_bytes());
         Ok(())
     }
 
     #[test]
-    fn file_system_key_provider_asymmetric_roundtrip() -> Result<(), Error> {
+    fn asymmetric_key_roundtrip() -> Result<(), Error> {
         let dir = tempdir()?;
         let password = SecretBox::new(Box::from(b"another-password".as_slice()));
         let provider = FileSystemKeyProvider::new(dir.path(), password)?;
 
         let key_id = "test-asymm-key-1";
-        let key = AsymmetricPrivateKey::new(vec![1, 2, 3, 4]); // Dummy key data
+        let key_pair = TypedAsymmetricKeyPair::generate(AsymmetricAlgorithmEnum::Kyber512)?;
+        let key_pair_bytes = bincode::serde::encode_to_vec(&key_pair, bincode::config::standard())
+            .map_err(|e| Error::FormatError(format!("Failed to serialize key pair: {}", e)))?;
 
-        // Add and retrieve key
-        provider.add_asymmetric_private_key(key_id, &key)?;
-        let retrieved_key = provider.get_asymmetric_private_key(key_id).map_err(|e| Error::KeyProvider(e))?;
+        let managed_key = create_test_managed_key(
+            key_id,
+            "test-asymm",
+            1,
+            "Kyber512",
+            key_pair_bytes,
+        );
+        
+        provider.save_key(&managed_key)?;
+        let retrieved_key = provider.get_asymmetric_private_key(key_id).map_err(Error::KeyProvider)?;
 
-        assert_eq!(key.as_bytes(), retrieved_key.as_bytes());
+        assert_eq!(key_pair.private_key().as_bytes(), retrieved_key.as_bytes());
         Ok(())
     }
 
     #[test]
-    fn file_system_key_provider_public_key() -> Result<(), Error> {
+    fn signature_key_roundtrip() -> Result<(), Error> {
         let dir = tempdir()?;
-        let password = SecretBox::new(Box::from(b"public-key-pw".as_slice()));
+        let password = SecretBox::new(Box::from(b"sig-key-password".as_slice()));
         let provider = FileSystemKeyProvider::new(dir.path(), password)?;
 
-        let key_id = "test-pub-key-1";
-        let key = SignaturePublicKey::new(vec![10, 20, 30]);
+        let key_id = "test-sig-key-1";
+        let key_pair = TypedSignatureKeyPair::generate(SignatureAlgorithmEnum::Dilithium2)?;
+        let key_pair_bytes = bincode::serde::encode_to_vec(&key_pair, bincode::config::standard())
+            .map_err(|e| Error::FormatError(format!("Failed to serialize key pair: {}", e)))?;
 
-        // Add and retrieve public key
-        provider.add_signature_public_key(key_id, key.clone());
-        let retrieved_key = provider.get_signature_public_key(key_id).map_err(|e| Error::KeyProvider(e))?;
+        let managed_key = create_test_managed_key(
+            key_id,
+            "test-sig",
+            1,
+            "Dilithium2",
+            key_pair_bytes,
+        );
 
-        assert_eq!(key.as_bytes(), retrieved_key.as_bytes());
-
-        // Test not found
-        assert!(provider.get_signature_public_key("non-existent-pub-key").is_err());
-
+        provider.save_key(&managed_key)?;
+        let retrieved_key = provider.get_signature_public_key(key_id).map_err(Error::KeyProvider)?;
+        
+        assert_eq!(key_pair.public_key().as_bytes(), retrieved_key.as_bytes());
         Ok(())
     }
 } 

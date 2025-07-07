@@ -39,8 +39,8 @@ impl SealRotator {
     /// # Returns
     ///
     /// A `Sealer` instance.
-    pub fn symmetric_sealer(&self) -> Result<SymmetricSealer, Error> {
-        let (metadata, key) = self.manager.get_encryption_key()?;
+    pub fn symmetric_sealer<S: SymmetricAlgorithm>(&self) -> Result<SymmetricSealer, Error> {
+        let (metadata, key) = self.manager.get_encryption_key(S::name().as_str())?;
         Ok(SymmetricSealer {
             inner: SymmetricSeal::new()
             .encrypt(key, metadata.id),
@@ -60,15 +60,31 @@ impl SealRotator {
         }
     }
 
-    pub fn hybrid_sealer<
-        S: SymmetricAlgorithm,
-        K: AsymmetricAlgorithm,
-    >(&self) -> Result<HybridSealer<S>, Error> {
-        let (metadata, pk) = self.manager.get_encryption_public_key::<K>()?;
+    /// Prepares an encryption operation by providing a `Sealer` instance.
+    /// The `Sealer` is configured with the current primary key.
+    ///
+    /// # Returns
+    ///
+    /// A `Sealer` instance.
+    pub fn hybrid_sealer<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(&self) -> Result<HybridSealer<A, S>, Error> {
+        let (metadata, pk) = self.manager.get_encryption_public_key::<A>()?;
         Ok(HybridSealer {
             inner: HybridSeal::new().encrypt(pk, metadata.id),
+            _marker: Default::default(),
         })
     }
-    
+
+
+    /// Prepares a decryption operation by providing an `Unsealer` instance.
+    ///
+    /// # Returns
+    ///
+    /// An `Unsealer` instance.
+    pub fn hybrid_unsealer(&self) -> HybridUnsealer {
+        HybridUnsealer {
+            inner: HybridSeal::new().decrypt().with_key_provider(self.manager.clone()),
+        }
+    }
+
 }
 

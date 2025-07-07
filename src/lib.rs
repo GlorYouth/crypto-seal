@@ -68,6 +68,7 @@ pub mod rotation;
 
 pub mod sealer;
 
+pub mod managed;
 
 /// The version of the `seal-kit` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

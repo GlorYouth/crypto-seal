@@ -1,9 +1,10 @@
 //! Manages the lifecycle and rotation of cryptographic keys.
 
 use crate::error::Error;
+use crate::managed::{KeyMetadata, KeyStatus, ManagedKey};
 use crate::prelude::*;
 use crate::storage::provider::FileSystemKeyProvider;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use dashmap::DashMap;
 use seal_flow::algorithms::symmetric::Aes256Gcm;
 use seal_flow::prelude::{
@@ -11,39 +12,9 @@ use seal_flow::prelude::{
     SymmetricCipher,
 };
 use seal_flow::algorithms::traits::AsymmetricAlgorithm;
-use seal_flow::keys::TypedAsymmetricKeyPair;
+use seal_flow::keys::{TypedAsymmetricKeyPair};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-/// The status of a cryptographic key within its lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub enum KeyStatus {
-    /// The primary key, currently used for all new encryption operations.
-    Primary,
-    /// A previous primary key, now only used for decrypting old data.
-    Secondary,
-    /// An old key that is past its validity period and should no longer be used.
-    Expired,
-}
-
-/// Metadata associated with a managed cryptographic key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyMetadata {
-    /// The full, unique identifier for this specific key version (e.g., "my-key-alias-v2").
-    pub id: String,
-    /// The logical name for the key, common across all its versions (e.g., "my-key-alias").
-    pub alias: String,
-    /// The version number of the key.
-    pub version: u32,
-    /// The timestamp when the key was created.
-    pub created_at: DateTime<Utc>,
-    /// The timestamp when the key is scheduled to expire.
-    pub expires_at: DateTime<Utc>,
-    /// The current status of the key in the rotation lifecycle.
-    pub status: KeyStatus,
-    /// The algorithm the key is intended for.
-    pub algorithm: String,
-}
 
 /// A policy defining when and how keys should be rotated.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,14 +29,6 @@ impl Default for RotationPolicy {
             validity_period_days: 90, // Default to 90 days
         }
     }
-}
-
-/// A container that atomically stores a key's metadata alongside its raw key material.
-/// This struct is what gets serialized and encrypted into a `EncryptedKeyContainer`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredKey {
-    metadata: KeyMetadata,
-    key_material: Vec<u8>,
 }
 
 /// Manages the automatic rotation of a logical key.
@@ -116,17 +79,17 @@ impl RotatingKeyManager {
             // Key IDs are structured as "{alias}-v{version}".
             // We only want to load keys that match our alias prefix.
             if key_id.starts_with(&format!("{}-v", self.alias)) {
-                match self.load_stored_key(&key_id) {
-                    Ok(stored_key) => {
+                match self.load_managed_key(&key_id) {
+                    Ok(managed_key) => {
                         // As a safeguard, double-check the alias inside the metadata.
-                        if stored_key.metadata.alias == self.alias {
-                            self.versions.insert(key_id, stored_key.metadata);
+                        if managed_key.metadata.alias == self.alias {
+                            self.versions.insert(key_id, managed_key.metadata);
                         }
                     }
                     Err(e) => {
                         // If a single key is corrupt or fails to load, we'll log
                         // the error but not fail the entire manager initialization.
-                        eprintln!("Warning: Failed to load and deserialize key '{}': {}", key_id, e);
+                        eprintln!("Warning: Failed to load key '{}': {}", key_id, e);
                     }
                 }
             }
@@ -138,7 +101,10 @@ impl RotatingKeyManager {
     /// Retrieves the current primary key for encryption.
     /// If no primary key exists or the current one needs rotation, this method
     /// will trigger the rotation process.
-    pub fn get_encryption_key(&self) -> Result<(KeyMetadata, SymmetricKey), Error> {
+    pub fn get_encryption_key(
+        &self,
+        algorithm_name: &str,
+    ) -> Result<(KeyMetadata, SymmetricKey), Error> {
         // First, perform a read-only check to find a valid primary key.
         // This is an optimistic check to avoid the more expensive rotation logic if possible.
         if let Some(primary_meta) = self
@@ -146,18 +112,19 @@ impl RotatingKeyManager {
             .iter()
             .find(|m| m.status == KeyStatus::Primary && m.alias == self.alias)
         {
-            if !self.needs_rotation(&primary_meta) {
-                let stored_key = self.load_stored_key(&primary_meta.id)?;
+            // Also check if the algorithm matches. If not, we need to rotate.
+            if !self.needs_rotation(&primary_meta) && primary_meta.algorithm == algorithm_name {
+                let managed_key = self.load_managed_key(&primary_meta.id)?;
                 return Ok((
-                    stored_key.metadata,
-                    SymmetricKey::new(stored_key.key_material),
+                    managed_key.metadata,
+                    SymmetricKey::new(managed_key.key_material),
                 ));
             }
         }
 
-        // If the optimistic check fails (no primary, or it needs rotation),
+        // If the optimistic check fails (no primary, or it needs rotation, or algorithm mismatch),
         // proceed to the full rotation logic. This part handles the write operations.
-        self.rotate_key()
+        self.rotate_key(algorithm_name)
     }
 
     /// Retrieves the current primary public key for encryption.
@@ -173,11 +140,19 @@ impl RotatingKeyManager {
             .find(|m| m.status == KeyStatus::Primary && m.alias == self.alias)
         {
             if !self.needs_rotation(&primary_meta) {
-                let stored_key = self.load_stored_key(&primary_meta.id)?;
-                let key_pair: TypedAsymmetricKeyPair = bincode::serde::decode_from_slice(&stored_key.key_material, bincode::config::standard())
-                    .map_err(|e| Error::FormatError(format!("Failed to deserialize TypedAsymmetricKeyPair: {}", e)))?
-                    .0;
-                return Ok((stored_key.metadata, key_pair.public_key()));
+                let managed_key = self.load_managed_key(&primary_meta.id)?;
+                let (key_pair, _): (TypedAsymmetricKeyPair, _) =
+                    bincode::serde::decode_from_slice(
+                        &managed_key.key_material,
+                        bincode::config::standard(),
+                    )
+                    .map_err(|e| {
+                        Error::FormatError(format!(
+                            "Failed to deserialize TypedAsymmetricKeyPair: {}",
+                            e
+                        ))
+                    })?;
+                return Ok((managed_key.metadata, key_pair.public_key()));
             }
         }
 
@@ -187,14 +162,14 @@ impl RotatingKeyManager {
 
     /// Retrieves a specific key by its full ID for decryption.
     pub fn get_decryption_key(&self, key_id: &str) -> Result<SymmetricKey, Error> {
-        let stored_key = self.load_stored_key(key_id)?;
-        if stored_key.metadata.status == KeyStatus::Expired {
+        let managed_key = self.load_managed_key(key_id)?;
+        if managed_key.metadata.status == KeyStatus::Expired {
             return Err(Error::RotationError(format!(
                 "Key {} has expired and cannot be used.",
                 key_id
             )));
         }
-        Ok(SymmetricKey::new(stored_key.key_material))
+        Ok(SymmetricKey::new(managed_key.key_material))
     }
 
     /// Checks if the current primary key is due for rotation.
@@ -206,10 +181,10 @@ impl RotatingKeyManager {
     ///
     /// This function performs the following steps atomically:
     /// 1. Demotes the current `Primary` key to `Secondary`.
-    /// 2. Creates a new `Primary` key.
+    /// 2. Creates a new `Primary` key with the specified algorithm.
     /// 3. Saves both updated keys to the provider.
     /// 4. Updates the in-memory cache.
-    fn rotate_key(&self) -> Result<(KeyMetadata, SymmetricKey), Error> {
+    fn rotate_key(&self, algorithm_name: &str) -> Result<(KeyMetadata, SymmetricKey), Error> {
         // 1. Find and demote the old primary key, if it exists.
         if let Some(mut old_primary) = self
             .versions
@@ -217,11 +192,9 @@ impl RotatingKeyManager {
             .find(|m| m.status == KeyStatus::Primary)
         {
             old_primary.status = KeyStatus::Secondary;
-            // The change to `old_primary` is now "latched" within the iter_mut.
-            // We now load the full key and re-save it with the updated status.
-            let mut stored_key = self.load_stored_key(old_primary.key())?;
-            stored_key.metadata.status = KeyStatus::Secondary;
-            self.save_stored_key(&stored_key)?;
+            let mut managed_key = self.load_managed_key(old_primary.key())?;
+            managed_key.metadata.status = KeyStatus::Secondary;
+            self.save_managed_key(&managed_key)?;
         }
 
         // 2. Create a new primary key.
@@ -242,26 +215,37 @@ impl RotatingKeyManager {
             created_at: now,
             expires_at: now + Duration::days(self.policy.validity_period_days as i64),
             status: KeyStatus::Primary,
-            algorithm: "Aes256Gcm".to_string(), // Assuming this for now
+            algorithm: algorithm_name.to_string(),
         };
 
-        let new_key_material = SymmetricKey::generate(<Aes256Gcm as SymmetricCipher>::KEY_SIZE)?;
+        let key_size = match algorithm_name {
+            "Aes256Gcm" => <Aes256Gcm as SymmetricCipher>::KEY_SIZE,
+            _ => {
+                return Err(Error::RotationError(format!(
+                    "Unsupported symmetric algorithm for rotation: {}",
+                    algorithm_name
+                )))
+            }
+        };
 
-        let new_stored_key = StoredKey {
+        let new_key_material = SymmetricKey::generate(key_size)?;
+
+        let new_managed_key = ManagedKey {
             metadata: new_metadata.clone(),
             key_material: new_key_material.as_bytes().to_vec(),
         };
 
-        // 3. Save the new key.
-        self.save_stored_key(&new_stored_key)?;
+        // 3. Save the new key first.
+        self.save_managed_key(&new_managed_key)?;
 
-        // 4. Update in-memory cache with the new primary key.
+        // 4. Update the in-memory cache.
         self.versions
             .insert(new_metadata.id.clone(), new_metadata.clone());
 
         Ok((new_metadata, new_key_material))
     }
 
+    /// Rotates an asymmetric key pair.
     fn rotate_asymmetric_key<K: AsymmetricAlgorithm>(
         &self,
     ) -> Result<(KeyMetadata, AsymmetricPublicKey), Error> {
@@ -272,9 +256,9 @@ impl RotatingKeyManager {
             .find(|m| m.status == KeyStatus::Primary)
         {
             old_primary.status = KeyStatus::Secondary;
-            let mut stored_key = self.load_stored_key(old_primary.key())?;
-            stored_key.metadata.status = KeyStatus::Secondary;
-            self.save_stored_key(&stored_key)?;
+            let mut managed_key = self.load_managed_key(old_primary.key())?;
+            managed_key.metadata.status = KeyStatus::Secondary;
+            self.save_managed_key(&managed_key)?;
         }
 
         // 2. Create a new primary key.
@@ -300,43 +284,36 @@ impl RotatingKeyManager {
 
         let key_pair = TypedAsymmetricKeyPair::generate(K::ALGORITHM)?;
         let key_pair_bytes = bincode::serde::encode_to_vec(&key_pair, bincode::config::standard())
-            .map_err(|e| Error::FormatError(format!("Failed to serialize TypedAsymmetricKeyPair: {}", e)))?;
+            .map_err(|e| {
+                Error::FormatError(format!(
+                    "Failed to serialize TypedAsymmetricKeyPair: {}",
+                    e
+                ))
+            })?;
 
-        let new_stored_key = StoredKey {
+        let new_managed_key = ManagedKey {
             metadata: new_metadata.clone(),
             key_material: key_pair_bytes,
         };
 
         // 3. Save the new key.
-        self.save_stored_key(&new_stored_key)?;
+        self.save_managed_key(&new_managed_key)?;
 
         // 4. Update in-memory cache.
         self.versions
             .insert(new_metadata.id.clone(), new_metadata.clone());
 
-        Ok((
-            new_metadata,
-            key_pair.public_key(),
-        ))
+        Ok((new_metadata, key_pair.public_key()))
     }
 
-    /// Helper to load and deserialize a `StoredKey` from the provider.
-    fn load_stored_key(&self, key_id: &str) -> Result<StoredKey, Error> {
-        let key_bundle = self.provider.get_symmetric_key(key_id)
-            .map_err(|e| Error::KeyProvider(e))?;
-        
-        bincode::serde::decode_from_slice(key_bundle.as_bytes(), bincode::config::standard())
-            .map(|(key, _)| key)
-            .map_err(|e| Error::FormatError(format!("Failed to deserialize StoredKey: {}", e)))
+    /// Helper to load and deserialize a `ManagedKey` from the provider.
+    fn load_managed_key(&self, key_id: &str) -> Result<ManagedKey, Error> {
+        self.provider.load_key(key_id)
     }
 
-    /// Helper to serialize and save a `StoredKey` to the provider.
-    fn save_stored_key(&self, stored_key: &StoredKey) -> Result<(), Error> {
-        let serialized = bincode::serde::encode_to_vec(stored_key, bincode::config::standard())
-            .map_err(|e| Error::FormatError(format!("Failed to serialize StoredKey: {}", e)))?;
-
-        self.provider
-            .add_symmetric_key(&stored_key.metadata.id, &SymmetricKey::new(serialized))
+    /// Helper to serialize and save a `ManagedKey` to the provider.
+    fn save_managed_key(&self, managed_key: &ManagedKey) -> Result<(), Error> {
+        self.provider.save_key(managed_key)
     }
 }
 
@@ -350,17 +327,20 @@ impl KeyProvider for RotatingKeyManager {
         &self,
         key_id: &str,
     ) -> Result<AsymmetricPrivateKey, KeyProviderError> {
-        let stored_key = self
-            .load_stored_key(key_id)
+        let managed_key = self
+            .load_managed_key(key_id)
             .map_err(|e| KeyProviderError::Other(Box::new(e)))?;
-        if stored_key.metadata.status == KeyStatus::Expired {
+        if managed_key.metadata.status == KeyStatus::Expired {
             return Err(KeyProviderError::Other(Box::new(Error::RotationError(
                 format!("Key {} has expired and cannot be used.", key_id),
             ))));
         }
-        let key_pair: TypedAsymmetricKeyPair = bincode::serde::decode_from_slice(&stored_key.key_material, bincode::config::standard())
-            .map_err(|e| KeyProviderError::FormatError(Box::new(e)))?
-            .0;
+        let (key_pair, _): (TypedAsymmetricKeyPair, _) =
+            bincode::serde::decode_from_slice(
+                &managed_key.key_material,
+                bincode::config::standard(),
+            )
+            .map_err(|e| KeyProviderError::FormatError(Box::new(e)))?;
         Ok(key_pair.private_key())
     }
 
@@ -368,6 +348,10 @@ impl KeyProvider for RotatingKeyManager {
         &self,
         key_id: &str,
     ) -> Result<SignaturePublicKey, KeyProviderError> {
+        // This KeyProvider implementation is focused on encryption/decryption keys.
+        // A separate manager could be implemented for signature keys if needed.
+        // 这个 KeyProvider 实现专注于加密/解密密钥。
+        // 如果需要，可以实现一个单独的签名密钥管理器。
         Err(KeyProviderError::KeyNotFound(key_id.to_string()))
     }
 } 
