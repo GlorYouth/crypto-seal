@@ -5,7 +5,7 @@ pub mod hybrid;
 use std::sync::Arc;
 
 use crate::error::Error;
-use crate::rotation::RotatingKeyManager;
+use crate::server::rotation::RotatingKeyManager;
 use seal_flow::algorithms::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use seal_flow::seal::{hybrid::HybridSeal, symmetric::SymmetricSeal};
 

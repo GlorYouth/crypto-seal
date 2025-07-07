@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use seal_flow::secrecy::SecretBox;
 
 use crate::prelude::*;
-use crate::storage::container::EncryptedKeyContainer;
+use crate::server::storage::EncryptedKeyContainer;
 use crate::error::Error;
-use crate::managed::ManagedKey;
+use crate::server::managed::ManagedKey;
 use seal_flow::keys::{TypedAsymmetricKeyPair, TypedSignatureKeyPair};
 
 /// A `KeyProvider` that manages keys stored as password-protected JSON files
@@ -154,7 +154,7 @@ impl KeyProvider for FileSystemKeyProvider {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use crate::managed::{KeyMetadata, KeyStatus};
+    use crate::server::managed::{KeyMetadata, KeyStatus};
     use chrono::Utc;
     use seal_flow::prelude::{AsymmetricAlgorithmEnum, SignatureAlgorithmEnum};
     use crate::algorithms::symmetric::Aes256Gcm;

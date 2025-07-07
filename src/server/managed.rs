@@ -1,6 +1,6 @@
 //! Defines the data structures for managed, rotatable keys.
 //! 
-//! 定义管理、可旋转的密钥的数据结构。
+//! 定义管理、可轮换的密钥的数据结构。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

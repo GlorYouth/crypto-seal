@@ -60,15 +60,10 @@ pub mod algorithms {
 
 pub mod error;
 
-// --- Storage and Key Management ---
-// `seal-kit`'s value-add module for providing `KeyProvider` implementations.
-pub mod storage;
-
-pub mod rotation;
-
-pub mod sealer;
-
-pub mod managed;
 
 /// The version of the `seal-kit` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub mod contact;
+
+pub mod server;
