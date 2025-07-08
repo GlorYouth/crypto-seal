@@ -2,16 +2,22 @@ use crate::error::Error;
 #[cfg(feature = "async")]
 use seal_flow::tokio::io::{AsyncRead, AsyncWrite};
 use seal_flow::{
-    algorithms::traits::{AsymmetricAlgorithm, SymmetricAlgorithm},
+    algorithms::traits::{
+        AsymmetricAlgorithm, KdfAlgorithm, SignatureAlgorithm, SymmetricAlgorithm, XofAlgorithm,
+    },
     prelude::*,
-    seal::hybrid::{
-        decryptor::{
-            PendingAsyncStreamingDecryptor, PendingInMemoryDecryptor, PendingInMemoryParallelDecryptor,
-            PendingParallelStreamingDecryptor, PendingStreamingDecryptor,
+    seal::{
+        hybrid::{
+            decryptor::{
+                PendingAsyncStreamingDecryptor, PendingInMemoryDecryptor,
+                PendingInMemoryParallelDecryptor, PendingParallelStreamingDecryptor,
+                PendingStreamingDecryptor,
+            },
+            encryptor::HybridEncryptor,
+            suites::PqcEncryptor,
+            HybridSeal,
         },
-        encryptor::HybridEncryptor,
-        suites::PqcEncryptor,
-        HybridSeal,
+        traits::{WithAad, WithVerificationKey},
     },
 };
 use std::{
@@ -36,6 +42,43 @@ impl<A: AsymmetricAlgorithm + Send + Sync, S: SymmetricAlgorithm> HybridSealer<A
     pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
         Self {
             inner: self.inner.with_aad(aad),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn with_kdf<Kdf: KdfAlgorithm>(self, deriver: Kdf,
+        salt: Option<impl Into<Vec<u8>>>,
+        info: Option<impl Into<Vec<u8>>>,
+        output_len: u32,) -> Self {
+        Self {
+            inner: self.inner.with_kdf(deriver, salt, info, output_len),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn with_xof<Xof: XofAlgorithm>(self, deriver: Xof,
+        salt: Option<impl Into<Vec<u8>>>,
+        info: Option<impl Into<Vec<u8>>>,
+        output_len: u32,) -> Self {
+        Self {
+            inner: self.inner.with_xof(deriver, salt, info, output_len),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn with_signer<Sig: SignatureAlgorithm>(self,
+        signing_key: AsymmetricPrivateKey,
+        signer_key_id: String
+    ) -> Self {
+        Self {
+            inner: self.inner.with_signer::<Sig>(signing_key, signer_key_id),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn with_options(self, options: HybridEncryptionOptions) -> Self {
+        Self {
+            inner: self.inner.with_options(options),
             _marker: PhantomData,
         }
     }
@@ -156,124 +199,106 @@ pub struct HybridUnsealer {
     pub(crate) inner: seal_flow::seal::hybrid::decryptor::HybridDecryptorBuilder,
 }
 
-pub struct PendingInMemoryDecryptorWrapper<'a> {
-    inner: PendingInMemoryDecryptor<'a>,
+pub struct PendingDecryptorWrapper<T> {
+    inner: T,
 }
+
+impl<T> PendingDecryptorWrapper<T> {
+    /// Sets the associated data (AAD) for the decryption operation.
+    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self
+    where
+        T: WithAad,
+    {
+        Self {
+            inner: self.inner.with_aad(aad),
+        }
+    }
+
+    /// Supplies a verification key.
+    pub fn with_verification_key(self, verification_key: SignaturePublicKey) -> Self
+    where
+        T: WithVerificationKey,
+    {
+        Self {
+            inner: self.inner.with_verification_key(verification_key),
+        }
+    }
+}
+
+pub type PendingInMemoryDecryptorWrapper<'a> = PendingDecryptorWrapper<PendingInMemoryDecryptor<'a>>;
 
 impl<'a> PendingInMemoryDecryptorWrapper<'a> {
-    /// Sets the associated data (AAD) for the decryption operation.
-    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
-        Self {
-            inner: self.inner.with_aad(aad),
-        }
-    }
-
     /// Finalizes the decryption by providing the private key.
     pub fn finalize(self, sk: AsymmetricPrivateKey) -> Result<Vec<u8>, Error> {
         self.inner.with_key(sk).map_err(Error::from)
     }
 }
 
-pub struct PendingInMemoryParallelDecryptorWrapper<'a> {
-    inner: PendingInMemoryParallelDecryptor<'a>,
-}
+pub type PendingInMemoryParallelDecryptorWrapper<'a> =
+    PendingDecryptorWrapper<PendingInMemoryParallelDecryptor<'a>>;
 
 impl<'a> PendingInMemoryParallelDecryptorWrapper<'a> {
-    /// Sets the associated data (AAD) for the decryption operation.
-    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
-        Self {
-            inner: self.inner.with_aad(aad),
-        }
-    }
-
     /// Finalizes the decryption by providing the private key.
     pub fn finalize(self, sk: AsymmetricPrivateKey) -> Result<Vec<u8>, Error> {
         self.inner.with_key(sk).map_err(Error::from)
     }
 }
 
-pub struct PendingStreamingDecryptorWrapper<'a, R: Read + 'a> {
-    inner: PendingStreamingDecryptor<R>,
-    _marker: PhantomData<&'a ()>,
-}
+pub type PendingStreamingDecryptorWrapper<'a, R> =
+    PendingDecryptorWrapper<PendingStreamingDecryptor<R>>;
 
 impl<'a, R: Read + 'a> PendingStreamingDecryptorWrapper<'a, R> {
-    /// Sets the associated data (AAD) for the decryption operation.
-    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
-        Self {
-            inner: self.inner.with_aad(aad),
-            _marker: PhantomData,
-        }
-    }
-
     /// Finalizes the decryption by providing the private key and returns a `Read` stream.
-    pub async fn finalize(
-        self,
-        sk: AsymmetricPrivateKey,
-    ) -> Result<Box<dyn Read + 'a>, Error> {
+    pub fn finalize(self, sk: AsymmetricPrivateKey) -> Result<Box<dyn Read + 'a>, Error> {
         self.inner.with_key(sk).map_err(Error::from)
     }
 }
 
-pub struct PendingParallelStreamingDecryptorWrapper<'a, R: Read + Send + 'a> {
-    inner: PendingParallelStreamingDecryptor<R>,
-    _marker: PhantomData<&'a ()>,
-}
+pub type PendingParallelStreamingDecryptorWrapper<'a, R> =
+    PendingDecryptorWrapper<PendingParallelStreamingDecryptor<R>>;
 
 impl<'a, R: Read + Send + 'a> PendingParallelStreamingDecryptorWrapper<'a, R> {
-    /// Sets the associated data (AAD) for the decryption operation.
-    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
-        Self {
-            inner: self.inner.with_aad(aad),
-            _marker: PhantomData,
-        }
-    }
-
     /// Finalizes the decryption by providing the private key and writes the decrypted data to a `Write` stream.
-    pub fn finalize_to_writer<W: Write>(self, sk: AsymmetricPrivateKey, writer: W) -> Result<(), Error> {
-        self.inner.with_key_to_writer(sk, writer).map_err(Error::from)
+    pub fn finalize_to_writer<W: Write>(
+        self,
+        sk: AsymmetricPrivateKey,
+        writer: W,
+    ) -> Result<(), Error> {
+        self.inner
+            .with_key_to_writer(sk, writer)
+            .map_err(Error::from)
     }
 }
 
 #[cfg(feature = "async")]
-pub struct PendingAsyncStreamingDecryptorWrapper<'a, R: AsyncRead + Unpin + Send + 'a> {
-    inner: PendingAsyncStreamingDecryptor<R>,
-    _marker: PhantomData<&'a ()>,
-}
+pub type PendingAsyncStreamingDecryptorWrapper<'a, R> =
+    PendingDecryptorWrapper<PendingAsyncStreamingDecryptor<R>>;
 
 #[cfg(feature = "async")]
 impl<'a, R: AsyncRead + Unpin + Send + 'a> PendingAsyncStreamingDecryptorWrapper<'a, R> {
-    /// Sets the associated data (AAD) for the decryption operation.
-    pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
-        Self {
-            inner: self.inner.with_aad(aad),
-            _marker: PhantomData,
-        }
-    }
-
     /// Finalizes the decryption by providing the private key and returns an `AsyncRead` stream.
     pub async fn finalize(
         self,
         sk: AsymmetricPrivateKey,
     ) -> Result<Box<dyn AsyncRead + Unpin + Send + 'a>, Error> {
-        self.inner
-            .with_key(sk)
-            .await
-            .map_err(Error::from)
+        self.inner.with_key(sk).await.map_err(Error::from)
     }
 }
 
 impl HybridUnsealer {
     /// Decrypts a block of data.
     pub fn unseal(self, blob: &[u8]) -> Result<PendingInMemoryDecryptorWrapper, Error> {
-        Ok(PendingInMemoryDecryptorWrapper {
+        Ok(PendingDecryptorWrapper {
             inner: self.inner.slice(blob)?,
         })
     }
 
     /// Decrypts a block of data in parallel.
-    pub fn unseal_parallel(self, blob: &[u8]) -> Result<PendingInMemoryParallelDecryptorWrapper, Error> {
-        Ok(PendingInMemoryParallelDecryptorWrapper {
+    pub fn unseal_parallel(
+        self,
+        blob: &[u8],
+    ) -> Result<PendingInMemoryParallelDecryptorWrapper, Error> {
+        Ok(PendingDecryptorWrapper {
             inner: self.inner.slice_parallel(blob)?,
         })
     }
@@ -283,9 +308,8 @@ impl HybridUnsealer {
         self,
         reader: R,
     ) -> Result<PendingStreamingDecryptorWrapper<'a, R>, Error> {
-        Ok(PendingStreamingDecryptorWrapper {
+        Ok(PendingDecryptorWrapper {
             inner: self.inner.reader(reader)?,
-            _marker: PhantomData,
         })
     }
 
@@ -294,9 +318,8 @@ impl HybridUnsealer {
         self,
         reader: R,
     ) -> Result<PendingParallelStreamingDecryptorWrapper<'a, R>, Error> {
-        Ok(PendingParallelStreamingDecryptorWrapper {
+        Ok(PendingDecryptorWrapper {
             inner: self.inner.reader_parallel(reader)?,
-            _marker: PhantomData,
         })
     }
 
@@ -306,9 +329,8 @@ impl HybridUnsealer {
         self,
         reader: R,
     ) -> Result<PendingAsyncStreamingDecryptorWrapper<'a, R>, Error> {
-        Ok(PendingAsyncStreamingDecryptorWrapper {
+        Ok(PendingDecryptorWrapper {
             inner: self.inner.async_reader(reader).await?,
-            _marker: PhantomData,
         })
     }
 }
