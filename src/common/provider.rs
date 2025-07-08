@@ -10,11 +10,11 @@ use crate::common::storage::EncryptedKeyContainer;
 use crate::error::Error;
 use crate::common::managed::ManagedKey;
 use seal_flow::keys::{TypedAsymmetricKeyPair, TypedSignatureKeyPair};
-use std::sync::{Arc, Mutex};
 use seal_flow::algorithms::traits::AsymmetricAlgorithm;
 use chrono::Utc;
 use base64::Engine;
 use crate::contract::PublicKeyBundle;
+use dashmap::DashMap;
 
 /// A `KeyProvider` that manages keys stored as password-protected JSON files
 /// in a specified directory.
@@ -155,6 +155,94 @@ impl KeyProvider for FileSystemKeyProvider {
     }
 }
 
+/// A provider that fetches public keys from a remote endpoint and caches them
+/// in memory for 0-RTT operations.
+///
+/// It uses a `DashMap` for a thread-safe, granular cache, where each key
+/// corresponds to a remote peer's identifier (e.g., their base URL).
+#[derive(Debug, Clone)]
+pub struct RemoteKeyProvider {
+    /// A thread-safe cache mapping a peer identifier to its public key bundle.
+    cache: DashMap<String, PublicKeyBundle>,
+}
+
+impl RemoteKeyProvider {
+    /// Creates a new `RemoteKeyProvider`.
+    pub fn new() -> Self {
+        Self {
+            cache: DashMap::new(),
+        }
+    }
+
+    /// Retrieves the public key for a given asymmetric algorithm, using a cache
+    /// to provide 0-RTT capabilities.
+    ///
+    /// If the key is not in the cache or is expired, it fetches it from the
+    /// remote endpoint and populates the cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer_url`: The unique identifier for the remote peer (e.g., their base URL).
+    pub fn get_public_key<A: AsymmetricAlgorithm>(
+        &self,
+        peer_url: &str,
+    ) -> Result<(String, AsymmetricPublicKey), Error> {
+        // 1. Check the cache first for a valid, non-expired key.
+        if let Some(bundle) = self.cache.get(peer_url) {
+            if bundle.algorithm == A::name() && bundle.expires_at > Utc::now() {
+                let key_bytes =
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
+                let public_key = AsymmetricPublicKey::new(key_bytes);
+                return Ok((bundle.key_id.clone(), public_key));
+            }
+        }
+
+        // 2. If not in cache, algorithm mismatch, or expired, fetch, cache, and return.
+        let bundle = self.fetch_and_cache_key::<A>(peer_url)?;
+        let key_bytes =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
+        let public_key = AsymmetricPublicKey::new(key_bytes);
+
+        Ok((bundle.key_id.clone(), public_key))
+    }
+
+    /// Fetches the public key bundle from the remote endpoint and inserts it into the cache.
+    fn fetch_and_cache_key<A: AsymmetricAlgorithm>(
+        &self,
+        peer_url: &str,
+    ) -> Result<PublicKeyBundle, Error> {
+        // This is a placeholder for the actual network request.
+        // In a real implementation, you would use a library like `reqwest`
+        // to make an HTTP GET request to the `peer_url`.
+        let (public_key, _) = A::generate_keypair()?;
+        let bundle = PublicKeyBundle {
+            key_id: format!("remote-key-{}", Utc::now().timestamp()),
+            algorithm: A::name().to_string(),
+            public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(public_key.to_bytes()),
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::days(30),
+        };
+
+        // Insert into the cache using the peer's URL as the key.
+        self.cache.insert(peer_url.to_string(), bundle.clone());
+
+        Ok(bundle)
+    }
+
+    /// Removes a specific peer's public key from the cache.
+    ///
+    /// This should be called when a peer indicates that decryption failed,
+    /// suggesting the cached key is stale even if it hasn't expired.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer_url`: The identifier of the peer whose key should be invalidated.
+    pub fn invalidate(&self, peer_url: &str) {
+        self.cache.remove(peer_url);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,86 +346,5 @@ mod tests {
         
         assert_eq!(key_pair.public_key().as_bytes(), retrieved_key.as_bytes());
         Ok(())
-    }
-}
-
-/// A key provider that retrieves public keys from a remote server endpoint.
-///
-/// It caches the key locally to reduce network latency and handles fetching
-/// a new key when the cached one expires. This component is designed for
-/// client-side use and does not handle private keys.
-pub struct RemoteKeyProvider {
-    /// The remote server's base URL.
-    server_url: String,
-    /// The cached public key bundle. The Mutex is used for interior mutability.
-    cache: Arc<Mutex<Option<PublicKeyBundle>>>,
-}
-
-impl RemoteKeyProvider {
-    /// Creates a new `RemoteKeyProvider`.
-    ///
-    /// # Arguments
-    ///
-    /// * `server_url`: The base URL of the `seal-kit` server's public key endpoint.
-    pub fn new(server_url: impl Into<String>) -> Self {
-        Self {
-            server_url: server_url.into(),
-            cache: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    /// Retrieves a public key for the specified asymmetric algorithm.
-    ///
-    /// This method first checks for a valid (non-expired) cached key. If not found,
-    /// it fetches a new `PublicKeyBundle` from the remote server and updates the cache.
-    pub fn get_public_key<A: AsymmetricAlgorithm>(
-        &self,
-    ) -> Result<(String, AsymmetricPublicKey), Error> {
-        let cache = self.cache.lock().unwrap();
-
-        let bundle = match &*cache {
-            Some(bundle) if bundle.expires_at > Utc::now() => {
-                println!("Using cached key: {}", bundle.key_id);
-                bundle.clone()
-            }
-            _ => {
-                println!("Cache miss or expired, fetching new key...");
-                drop(cache); // Drop the lock before the potentially slow network call
-                let new_bundle = self.fetch_and_cache_key::<A>()?;
-                new_bundle
-            }
-        };
-
-        let key_bytes = base64::engine::general_purpose::STANDARD.decode(&bundle.public_key)?;
-        let public_key = AsymmetricPublicKey::new(key_bytes);
-
-        Ok((bundle.key_id, public_key))
-    }
-
-    /// Simulates fetching a new `PublicKeyBundle` from the server and caching it.
-    ///
-    /// In a real implementation, this would be an actual network request.
-    fn fetch_and_cache_key<A: AsymmetricAlgorithm>(&self) -> Result<PublicKeyBundle, Error> {
-        println!(
-            "Simulating fetch from: {}/public_key/{}",
-            self.server_url,
-            A::name()
-        );
-
-        // Simulate generating a key on the server side.
-        let (pk, _) = A::generate_keypair()?;
-
-        let bundle = PublicKeyBundle {
-            key_id: format!("{}-simulated-key-{}", A::name(), Utc::now().timestamp()),
-            algorithm: A::name().to_string(),
-            public_key: base64::engine::general_purpose::STANDARD.encode(pk.to_bytes()),
-            issued_at: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
-        };
-
-        let mut cache = self.cache.lock().unwrap();
-        *cache = Some(bundle.clone());
-
-        Ok(bundle)
     }
 }
