@@ -144,7 +144,7 @@ impl PqcHybridSealer {
     /// Creates a new `PqcHybridSealer`.
     pub fn new(pk: AsymmetricPublicKey, kek_id: String) -> Self {
         Self {
-            inner: HybridSeal::new().encrypt_pqc_suite(pk, kek_id),
+            inner: HybridSeal::new().encrypt_pqc_suite().with_recipient(pk, kek_id),
         }
     }
 
