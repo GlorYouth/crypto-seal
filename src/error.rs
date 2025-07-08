@@ -10,7 +10,13 @@ pub enum Error {
     #[error("key provider error: {0}")]
     KeyProvider(#[from] KeyProviderError),
 
-    #[error("I/O error: {0}")]
+    #[error("Rotation error: {0}")]
+    RotationError(String),
+    #[error("Peer error: {0}")]
+    PeerNotFound(String),
+    #[error("Peer error: {0}")]
+    PeerError(String),
+    #[error("IO error")]
     Io(#[from] std::io::Error),
 
     #[error("serialization failed: {0}")]
@@ -30,9 +36,6 @@ pub enum Error {
 
     #[error("invalid data format: {0}")]
     FormatError(String),
-
-    #[error("key rotation error: {0}")]
-    RotationError(String),
 
     #[error("operation failed: {0}")]
     Operation(String),

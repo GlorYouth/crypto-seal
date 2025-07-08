@@ -229,8 +229,8 @@ pub type PendingInMemoryDecryptorWrapper<'a> = PendingDecryptorWrapper<PendingIn
 
 impl<'a> PendingInMemoryDecryptorWrapper<'a> {
     /// Finalizes the decryption by providing the private key.
-    pub fn finalize(self, sk: AsymmetricPrivateKey) -> Result<Vec<u8>, Error> {
-        self.inner.with_key(sk).map_err(Error::from)
+    pub fn finalize(self) -> Result<Vec<u8>, Error> {
+        self.inner.resolve_and_decrypt().map_err(Error::from)
     }
 }
 
@@ -239,8 +239,8 @@ pub type PendingInMemoryParallelDecryptorWrapper<'a> =
 
 impl<'a> PendingInMemoryParallelDecryptorWrapper<'a> {
     /// Finalizes the decryption by providing the private key.
-    pub fn finalize(self, sk: AsymmetricPrivateKey) -> Result<Vec<u8>, Error> {
-        self.inner.with_key(sk).map_err(Error::from)
+    pub fn finalize(self) -> Result<Vec<u8>, Error> {
+        self.inner.resolve_and_decrypt().map_err(Error::from)
     }
 }
 
@@ -249,8 +249,8 @@ pub type PendingStreamingDecryptorWrapper<'a, R> =
 
 impl<'a, R: Read + 'a> PendingStreamingDecryptorWrapper<'a, R> {
     /// Finalizes the decryption by providing the private key and returns a `Read` stream.
-    pub fn finalize(self, sk: AsymmetricPrivateKey) -> Result<Box<dyn Read + 'a>, Error> {
-        self.inner.with_key(sk).map_err(Error::from)
+    pub fn finalize(self) -> Result<Box<dyn Read + 'a>, Error> {
+        self.inner.resolve_and_decrypt().map_err(Error::from)
     }
 }
 
@@ -261,11 +261,10 @@ impl<'a, R: Read + Send + 'a> PendingParallelStreamingDecryptorWrapper<'a, R> {
     /// Finalizes the decryption by providing the private key and writes the decrypted data to a `Write` stream.
     pub fn finalize_to_writer<W: Write>(
         self,
-        sk: AsymmetricPrivateKey,
         writer: W,
     ) -> Result<(), Error> {
         self.inner
-            .with_key_to_writer(sk, writer)
+            .resolve_and_decrypt_to_writer(writer)
             .map_err(Error::from)
     }
 }
@@ -279,9 +278,8 @@ impl<'a, R: AsyncRead + Unpin + Send + 'a> PendingAsyncStreamingDecryptorWrapper
     /// Finalizes the decryption by providing the private key and returns an `AsyncRead` stream.
     pub async fn finalize(
         self,
-        sk: AsymmetricPrivateKey,
     ) -> Result<Box<dyn AsyncRead + Unpin + Send + 'a>, Error> {
-        self.inner.with_key(sk).await.map_err(Error::from)
+        self.inner.resolve_and_decrypt().await.map_err(Error::from)
     }
 }
 
