@@ -32,7 +32,7 @@ pub struct Peer<C: PeerConnector> {
     remote_bundle_cache: DashMap<String, PublicKeyBundle>,
 }
 
-impl<C: PeerConnector + Send + Sync> Peer<C> {
+impl<C: PeerConnector> Peer<C> {
     /// Creates a new `Peer`.
     ///
     /// # Arguments
@@ -77,7 +77,7 @@ impl<C: PeerConnector + Send + Sync> Peer<C> {
         plaintext: &[u8],
     ) -> Result<Vec<u8>, Error>
     where
-        A: AsymmetricAlgorithm + Send + Sync,
+        A: AsymmetricAlgorithm,
         S: SymmetricAlgorithm,
     {
         // 1. Check cache for a valid, non-expired key bundle.

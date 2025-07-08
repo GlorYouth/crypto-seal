@@ -8,8 +8,8 @@ use seal_flow::algorithms::traits::AsymmetricAlgorithm;
 use std::sync::Arc;
 
 #[async_trait]
-pub trait PeerConnector: Send + Sync + 'static {
-    async fn fetch_bundle<A: AsymmetricAlgorithm + Send + Sync>(
+pub trait PeerConnector: 'static {
+    async fn fetch_bundle<A: AsymmetricAlgorithm>(
         &self,
         remote_peer_id: &str,
     ) -> Result<PublicKeyBundle, Error>;
@@ -27,7 +27,7 @@ impl InMemoryConnector {
 
 #[async_trait]
 impl PeerConnector for InMemoryConnector {
-    async fn fetch_bundle<A: AsymmetricAlgorithm + Send + Sync>(
+    async fn fetch_bundle<A: AsymmetricAlgorithm>(
         &self,
         remote_peer_id: &str,
     ) -> Result<PublicKeyBundle, Error> {

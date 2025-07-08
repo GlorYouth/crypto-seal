@@ -36,7 +36,7 @@ pub struct PqcHybridSealer {
     pub(crate) inner: PqcEncryptor,
 }
 
-impl<A: AsymmetricAlgorithm + Send + Sync, S: SymmetricAlgorithm> HybridSealer<A, S> {
+impl<A: AsymmetricAlgorithm, S: SymmetricAlgorithm> HybridSealer<A, S> {
 
     /// Sets the associated data (AAD) for the encryption operation.
     pub fn with_aad(self, aad: impl Into<Vec<u8>>) -> Self {
