@@ -2,6 +2,15 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Defines the cryptographic suite used for an operation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct EncryptionSuite {
+    /// The name of the asymmetric algorithm (e.g., "Kyber1024").
+    pub asymmetric: String,
+    /// The name of the symmetric algorithm (e.g., "Aes256Gcm").
+    pub symmetric: String,
+}
+
 /// A data structure that contains all the information a client needs for encryption.
 /// It is designed to be self-contained and immutable.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -10,9 +19,8 @@ pub struct PublicKeyBundle {
     /// Example: "kyber1024-20231027T100000Z"
     pub key_id: String,
 
-    /// The name of the asymmetric encryption algorithm.
-    /// Example: "kyber1024"
-    pub algorithm: String,
+    /// The cryptographic suite this key should be used with.
+    pub suite: EncryptionSuite,
 
     /// The Base64-encoded public key.
     pub public_key: String,

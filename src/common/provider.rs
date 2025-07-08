@@ -12,9 +12,10 @@ use crate::common::managed::ManagedKey;
 use seal_flow::keys::{TypedAsymmetricKeyPair, TypedSignatureKeyPair};
 use seal_flow::algorithms::traits::AsymmetricAlgorithm;
 use chrono::Utc;
-use base64::Engine;
-use crate::contract::PublicKeyBundle;
+use base64::{engine::general_purpose, Engine};
+use crate::contract::{EncryptionSuite, PublicKeyBundle};
 use dashmap::DashMap;
+use seal_flow::algorithms::traits::SymmetricAlgorithm;
 
 /// A `KeyProvider` that manages keys stored as password-protected JSON files
 /// in a specified directory.
@@ -183,31 +184,36 @@ impl RemoteKeyProvider {
     /// # Arguments
     ///
     /// * `peer_url`: The unique identifier for the remote peer (e.g., their base URL).
-    pub fn get_public_key<A: AsymmetricAlgorithm>(
+    pub fn get_public_key<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
         &self,
         peer_url: &str,
     ) -> Result<(String, AsymmetricPublicKey), Error> {
+        let expected_suite = EncryptionSuite {
+            asymmetric: A::name().to_string(),
+            symmetric: S::name().to_string(),
+        };
+
         // 1. Check the cache first for a valid, non-expired key.
         if let Some(bundle) = self.cache.get(peer_url) {
-            if bundle.algorithm == A::name() && bundle.expires_at > Utc::now() {
+            if bundle.suite == expected_suite && bundle.expires_at > Utc::now() {
                 let key_bytes =
-                    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
+                    general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
                 let public_key = AsymmetricPublicKey::new(key_bytes);
                 return Ok((bundle.key_id.clone(), public_key));
             }
         }
 
         // 2. If not in cache, algorithm mismatch, or expired, fetch, cache, and return.
-        let bundle = self.fetch_and_cache_key::<A>(peer_url)?;
+        let bundle = self.fetch_and_cache_key::<A, S>(peer_url)?;
         let key_bytes =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
+            general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
         let public_key = AsymmetricPublicKey::new(key_bytes);
 
         Ok((bundle.key_id.clone(), public_key))
     }
 
     /// Fetches the public key bundle from the remote endpoint and inserts it into the cache.
-    fn fetch_and_cache_key<A: AsymmetricAlgorithm>(
+    fn fetch_and_cache_key<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
         &self,
         peer_url: &str,
     ) -> Result<PublicKeyBundle, Error> {
@@ -215,10 +221,14 @@ impl RemoteKeyProvider {
         // In a real implementation, you would use a library like `reqwest`
         // to make an HTTP GET request to the `peer_url`.
         let (public_key, _) = A::generate_keypair()?;
+        let suite = EncryptionSuite {
+            asymmetric: A::name().to_string(),
+            symmetric: S::name().to_string(),
+        };
         let bundle = PublicKeyBundle {
             key_id: format!("remote-key-{}", Utc::now().timestamp()),
-            algorithm: A::name().to_string(),
-            public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+            suite,
+            public_key: general_purpose::URL_SAFE_NO_PAD
                 .encode(public_key.to_bytes()),
             issued_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::days(30),

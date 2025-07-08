@@ -4,12 +4,12 @@ use crate::{
     peer::registry::PeerRegistry,
 };
 use async_trait::async_trait;
-use seal_flow::algorithms::traits::AsymmetricAlgorithm;
+use seal_flow::algorithms::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use std::sync::Arc;
 
 #[async_trait]
 pub trait PeerConnector: 'static {
-    async fn fetch_bundle<A: AsymmetricAlgorithm>(
+    async fn fetch_bundle<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
         &self,
         remote_peer_id: &str,
     ) -> Result<PublicKeyBundle, Error>;
@@ -27,10 +27,10 @@ impl InMemoryConnector {
 
 #[async_trait]
 impl PeerConnector for InMemoryConnector {
-    async fn fetch_bundle<A: AsymmetricAlgorithm>(
+    async fn fetch_bundle<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
         &self,
         remote_peer_id: &str,
     ) -> Result<PublicKeyBundle, Error> {
-        self.registry.get_bundle::<A>(remote_peer_id)
+        self.registry.get_bundle::<A, S>(remote_peer_id)
     }
 }

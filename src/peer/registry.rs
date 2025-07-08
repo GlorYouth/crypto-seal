@@ -5,7 +5,7 @@ use crate::{
 };
 use dashmap::DashMap;
 use std::{marker::PhantomData, sync::Arc};
-use seal_flow::algorithms::traits::AsymmetricAlgorithm;
+use seal_flow::algorithms::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 
 pub struct PeerRegistry<C: PeerConnector> {
     peers: DashMap<String, Arc<Peer<C>>>,
@@ -30,7 +30,7 @@ impl<C: PeerConnector> PeerRegistry<C> {
         self.peers.insert(peer.id.clone(), peer);
     }
 
-    pub fn get_bundle<A: AsymmetricAlgorithm>(
+    pub fn get_bundle<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
         &self,
         peer_id: &str,
     ) -> Result<PublicKeyBundle, Error> {
@@ -38,6 +38,6 @@ impl<C: PeerConnector> PeerRegistry<C> {
             .get(peer_id)
             .ok_or_else(|| Error::PeerNotFound(peer_id.to_string()))?
             .value()
-            .get_public_key_bundle::<A>()
+            .get_public_key_bundle::<A, S>()
     }
 } 

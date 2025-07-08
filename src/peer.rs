@@ -7,7 +7,7 @@ use crate::{
         rotation::{RotatingKeyManager, RotationPolicy},
         sealer::SealRotator,
     },
-    contract::PublicKeyBundle,
+    contract::{EncryptionSuite, PublicKeyBundle},
     error::Error,
     peer::connector::PeerConnector,
 };
@@ -63,8 +63,10 @@ impl<C: PeerConnector> Peer<C> {
 
     /// Generates a `PublicKeyBundle` for this peer, which can be shared with
     /// others to allow them to encrypt messages for this peer.
-    pub fn get_public_key_bundle<A: AsymmetricAlgorithm>(&self) -> Result<PublicKeyBundle, Error> {
-        self.rotator.get_public_key_bundle::<A>()
+    pub fn get_public_key_bundle<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
+        &self,
+    ) -> Result<PublicKeyBundle, Error> {
+        self.rotator.get_public_key_bundle::<A, S>()
     }
 
     /// Encrypts a message for a remote peer.
@@ -77,12 +79,17 @@ impl<C: PeerConnector> Peer<C> {
         plaintext: &[u8],
     ) -> Result<Vec<u8>, Error>
     where
-        A: AsymmetricAlgorithm,
+        A: AsymmetricAlgorithm + Send + Sync,
         S: SymmetricAlgorithm,
     {
+        let expected_suite = EncryptionSuite {
+            asymmetric: A::name().to_string(),
+            symmetric: S::name().to_string(),
+        };
+
         // 1. Check cache for a valid, non-expired key bundle.
         if let Some(bundle) = self.remote_bundle_cache.get(remote_peer_id) {
-            if bundle.algorithm == A::name() && bundle.expires_at > Utc::now() {
+            if bundle.suite == expected_suite && bundle.expires_at > Utc::now() {
                 let key_bytes =
                     general_purpose::URL_SAFE_NO_PAD.decode(&bundle.public_key)?;
                 let public_key = AsymmetricPublicKey::new(key_bytes);
@@ -95,13 +102,16 @@ impl<C: PeerConnector> Peer<C> {
         }
 
         // 2. If not in cache or expired, fetch it via the connector.
-        let bundle = self.connector.fetch_bundle::<A>(remote_peer_id).await?;
+        let bundle = self
+            .connector
+            .fetch_bundle::<A, S>(remote_peer_id)
+            .await?;
 
         // --- Validate the bundle ---
-        if bundle.algorithm != A::name() {
+        if bundle.suite != expected_suite {
             return Err(Error::PeerError(format!(
-                "Mismatched algorithm from peer {}",
-                remote_peer_id
+                "Mismatched algorithm suite from peer {}. Expected {:?}, got {:?}",
+                remote_peer_id, expected_suite, bundle.suite
             )));
         }
         if bundle.expires_at <= Utc::now() {

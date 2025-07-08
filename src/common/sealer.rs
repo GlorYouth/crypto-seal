@@ -9,7 +9,7 @@ use crate::common::rotation::RotatingKeyManager;
 use seal_flow::algorithms::traits::{AsymmetricAlgorithm, SymmetricAlgorithm};
 use seal_flow::seal::{hybrid::HybridSeal, symmetric::SymmetricSeal};
 use base64::{engine::general_purpose, Engine as _};
-use crate::contract::PublicKeyBundle;
+use crate::contract::{PublicKeyBundle, EncryptionSuite};
 
 /// The main entry point for performing cryptographic operations with automatic key rotation.
 /// It acts as a factory for `Sealer` and `Unsealer` objects.
@@ -36,11 +36,16 @@ impl SealRotator {
     }
 
     /// Returns the public key bundle for the current primary key.
-    pub fn get_public_key_bundle<A: AsymmetricAlgorithm>(&self) -> Result<PublicKeyBundle, Error> {
+    pub fn get_public_key_bundle<A: AsymmetricAlgorithm, S: SymmetricAlgorithm>(
+        &self,
+    ) -> Result<PublicKeyBundle, Error> {
         let (metadata, public_key) = self.manager.get_encryption_public_key::<A>()?;
         Ok(PublicKeyBundle {
             key_id: metadata.id,
-            algorithm: A::name().to_string(),
+            suite: EncryptionSuite {
+                asymmetric: A::name().to_string(),
+                symmetric: S::name().to_string(),
+            },
             public_key: general_purpose::URL_SAFE_NO_PAD.encode(&*public_key.0),
             issued_at: metadata.created_at,
             expires_at: metadata.expires_at,
