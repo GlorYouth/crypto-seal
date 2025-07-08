@@ -1,6 +1,6 @@
 //! Provides a high-level client-side sealer for performing hybrid encryption.
 
-use crate::client::provider::RemoteKeyProvider;
+use crate::common::provider::RemoteKeyProvider;
 use std::sync::Arc;
 use crate::error::Error;
 use seal_flow::seal::HybridSeal;

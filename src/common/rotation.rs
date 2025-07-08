@@ -1,9 +1,9 @@
 //! Manages the lifecycle and rotation of cryptographic keys.
 
 use crate::error::Error;
-use crate::server::managed::{KeyMetadata, KeyStatus, ManagedKey};
+use crate::common::managed::{KeyMetadata, KeyStatus, ManagedKey};
 use crate::prelude::*;
-use crate::server::provider::FileSystemKeyProvider;
+use crate::common::provider::FileSystemKeyProvider;
 use chrono::{Duration, Utc};
 use dashmap::DashMap;
 use seal_flow::algorithms::symmetric::Aes256Gcm;
