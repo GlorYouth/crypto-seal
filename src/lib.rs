@@ -64,6 +64,7 @@ pub mod error;
 /// The version of the `seal-kit` crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub mod contact;
-
+pub mod contract;
+pub mod client;
 pub mod server;
+pub mod sealer;
